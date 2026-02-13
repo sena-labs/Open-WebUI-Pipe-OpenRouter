@@ -1,6 +1,10 @@
 """
 Comprehensive test suite for OpenRouter Pipe v0.2.0
 Runs with: python test_pipe.py
+
+Author: Sena Labs (https://github.com/sena-labs)
+License: MIT
+Copyright (c) 2026 Sena Labs
 """
 
 from __future__ import annotations
@@ -141,7 +145,7 @@ for k, val in _env_backup.items():
     if val is not None:
         os.environ[k] = val
 
-# ── 4. Pipe.__init__ ────────────────────────────────────────────────────────
+# ── 4. Pipe.__init__ ─────────────────────────────────────────────────────────
 
 _section("4. Pipe.__init__()")
 
@@ -150,7 +154,7 @@ _assert(pipe.type == "manifold", "type is manifold")
 _assert(pipe.models_url.endswith("/models"), "models_url ends with /models")
 _assert(pipe.chat_url.endswith("/chat/completions"), "chat_url ends with /chat/completions")
 
-# ── 5. _prepare_payload ─────────────────────────────────────────────────────
+# ── 5. _prepare_payload ──────────────────────────────────────────────────────
 
 _section("5. _prepare_payload()")
 
@@ -332,7 +336,7 @@ payload_cc2 = {"messages": [{"role": "system", "content": "plain string"}]}
 pipe._inject_cache_control(payload_cc2)  # Should not raise
 _assert(True, "plain string content doesn't crash")
 
-# ── 11. _non_stream_response ────────────────────────────────────────────────
+# ── 11. _non_stream_response ─────────────────────────────────────────────────
 
 _section("11. _non_stream_response()")
 

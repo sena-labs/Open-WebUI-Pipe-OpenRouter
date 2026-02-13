@@ -1,5 +1,7 @@
 # Contributing to OpenRouter Pipe
 
+> **Maintained by [Sena Labs](https://github.com/sena-labs)** · [GitHub](https://github.com/sena-labs/Open-Router-Pipe)
+
 Thanks for your interest in contributing! 🎉
 
 ## 🚀 Quick Start
@@ -22,7 +24,7 @@ Open-Router-Pipe/
 ├── README.md               # Project documentation
 ├── CHANGELOG.md            # Version history (Keep a Changelog format)
 ├── CONTRIBUTING.md         # This file
-├── LICENSE                 # Apache License 2.0
+├── LICENSE                 # MIT License
 └── .gitignore              # Git ignore rules
 ```
 
@@ -101,4 +103,4 @@ Before requesting a feature:
 
 ## 📄 License
 
-By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

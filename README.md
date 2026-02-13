@@ -10,8 +10,8 @@
 
 <a href="https://github.com/sena-labs/Open-Router-Pipe"><img src="https://img.shields.io/badge/version-0.2.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-≥3.10-0d1117?style=for-the-badge&logo=python&logoColor=white&labelColor=3776AB" alt="python"></a>&nbsp;
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
-<a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA4LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
+<a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
 
 <br><br>
 
@@ -133,8 +133,8 @@ All settings are configurable via **Valves** in the Open WebUI admin panel. Ever
 This pipe implements the **Manifold** pattern:
 
 ```
-Open WebUI ←→ Pipe.pipes()   → model list from OpenRouter /models
-Open WebUI ←→ Pipe.pipe()    → chat completions via OpenRouter /chat/completions
+Open WebUI ↔️ Pipe.pipes()   → model list from OpenRouter /models
+Open WebUI ↔️ Pipe.pipe()    → chat completions via OpenRouter /chat/completions
 ```
 
 ### Key Methods
@@ -166,11 +166,12 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 ```
 Open-Router-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
+├── function.json           # Open WebUI community manifest (metadata, tags, categories)
 ├── test_pipe.py            # Comprehensive test suite (131 tests)
 ├── README.md               # This file
 ├── CHANGELOG.md            # Version history
 ├── CONTRIBUTING.md         # Contribution guidelines
-├── LICENSE                 # Apache License 2.0
+├── LICENSE                 # MIT License
 └── .gitignore              # Git ignore rules
 ```
 
@@ -201,6 +202,28 @@ Tests cover:
 
 ---
 
+## 🌐 Open WebUI Community
+
+This pipe is available on the **[Open WebUI Community](https://openwebui.com)** site.
+
+### Install from Community
+
+1. Go to [openwebui.com](https://openwebui.com) and search for **"OpenRouter Pipe"**
+2. Click **Install** to add it directly to your Open WebUI instance
+3. Configure your `OPENROUTER_API_KEY` in the Valves settings
+
+### Publishing / Updating the Listing
+
+1. Sign in on [openwebui.com](https://openwebui.com)
+2. Click **"Share a Function"** → select **Pipe**
+3. Paste the contents of `openrouter_pipe.py` — metadata is auto-extracted from the docstring
+4. Add tags: `openrouter`, `manifold`, `multi-model`, `provider-routing`, `reasoning`, `streaming`, `fallback`, `cache-control`, `citations`
+5. Click **Publish**
+
+To update an existing listing, increment the `version` in the docstring and re-upload.
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
@@ -209,10 +232,10 @@ Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## 📄 License
 
-This project is licensed under the **Apache License 2.0** — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
 ```
-Copyright 2026 Sena Labs
+Copyright (c) 2026 Sena Labs
 ```
 
 ---
