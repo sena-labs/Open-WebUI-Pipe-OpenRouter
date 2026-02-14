@@ -378,9 +378,7 @@ class Pipe:
     def _build_headers(self, include_content_type: bool = True) -> dict:
         headers = {
             "Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}",
-            "HTTP-Referer": os.getenv(
-                "NGINX_PRIMARY_DOMAIN", "https://ai.seensmart.com"
-            ),
+            "HTTP-Referer": os.getenv("WEBUI_URL", "http://localhost:3000"),
             "X-Title": os.getenv("WEBUI_NAME", "OpenWebUI"),
         }
         if include_content_type:

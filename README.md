@@ -212,16 +212,6 @@ This pipe is available on the **[Open WebUI Community](https://openwebui.com)** 
 2. Click **Install** to add it directly to your Open WebUI instance
 3. Configure your `OPENROUTER_API_KEY` in the Valves settings
 
-### Publishing / Updating the Listing
-
-1. Sign in on [openwebui.com](https://openwebui.com)
-2. Click **"Share a Function"** → select **Pipe**
-3. Paste the contents of `openrouter_pipe.py` — metadata is auto-extracted from the docstring
-4. Add tags: `openrouter`, `manifold`, `multi-model`, `provider-routing`, `reasoning`, `streaming`, `fallback`, `cache-control`, `citations`
-5. Click **Publish**
-
-To update an existing listing, increment the `version` in the docstring and re-upload.
-
 ---
 
 ## 🤝 Contributing

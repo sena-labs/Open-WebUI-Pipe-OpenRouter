@@ -21,9 +21,8 @@ from types import ModuleType
 from typing import List, Optional
 from unittest.mock import MagicMock, patch, PropertyMock
 
-# ── Load the pipe module from the .json file ──────────────────────────────────
-_PIPE_PATH = os.path.join(os.path.dirname(__file__), "OpenRouter - SenaLabs.json")
-# Force SourceFileLoader since file has .json extension
+# ── Load the pipe module ──────────────────────────────────────────────────────
+_PIPE_PATH = os.path.join(os.path.dirname(__file__), "openrouter_pipe.py")
 _loader = importlib.machinery.SourceFileLoader("openrouter_pipe", _PIPE_PATH)
 spec = importlib.util.spec_from_loader("openrouter_pipe", _loader, origin=_PIPE_PATH)
 mod: ModuleType = importlib.util.module_from_spec(spec)
