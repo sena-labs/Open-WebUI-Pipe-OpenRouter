@@ -1,39 +1,21 @@
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a1b2e,100:2d1b69&height=180&section=header&text=OpenRouter%20Pipe&fontColor=a78bfa&fontSize=42&animation=fadeIn&fontAlignY=36&desc=Open%20WebUI%20%E2%86%94%20OpenRouter%20Integration&descAlignY=56&descColor=8b5cf6" width="100%"/>
-
-<br>
-
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=500&size=20&duration=3000&pause=1000&color=A78BFA&center=true&vCenter=true&multiline=true&repeat=true&width=600&height=60&lines=Manifold+Pipe+for+Open+WebUI;All+OpenRouter+models+%E2%80%A2+one+integration)](https://openrouter.ai)
-
-<br>
-
 <a href="https://github.com/sena-labs/Open-Router-Pipe"><img src="https://img.shields.io/badge/version-0.2.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-≥3.10-0d1117?style=for-the-badge&logo=python&logoColor=white&labelColor=3776AB" alt="python"></a>&nbsp;
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
 <a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
 
-<br><br>
-
-**Access 300+ AI models through OpenRouter directly inside Open WebUI.**
-<br>
-**Provider routing • Reasoning tokens • Streaming • Fallbacks • Cache control**
-
-<br>
-
-<kbd>[⚡ Quick Start](#-quick-start)</kbd>&nbsp;&nbsp;
-<kbd>[⚙️ Configuration](#%EF%B8%8F-configuration)</kbd>&nbsp;&nbsp;
-<kbd>[🧠 Features](#-features)</kbd>&nbsp;&nbsp;
-<kbd>[📖 API Reference](#-api-reference)</kbd>&nbsp;&nbsp;
-<kbd>[🤝 Contributing](#-contributing)</kbd>
-
 </div>
 
-<br>
+# OpenRouter Pipe
+
+**Access 300+ AI models through OpenRouter directly inside Open WebUI.**
+
+Provider routing · Reasoning tokens · Streaming · Fallbacks · Cache control
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -48,13 +30,15 @@
 4. Paste the entire contents of [`openrouter_pipe.py`](openrouter_pipe.py)
 5. Save and **enable** the function
 6. Go to **Valves** (⚙️ icon) and enter your `OPENROUTER_API_KEY`
-7. All OpenRouter models will appear in your model selector 🎉
+7. All OpenRouter models will appear in your model selector
 
 > **Tip:** You can also set the API key via environment variable `OPENROUTER_API_KEY` on the server.
 
+Alternatively, search for **"OpenRouter Pipe"** on [openwebui.com](https://openwebui.com) and install it directly from the community hub.
+
 ---
 
-## 🧠 Features
+## Features
 
 | Feature | Description |
 |---------|-------------|
@@ -72,7 +56,7 @@
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 All settings are configurable via **Valves** in the Open WebUI admin panel. Every valve also accepts an environment variable fallback.
 
@@ -126,7 +110,7 @@ All settings are configurable via **Valves** in the Open WebUI admin panel. Ever
 
 ---
 
-## 📖 API Reference
+## API Reference
 
 ### Architecture
 
@@ -161,13 +145,13 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 
 ---
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```
 Open-Router-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Comprehensive test suite (131 tests)
+├── test_pipe.py            # Test suite
 ├── README.md               # This file
 ├── CHANGELOG.md            # Version history
 ├── CONTRIBUTING.md         # Contribution guidelines
@@ -177,22 +161,15 @@ Open-Router-Pipe/
 
 ---
 
-## 🧪 Testing
-
-The project includes a comprehensive test suite covering all functionality:
+## Testing
 
 ```bash
 python test_pipe.py
 ```
 
-```
-Total: 131  |  ✓ Passed: 131  |  ✗ Failed: 0
-All tests passed! ✓
-```
-
 Tests cover:
 - Helper functions (`_insert_citations`, `_format_citation_list`, `_parse_csv`)
-- All 17 Valve defaults and validation
+- Valve defaults and validation
 - Payload preparation (key stripping, model ID fix, provider routing, fallbacks)
 - Stream response (reasoning tags, mid-stream errors, auto-close, citations)
 - Non-stream response (API errors, empty choices, timeout handling)
@@ -202,25 +179,13 @@ Tests cover:
 
 ---
 
-## 🌐 Open WebUI Community
-
-This pipe is available on the **[Open WebUI Community](https://openwebui.com)** site.
-
-### Install from Community
-
-1. Go to [openwebui.com](https://openwebui.com) and search for **"OpenRouter Pipe"**
-2. Click **Install** to add it directly to your Open WebUI instance
-3. Configure your `OPENROUTER_API_KEY` in the Valves settings
-
----
-
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
@@ -232,8 +197,6 @@ Copyright (c) 2026 Sena Labs
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:2d1b69,50:1a1b2e,100:0d1117&height=100&section=footer" width="100%"/>
-
-**Built with 💜 by [Sena Labs](https://github.com/sena-labs)**
+[Sena Labs](https://github.com/sena-labs)
 
 </div>

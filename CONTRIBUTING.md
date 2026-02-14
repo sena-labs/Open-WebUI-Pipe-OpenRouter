@@ -2,33 +2,17 @@
 
 > **Maintained by [Sena Labs](https://github.com/sena-labs)** · [GitHub](https://github.com/sena-labs/Open-Router-Pipe)
 
-Thanks for your interest in contributing! 🎉
+Thanks for your interest in contributing.
 
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
-# Clone the repo
 git clone https://github.com/sena-labs/Open-Router-Pipe.git
 cd Open-Router-Pipe
-
-# Run the test suite
 python test_pipe.py
 ```
 
-## 📁 Project Structure
-
-```
-Open-Router-Pipe/
-├── openrouter_pipe.py      # Main pipe source — this is what gets installed in Open WebUI
-├── test_pipe.py            # Test suite (131 tests, run with: python test_pipe.py)
-├── README.md               # Project documentation
-├── CHANGELOG.md            # Version history (Keep a Changelog format)
-├── CONTRIBUTING.md         # This file
-├── LICENSE                 # MIT License
-└── .gitignore              # Git ignore rules
-```
-
-## 🔧 Development
+## Development
 
 ### Prerequisites
 
@@ -42,7 +26,7 @@ Open-Router-Pipe/
 python test_pipe.py
 ```
 
-All 131 tests should pass. If adding new functionality, add corresponding tests.
+All tests should pass. If adding new functionality, add corresponding tests.
 
 ### Code Style
 
@@ -52,7 +36,7 @@ All 131 tests should pass. If adding new functionality, add corresponding tests.
 - Add docstrings for public methods
 - Use `print(f"[OpenRouter Pipe] ...")` for debug logging
 
-## 🔀 Pull Request Process
+## Pull Request Process
 
 1. **Fork** the repository
 2. Create a **feature branch** (`git checkout -b feature/my-feature`)
@@ -83,7 +67,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 - [ ] Code follows existing style conventions
 - [ ] No OpenRouter API keys or secrets committed
 
-## 🐛 Reporting Issues
+## Reporting Issues
 
 When reporting a bug, please include:
 
@@ -93,7 +77,7 @@ When reporting a bug, please include:
 4. **Expected vs actual behavior**
 5. **Error logs** (check Open WebUI server logs for `[OpenRouter Pipe]` messages)
 
-## 📋 Feature Requests
+## Feature Requests
 
 Before requesting a feature:
 
@@ -101,6 +85,6 @@ Before requesting a feature:
 2. Check [Open WebUI Pipe docs](https://docs.openwebui.com/features/plugin/functions/pipe) for compatibility
 3. Open an issue describing the feature and its use case
 
-## 📄 License
+## License
 
 By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

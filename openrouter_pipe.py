@@ -66,85 +66,78 @@ class Pipe:
     class Valves(BaseModel):
         OPENROUTER_API_KEY: str = Field(
             default=os.getenv("OPENROUTER_API_KEY", ""),
-            description="API key OpenRouter",
+            description="OpenRouter API key",
         )
         OPENROUTER_BASE_URL: str = Field(
             default=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            description="Endpoint base OpenRouter",
+            description="OpenRouter base endpoint",
         )
-        # --- Reasoning ---
         REASONING_EFFORT: str = Field(
             default=os.getenv("OPENROUTER_REASONING_EFFORT", ""),
-            description="Effort reasoning: vuoto=disabilitato, low, medium, high",
+            description="Reasoning effort: empty=disabled, low, medium, high",
         )
         INCLUDE_REASONING: bool = Field(
             default=os.getenv("OPENROUTER_INCLUDE_REASONING", "true").lower() == "true",
-            description="Richiedi reasoning tokens (mostra <think>)",
+            description="Request reasoning tokens (shows <think> blocks)",
         )
-        # --- Display ---
         MODEL_PREFIX: Optional[str] = Field(
-            default=None, description="Prefisso visualizzato nei nomi modello"
+            default=None, description="Prefix shown in model names"
         )
-        # --- Model filtering ---
         MODEL_PROVIDERS: Optional[str] = Field(
             default=os.getenv("OPENROUTER_MODEL_PROVIDERS"),
-            description="Lista provider separata da virgola per filtrare modelli",
+            description="Comma-separated provider list to filter models",
         )
         INVERT_PROVIDER_LIST: bool = Field(
             default=os.getenv("OPENROUTER_INVERT_PROVIDER_LIST", "false").lower()
             == "true",
-            description="Se true la lista provider diventa esclusione",
+            description="When true the provider list becomes an exclusion list",
         )
         FREE_ONLY: bool = Field(
             default=os.getenv("OPENROUTER_FREE_ONLY", "false").lower() == "true",
-            description="Mostra solo modelli gratuiti",
+            description="Show only free-tier models",
         )
-        # --- Provider routing ---
         PROVIDER_SORT: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_SORT", ""),
-            description="Ordinamento provider: vuoto=default, price, throughput, latency",
+            description="Provider sort order: empty=default, price, throughput, latency",
         )
         PROVIDER_ORDER: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_ORDER", ""),
-            description="Provider preferiti separati da virgola (es. anthropic,openai)",
+            description="Preferred providers, comma-separated (e.g. anthropic,openai)",
         )
         PROVIDER_IGNORE: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_IGNORE", ""),
-            description="Provider da escludere separati da virgola",
+            description="Excluded providers, comma-separated",
         )
         REQUIRE_PARAMETERS: bool = Field(
             default=os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "false").lower()
             == "true",
-            description="Usa solo provider che supportano tutti i parametri richiesta",
+            description="Only use providers that support all request parameters",
         )
         DATA_COLLECTION: str = Field(
             default=os.getenv("OPENROUTER_DATA_COLLECTION", "allow"),
-            description="Politica raccolta dati provider: allow o deny",
+            description="Provider data collection policy: allow or deny",
         )
         FALLBACK_MODELS: str = Field(
             default=os.getenv("OPENROUTER_FALLBACK_MODELS", ""),
-            description="Modelli fallback separati da virgola (es. openai/gpt-4o,anthropic/claude-3.5-sonnet)",
+            description="Fallback model IDs, comma-separated (e.g. openai/gpt-4o,anthropic/claude-3.5-sonnet)",
         )
-        # --- Transforms ---
         ENABLE_MIDDLE_OUT: bool = Field(
             default=os.getenv("OPENROUTER_ENABLE_MIDDLE_OUT", "false").lower()
             == "true",
-            description="Compressione middle-out per prompt che eccedono il contesto",
+            description="Middle-out compression for prompts exceeding context window",
         )
-        # --- Cache ---
         ENABLE_CACHE_CONTROL: bool = Field(
             default=os.getenv("OPENROUTER_ENABLE_CACHE_CONTROL", "false").lower()
             == "true",
-            description="Aggiungi cache_control ai messaggi lunghi (Anthropic)",
+            description="Inject cache_control on long messages (Anthropic)",
         )
-        # --- Network ---
         REQUEST_TIMEOUT: int = Field(
             default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
             gt=0,
-            description="Timeout richieste API in secondi",
+            description="API request timeout in seconds",
         )
         MAX_RETRIES: int = Field(
-            default=2, ge=0, description="Retry automatici su errori temporanei"
+            default=2, ge=0, description="Auto-retries on transient errors"
         )
 
     def __init__(self) -> None:
@@ -154,12 +147,11 @@ class Pipe:
         self.models_url = f"{base}/models"
         self.chat_url = f"{base}/chat/completions"
         if not self.valves.OPENROUTER_API_KEY:
-            print("[OpenRouter Pipe] Warning: manca OPENROUTER_API_KEY")
+            print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
 
-    # region Manifold metadata -------------------------------------------------
     def pipes(self) -> List[dict]:
         if not self.valves.OPENROUTER_API_KEY:
-            return [{"id": "error", "name": "OpenRouter API key non configurata"}]
+            return [{"id": "error", "name": "OpenRouter API key not configured"}]
 
         headers = self._build_headers(include_content_type=False)
         try:
@@ -169,9 +161,9 @@ class Pipe:
             response.raise_for_status()
             data = response.json().get("data", [])
         except requests.exceptions.Timeout:
-            return [{"id": "error", "name": "Timeout recupero modelli"}]
+            return [{"id": "error", "name": "Timeout fetching models"}]
         except requests.exceptions.HTTPError as exc:
-            msg = f"HTTP {exc.response.status_code} recupero modelli"
+            msg = f"HTTP {exc.response.status_code} fetching models"
             try:
                 detail = exc.response.json().get("error", {}).get("message", "")
                 if detail:
@@ -181,9 +173,9 @@ class Pipe:
             print(f"[OpenRouter Pipe] {msg}")
             return [{"id": "error", "name": msg}]
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Errore modelli: {exc}")
+            print(f"[OpenRouter Pipe] Model fetch error: {exc}")
             traceback.print_exc()
-            return [{"id": "error", "name": f"Errore inatteso: {exc}"}]
+            return [{"id": "error", "name": f"Unexpected error: {exc}"}]
 
         provider_filter = self._parse_provider_filter()
         prefix = self.valves.MODEL_PREFIX or ""
@@ -216,23 +208,20 @@ class Pipe:
             models.append(model_dict)
 
         if not models:
-            error_text = "Nessun modello trovato"
+            error_text = "No models found"
             if self.valves.FREE_ONLY:
-                error_text = "Nessun modello gratuito disponibile"
+                error_text = "No free models available"
             elif provider_filter:
-                error_text = "Nessun modello corrisponde ai provider indicati"
+                error_text = "No models match the specified providers"
             return [{"id": "error", "name": error_text}]
 
         return models
 
-    # endregion ----------------------------------------------------------------
-
-    # region Chat completions ---------------------------------------------------
     async def pipe(
-        self, body: dict, __user__: dict = None
+        self, body: dict, __user__: Optional[dict] = None
     ) -> Union[str, Generator[str, None, None]]:
         if not self.valves.OPENROUTER_API_KEY:
-            return "OpenRouter Pipe Error: configurare OPENROUTER_API_KEY"
+            return "OpenRouter Pipe Error: OPENROUTER_API_KEY not configured"
 
         payload = self._prepare_payload(body)
         headers = self._build_headers()
@@ -242,11 +231,8 @@ class Pipe:
             return self._stream_response(headers, payload)
         return self._non_stream_response(headers, payload)
 
-    # endregion ----------------------------------------------------------------
-
-    # region Helpers ------------------------------------------------------------
     def _get_provider_icon(self, provider: str) -> Optional[str]:
-        """Ritorna URL icona per il provider specificato."""
+        """Return icon URL for the given provider."""
         provider_icons = {
             "openai": "https://openrouter.ai/images/models/openai.svg",
             "anthropic": "https://openrouter.ai/images/models/anthropic.svg",
@@ -284,7 +270,7 @@ class Pipe:
 
     @staticmethod
     def _parse_csv(value: str) -> List[str]:
-        """Parsa una stringa CSV in lista, filtrando elementi vuoti."""
+        """Parse a comma-separated string into a list, skipping empty items."""
         if not value:
             return []
         return [item.strip() for item in value.split(",") if item.strip()]
@@ -292,16 +278,16 @@ class Pipe:
     def _prepare_payload(self, body: dict) -> dict:
         payload = body.copy()
 
-        # --- Rimuovi campi interni Open WebUI ---
+        # Strip Open WebUI internal keys
         for key in _OWUI_INTERNAL_KEYS:
             payload.pop(key, None)
 
-        # Open WebUI invia 'user' come dict; OpenRouter lo vuole come stringa
+        # Open WebUI sends 'user' as dict; OpenRouter expects a string
         user_field = payload.get("user")
         if isinstance(user_field, dict):
             payload.pop("user", None)
 
-        # --- Fix model ID (rimuovi prefisso manifold) ---
+        # Fix model ID (strip manifold prefix)
         model = payload.get("model")
         if model and "." in model:
             payload["model"] = model.split(".", 1)[-1]
@@ -373,7 +359,7 @@ class Pipe:
                         content[longest_idx]["cache_control"] = {"type": "ephemeral"}
                         return
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] cache_control non applicato: {exc}")
+            print(f"[OpenRouter Pipe] cache_control not applied: {exc}")
 
     def _build_headers(self, include_content_type: bool = True) -> dict:
         headers = {
@@ -390,7 +376,7 @@ class Pipe:
             response = self._retryable_request(headers, payload, stream=False)
             res = response.json()
 
-            # Gestisci errore API nel corpo della risposta
+            # Handle API error in response body
             if "error" in res and not res.get("choices"):
                 err = res["error"]
                 msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
@@ -419,7 +405,7 @@ class Pipe:
         except requests.exceptions.HTTPError as exc:
             return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Errore risposta non streaming: {exc}")
+            print(f"[OpenRouter Pipe] Non-stream response error: {exc}")
             traceback.print_exc()
             return f"OpenRouter Pipe Error: {exc}"
 
@@ -443,7 +429,7 @@ class Pipe:
                 except json.JSONDecodeError:
                     continue
 
-                # --- Gestione errori mid-stream ---
+                # Handle mid-stream errors
                 if "error" in chunk:
                     err = chunk["error"]
                     msg = (
@@ -489,10 +475,10 @@ class Pipe:
                         in_think = False
                     buffer += content
 
-            # --- Flush buffer rimanente ---
+            # Flush remaining buffer
             if buffer:
                 yield _insert_citations(buffer, latest_citations)
-            # Chiudi tag <think> se rimasto aperto
+            # Close <think> if still open
             if in_think:
                 yield "\n</think>\n"
             rendered_citations = _format_citation_list(latest_citations)
@@ -503,7 +489,7 @@ class Pipe:
         except requests.exceptions.HTTPError as exc:
             yield self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Errore streaming: {exc}")
+            print(f"[OpenRouter Pipe] Stream error: {exc}")
             traceback.print_exc()
             yield f"OpenRouter Pipe Error: {exc}"
         finally:
@@ -528,19 +514,19 @@ class Pipe:
                 requests.exceptions.ConnectionError,
             ) as exc:
                 last_exc = exc
-                print(f"[OpenRouter Pipe] Tentativo {attempt + 1} fallito: {exc}")
+                print(f"[OpenRouter Pipe] Attempt {attempt + 1} failed: {exc}")
                 if attempt == self.valves.MAX_RETRIES:
                     raise
             except requests.exceptions.HTTPError:
                 raise
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
-                print(f"[OpenRouter Pipe] Errore generico: {exc}")
+                print(f"[OpenRouter Pipe] Unexpected error: {exc}")
                 if attempt == self.valves.MAX_RETRIES:
                     raise
         if last_exc:
             raise last_exc  # pragma: no cover
-        raise RuntimeError("OpenRouter Pipe Error: richiesta non completata")
+        raise RuntimeError("OpenRouter Pipe Error: request not completed")
 
     def _format_http_error(self, exc: requests.exceptions.HTTPError) -> str:
         status = exc.response.status_code if exc.response is not None else "?"
@@ -552,8 +538,6 @@ class Pipe:
         except Exception:
             pass
         return base
-
-    # endregion ----------------------------------------------------------------
 
 
 __all__ = ["Pipe"]
