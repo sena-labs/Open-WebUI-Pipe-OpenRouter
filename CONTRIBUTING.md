@@ -1,14 +1,14 @@
 # Contributing to OpenRouter Pipe
 
-> **Maintained by [Sena Labs](https://github.com/sena-labs)** · [GitHub](https://github.com/sena-labs/Open-Router-Pipe)
+> **Maintained by [Sena Labs](https://github.com/sena-labs)** · [GitHub](https://github.com/sena-labs/OpenRouter-Pipe)
 
 Thanks for your interest in contributing.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/sena-labs/Open-Router-Pipe.git
-cd Open-Router-Pipe
+git clone https://github.com/sena-labs/OpenRouter-Pipe.git
+cd OpenRouter-Pipe
 python test_pipe.py
 ```
 

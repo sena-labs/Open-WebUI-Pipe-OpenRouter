@@ -2,7 +2,7 @@
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a1b2e,100:2d1b69&height=180&section=header&text=OpenRouter%20Pipe&fontColor=a78bfa&fontSize=42&animation=fadeIn&fontAlignY=36&desc=Open%20WebUI%20%E2%86%94%20OpenRouter%20Integration&descAlignY=56&descColor=8b5cf6" width="100%"/>
 
-<a href="https://github.com/sena-labs/Open-Router-Pipe"><img src="https://img.shields.io/badge/version-0.2.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
+<a href="https://github.com/sena-labs/OpenRouter-Pipe"><img src="https://img.shields.io/badge/version-0.2.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-≥3.10-0d1117?style=for-the-badge&logo=python&logoColor=white&labelColor=3776AB" alt="python"></a>&nbsp;
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
 <a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
@@ -150,7 +150,7 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 ## Project Structure
 
 ```
-Open-Router-Pipe/
+OpenRouter-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
 ├── test_pipe.py            # Test suite
@@ -199,6 +199,8 @@ Copyright (c) 2026 Sena Labs
 
 <div align="center">
 
-[Sena Labs](https://github.com/sena-labs)
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:2d1b69,50:1a1b2e,100:0d1117&height=100&section=footer" width="100%"/>
+
+Powered by **[Sena Labs](https://github.com/sena-labs)**
 
 </div>
