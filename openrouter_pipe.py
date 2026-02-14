@@ -17,7 +17,7 @@ import json
 import os
 import re
 import traceback
-from typing import Generator, Iterator, List, Optional, Union
+from typing import Generator, List, Optional, Union
 
 import requests
 from pydantic import BaseModel, Field
@@ -143,11 +143,16 @@ class Pipe:
     def __init__(self) -> None:
         self.type = "manifold"
         self.valves = self.Valves()
-        base = self.valves.OPENROUTER_BASE_URL.rstrip("/")
-        self.models_url = f"{base}/models"
-        self.chat_url = f"{base}/chat/completions"
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
+
+    @property
+    def models_url(self) -> str:
+        return f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/models"
+
+    @property
+    def chat_url(self) -> str:
+        return f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
 
     def pipes(self) -> List[dict]:
         if not self.valves.OPENROUTER_API_KEY:
@@ -413,7 +418,6 @@ class Pipe:
         self, headers: dict, payload: dict
     ) -> Generator[str, None, None]:
         response = None
-        buffer = ""
         in_think = False
         latest_citations: List[str] = []
         try:
@@ -438,14 +442,8 @@ class Pipe:
                         else str(err)
                     )
                     if in_think:
-                        if buffer:
-                            yield _insert_citations(buffer, latest_citations)
-                            buffer = ""
                         yield "\n</think>\n"
                         in_think = False
-                    elif buffer:
-                        yield _insert_citations(buffer, latest_citations)
-                        buffer = ""
                     yield f"\n\nOpenRouter Pipe Error: {msg}"
                     return
 
@@ -459,25 +457,16 @@ class Pipe:
 
                 if reasoning:
                     if not in_think:
-                        if buffer:
-                            yield _insert_citations(buffer, latest_citations)
-                            buffer = ""
                         yield "<think>\n"
                         in_think = True
-                    buffer += reasoning
+                    yield _insert_citations(reasoning, latest_citations)
 
                 if content:
                     if in_think:
-                        if buffer:
-                            yield _insert_citations(buffer, latest_citations)
-                            buffer = ""
                         yield "\n</think>\n"
                         in_think = False
-                    buffer += content
+                    yield _insert_citations(content, latest_citations)
 
-            # Flush remaining buffer
-            if buffer:
-                yield _insert_citations(buffer, latest_citations)
             # Close <think> if still open
             if in_think:
                 yield "\n</think>\n"

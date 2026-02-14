@@ -519,7 +519,6 @@ _section("13. _retryable_request()")
 
 pipe = Pipe()
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=2, REQUEST_TIMEOUT=5)
-pipe.chat_url = "https://openrouter.ai/api/v1/chat/completions"
 
 # 13a. Success on first try
 mock_ok = MagicMock()
