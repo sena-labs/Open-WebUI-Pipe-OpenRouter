@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for OpenRouter Pipe v0.2.0
+Comprehensive test suite for OpenRouter Pipe v1.0.0
 Runs with: python test_pipe.py
 
 Author: Sena Labs (https://github.com/sena-labs)
@@ -25,8 +25,10 @@ from unittest.mock import MagicMock, patch, PropertyMock
 _PIPE_PATH = os.path.join(os.path.dirname(__file__), "openrouter_pipe.py")
 _loader = importlib.machinery.SourceFileLoader("openrouter_pipe", _PIPE_PATH)
 spec = importlib.util.spec_from_loader("openrouter_pipe", _loader, origin=_PIPE_PATH)
+assert spec is not None and spec.loader is not None
 mod: ModuleType = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+sys.modules["openrouter_pipe"] = mod
 
 Pipe = mod.Pipe
 _insert_citations = mod._insert_citations
@@ -120,7 +122,8 @@ _assert(v.OPENROUTER_API_KEY == frozen_default, f"API key default matches frozen
 _assert(v.OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1", "base URL default")
 _assert(v.REASONING_EFFORT == "", "reasoning effort empty")
 _assert(v.INCLUDE_REASONING is True, "include_reasoning True by default")
-_assert(v.MODEL_PREFIX is None, "prefix None")
+_assert(v.MODEL_PREFIX is None, "prefix None by default")
+_assert(v.MODEL_PROVIDERS == "ALL", "MODEL_PROVIDERS default is ALL")
 _assert(v.FREE_ONLY is False, "FREE_ONLY false")
 _assert(v.PROVIDER_SORT == "", "PROVIDER_SORT empty")
 _assert(v.PROVIDER_ORDER == "", "PROVIDER_ORDER empty")
@@ -267,8 +270,20 @@ _assert(pipe._get_provider_icon("unknown-provider") is None, "unknown → None")
 _section("8. _parse_provider_filter()")
 
 pipe = Pipe()
-pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS=None)
-_assert(pipe._parse_provider_filter() is None, "None → None")
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_assert(pipe._parse_provider_filter() is None, "default ALL → None")
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS="")
+_assert(pipe._parse_provider_filter() is None, "empty string → None")
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS="ALL")
+_assert(pipe._parse_provider_filter() is None, "ALL → None")
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS=" all ")
+_assert(pipe._parse_provider_filter() is None, "all with spaces → None (case-insensitive)")
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS="All")
+_assert(pipe._parse_provider_filter() is None, "All mixed-case → None")
 
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_PROVIDERS="OpenAI, Google ")
 filt = pipe._parse_provider_filter()
@@ -284,9 +299,6 @@ pipe = Pipe()
 mock_resp = MagicMock()
 mock_resp.status_code = 429
 mock_resp.json.return_value = {"error": {"message": "Rate limited"}}
-exc = MagicMock(spec=["response"])
-exc.response = mock_resp
-exc.__class__ = type("HTTPError", (Exception,), {})
 import requests as req_lib
 real_exc = req_lib.exceptions.HTTPError(response=mock_resp)
 result = pipe._format_http_error(real_exc)
@@ -300,6 +312,11 @@ mock_resp2.json.side_effect = ValueError("no json")
 real_exc2 = req_lib.exceptions.HTTPError(response=mock_resp2)
 result2 = pipe._format_http_error(real_exc2)
 _assert("500" in result2, "status code without detail")
+
+# With response=None
+real_exc_none = req_lib.exceptions.HTTPError()
+result_none = pipe._format_http_error(real_exc_none)
+_assert("?" in result_none, "status '?' when response is None")
 
 # ── 10. _inject_cache_control ────────────────────────────────────────────────
 
@@ -396,6 +413,16 @@ with patch.object(
 ):
     result = pipe._non_stream_response({}, {})
 _assert("401" in result, "HTTP 401 error")
+
+# 11f. Error in body as string (not dict)
+mock_json_str_err = {"error": "plain string error"}
+mock_resp_str_err = MagicMock()
+mock_resp_str_err.json.return_value = mock_json_str_err
+
+with patch.object(pipe, "_retryable_request", return_value=mock_resp_str_err):
+    result = pipe._non_stream_response({}, {})
+
+_assert("plain string error" in result, "error from body as string detected")
 
 # ── 12. _stream_response ────────────────────────────────────────────────────
 
@@ -513,6 +540,75 @@ with patch.object(pipe, "_retryable_request", return_value=mock_mixed):
 full = "".join(output)
 _assert("Valid" in full, "stream: non-data lines ignored")
 
+# 12i. Stream chunk with empty choices array (guard against IndexError)
+sse_empty_choices = [
+    b"data: " + json.dumps({"choices": []}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "After"}}]}).encode(),
+    b"data: [DONE]",
+]
+mock_ec = _make_sse_response(sse_empty_choices)
+with patch.object(pipe, "_retryable_request", return_value=mock_ec):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("After" in full, "stream: empty choices array skipped safely")
+
+# 12j. HTTPError in stream — detail preserved
+mock_resp_stream_err = MagicMock()
+mock_resp_stream_err.status_code = 429
+mock_resp_stream_err.json.return_value = {"error": {"message": "Rate limited"}}
+mock_resp_stream_err.content = json.dumps({"error": {"message": "Rate limited"}}).encode()
+with patch.object(
+    pipe, "_retryable_request",
+    side_effect=req_lib.exceptions.HTTPError(response=mock_resp_stream_err),
+):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("429" in full, "stream: HTTP error status code")
+_assert("Rate limited" in full, "stream: HTTP error detail preserved")
+
+# 12k. Timeout mid-stream while in <think> → closes tag before error
+def _iter_lines_timeout():
+    yield b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Analyzing..."}}]}).encode()
+    raise req_lib.exceptions.Timeout("read timeout")
+
+mock_sse_t = MagicMock()
+mock_sse_t.iter_lines.return_value = _iter_lines_timeout()
+mock_sse_t.close = MagicMock()
+
+with patch.object(pipe, "_retryable_request", return_value=mock_sse_t):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("<think>" in full, "stream timeout-in-think: think opened")
+_assert("</think>" in full, "stream timeout-in-think: think closed before error")
+_assert("timeout" in full.lower(), "stream timeout-in-think: timeout error")
+
+# 12l. Generic exception mid-stream while in <think> → closes tag before error
+def _iter_lines_conn_error():
+    yield b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Reasoning..."}}]}).encode()
+    raise req_lib.exceptions.ConnectionError("connection lost mid-stream")
+
+mock_sse_ce = MagicMock()
+mock_sse_ce.iter_lines.return_value = _iter_lines_conn_error()
+mock_sse_ce.close = MagicMock()
+
+with patch.object(pipe, "_retryable_request", return_value=mock_sse_ce):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("<think>" in full, "stream exception-in-think: think opened")
+_assert("</think>" in full, "stream exception-in-think: think closed")
+_assert("connection lost" in full.lower(), "stream exception-in-think: error shown")
+
+# 12m. Mid-stream error as string (not dict)
+sse_str_err = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Before..."}}]}).encode(),
+    b"data: " + json.dumps({"error": "simple string error"}).encode(),
+]
+mock_str_err = _make_sse_response(sse_str_err)
+with patch.object(pipe, "_retryable_request", return_value=mock_str_err):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("simple string error" in full, "stream: string error detected")
+
 # ── 13. _retryable_request ──────────────────────────────────────────────────
 
 _section("13. _retryable_request()")
@@ -564,6 +660,21 @@ with patch("requests.post") as mock_post:
         _assert(True, "retryable: HTTPError not retried")
         _assert(mock_post.call_count == 1, "retryable: only 1 call on HTTPError")
 
+# 13e. ConnectionError triggers retry
+_call_count_ce = [0]
+def _post_retry_ce(*args, **kwargs):
+    _call_count_ce[0] += 1
+    if _call_count_ce[0] == 1:
+        raise req_lib.exceptions.ConnectionError("connection refused")
+    m = MagicMock()
+    m.raise_for_status = MagicMock()
+    return m
+
+with patch("requests.post", side_effect=_post_retry_ce):
+    _call_count_ce[0] = 0
+    result = pipe._retryable_request({}, {}, stream=False)
+    _assert(_call_count_ce[0] == 2, "retryable: retried after ConnectionError")
+
 # ── 14. pipe() async entry point ────────────────────────────────────────────
 
 _section("14. pipe() async")
@@ -602,7 +713,7 @@ _assert(isinstance(res, str), "pipe non-stream: returns string")
 _assert("Hello!" in res, "pipe non-stream: content correct")
 
 # 14c. Stream returns generator
-async def _test_pipe_stream():
+async def _test_pipe_stream() -> str:
     sse = _make_sse_response([
         b"data: " + json.dumps({"choices": [{"delta": {"content": "World"}}]}).encode(),
         b"data: [DONE]",
@@ -634,6 +745,7 @@ mock_models = {
     ]
 }
 mock_resp = MagicMock()
+mock_resp.status_code = 200
 mock_resp.json.return_value = mock_models
 mock_resp.raise_for_status = MagicMock()
 
@@ -647,10 +759,27 @@ _assert("meta" in models[0]["info"], "pipes: meta key present")
 
 # 15b. FREE_ONLY filter
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
-with patch("requests.get", return_value=mock_resp):
+
+# Mock data with pricing info: one :free suffix, one free-by-pricing, one paid
+mock_models_pricing = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
+        {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (Free)", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "google/gemma-3-1b-it", "name": "Gemma 3 1B", "pricing": {"prompt": "0", "completion": "0"}},
+    ]
+}
+mock_resp_pricing = MagicMock()
+mock_resp_pricing.status_code = 200
+mock_resp_pricing.json.return_value = mock_models_pricing
+mock_resp_pricing.raise_for_status = MagicMock()
+
+with patch("requests.get", return_value=mock_resp_pricing):
     models = pipe.pipes()
-_assert(len(models) == 1, "pipes FREE_ONLY: only 1 free model")
-_assert(":free" in models[0]["id"].lower(), "pipes FREE_ONLY: is free model")
+_assert(len(models) == 2, "pipes FREE_ONLY: 2 free models (suffix + pricing)")
+free_ids = {m["id"] for m in models}
+_assert("google/gemini-2.0-flash-exp:free" in free_ids, "pipes FREE_ONLY: :free suffix model kept")
+_assert("google/gemma-3-1b-it" in free_ids, "pipes FREE_ONLY: pricing-based free model kept")
+_assert("openai/gpt-4o" not in free_ids, "pipes FREE_ONLY: paid model excluded")
 
 # 15c. Provider filter
 pipe.valves = Pipe.Valves(
@@ -690,15 +819,146 @@ with patch("requests.get", side_effect=req_lib.exceptions.Timeout("t")):
 _assert(models[0]["id"] == "error", "pipes timeout: error")
 _assert("timeout" in models[0]["name"].lower(), "pipes timeout: timeout in name")
 
-# 15h. HTTP error
+# 15h. Auth check returns 403
 mock_resp_err = MagicMock()
 mock_resp_err.status_code = 403
 mock_resp_err.json.return_value = {"error": {"message": "Forbidden"}}
-mock_resp_err.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=mock_resp_err)
 with patch("requests.get", return_value=mock_resp_err):
     models = pipe.pipes()
-_assert(models[0]["id"] == "error", "pipes HTTP error: error id")
-_assert("403" in models[0]["name"], "pipes HTTP error: status in name")
+_assert(models[0]["id"] == "error", "pipes auth check 403: error id")
+_assert("403" in models[0]["name"], "pipes auth check 403: status in name")
+
+# 15h2. HTTP error on models endpoint (auth passes, models returns 500)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_call_count_h2 = [0]
+_mock_models_500 = MagicMock()
+_mock_models_500.status_code = 500
+_mock_models_500.json.return_value = {"error": {"message": "Internal Server Error"}}
+_mock_models_500.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_models_500)
+
+def _side_effect_models_500(*args, **kwargs):
+    _call_count_h2[0] += 1
+    if _call_count_h2[0] == 1:  # auth check
+        _auth_ok = MagicMock()
+        _auth_ok.status_code = 200
+        return _auth_ok
+    return _mock_models_500
+
+with patch("requests.get", side_effect=_side_effect_models_500):
+    _call_count_h2[0] = 0
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes models HTTP 500: error id")
+_assert("500" in models[0]["name"], "pipes models HTTP 500: status in name")
+
+# 15i. Invalid API key — auth check returns 401
+mock_auth_401 = MagicMock()
+mock_auth_401.status_code = 401
+mock_auth_401.json.return_value = {"error": {"message": "User not found."}}
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
+with patch("requests.get", return_value=mock_auth_401):
+    models = pipe.pipes()
+_assert(len(models) == 1, "pipes invalid key 401: 1 error entry")
+_assert(models[0]["id"] == "error", "pipes invalid key 401: error id")
+_assert("Invalid API key" in models[0]["name"], "pipes invalid key 401: message")
+_assert("401" in models[0]["name"], "pipes invalid key 401: status code in message")
+_assert("User not found" in models[0]["name"], "pipes invalid key 401: detail in message")
+
+# 15j. Invalid API key — auth check returns 502 (malformed key)
+mock_auth_502 = MagicMock()
+mock_auth_502.status_code = 502
+mock_auth_502.json.return_value = {"error": {"message": "Failed to authenticate request with Clerk"}}
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
+with patch("requests.get", return_value=mock_auth_502):
+    models = pipe.pipes()
+_assert(len(models) == 1, "pipes invalid key 502: 1 error entry")
+_assert(models[0]["id"] == "error", "pipes invalid key 502: error id")
+_assert("Invalid API key" in models[0]["name"], "pipes invalid key 502: message")
+_assert("502" in models[0]["name"], "pipes invalid key 502: status code")
+
+# 15k. Auth check network error — should NOT block model fetching
+mock_models_resp = MagicMock()
+mock_models_resp.json.return_value = mock_models
+mock_models_resp.raise_for_status = MagicMock()
+mock_models_resp.status_code = 200
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+call_count = [0]
+
+def _side_effect_auth_timeout(*args, **kwargs):
+    call_count[0] += 1
+    if call_count[0] == 1:
+        raise req_lib.exceptions.ConnectionError("auth check failed")
+    return mock_models_resp
+
+with patch("requests.get", side_effect=_side_effect_auth_timeout):
+    models = pipe.pipes()
+_assert(len(models) == 3, "pipes auth error fallthrough: models still returned")
+_assert(models[0]["id"] == "openai/gpt-4o", "pipes auth error fallthrough: first model ok")
+
+# 15l. Empty data from API → "No models found"
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_mock_auth_ok_l = MagicMock()
+_mock_auth_ok_l.status_code = 200
+_mock_empty_data = MagicMock()
+_mock_empty_data.json.return_value = {"data": []}
+_mock_empty_data.raise_for_status = MagicMock()
+_call_ct_l = [0]
+
+def _side_effect_empty_data(*args, **kwargs):
+    _call_ct_l[0] += 1
+    if _call_ct_l[0] == 1:
+        return _mock_auth_ok_l
+    return _mock_empty_data
+
+with patch("requests.get", side_effect=_side_effect_empty_data):
+    _call_ct_l[0] = 0
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes empty data: error id")
+_assert("No models found" in models[0]["name"], "pipes empty data: correct message")
+
+# 15m. FREE_ONLY + all paid models → "No free models available"
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+_mock_all_paid = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
+    ]
+}
+_mock_resp_paid = MagicMock()
+_mock_resp_paid.json.return_value = _mock_all_paid
+_mock_resp_paid.raise_for_status = MagicMock()
+_call_ct_m = [0]
+
+def _side_effect_all_paid(*args, **kwargs):
+    _call_ct_m[0] += 1
+    if _call_ct_m[0] == 1:
+        _auth_ok = MagicMock()
+        _auth_ok.status_code = 200
+        return _auth_ok
+    return _mock_resp_paid
+
+with patch("requests.get", side_effect=_side_effect_all_paid):
+    _call_ct_m[0] = 0
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes FREE_ONLY no free: error id")
+_assert("No free models" in models[0]["name"], "pipes FREE_ONLY no free: correct message")
+
+# 15n. Provider filter + no matching providers → "No models match"
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="nonexistent")
+_call_ct_n = [0]
+
+def _side_effect_no_match(*args, **kwargs):
+    _call_ct_n[0] += 1
+    if _call_ct_n[0] == 1:
+        _auth_ok = MagicMock()
+        _auth_ok.status_code = 200
+        return _auth_ok
+    return mock_resp  # uses the original mock_resp with 3 models
+
+with patch("requests.get", side_effect=_side_effect_no_match):
+    _call_ct_n[0] = 0
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes provider no match: error id")
+_assert("No models match" in models[0]["name"], "pipes provider no match: correct message")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary

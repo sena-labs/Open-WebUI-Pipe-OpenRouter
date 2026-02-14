@@ -3,15 +3,13 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 0.2.0
+version: 1.0.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests, pydantic
 description: Access 300+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 22 provider icons, and configurable retry logic.
 """
-
-from __future__ import annotations
 
 import json
 import os
@@ -83,9 +81,9 @@ class Pipe:
         MODEL_PREFIX: Optional[str] = Field(
             default=None, description="Prefix shown in model names"
         )
-        MODEL_PROVIDERS: Optional[str] = Field(
-            default=os.getenv("OPENROUTER_MODEL_PROVIDERS"),
-            description="Comma-separated provider list to filter models",
+        MODEL_PROVIDERS: str = Field(
+            default=os.getenv("OPENROUTER_MODEL_PROVIDERS", "ALL"),
+            description="Provider filter (e.g. openai,google). Use ALL for all models",
         )
         INVERT_PROVIDER_LIST: bool = Field(
             default=os.getenv("OPENROUTER_INVERT_PROVIDER_LIST", "false").lower()
@@ -158,6 +156,30 @@ class Pipe:
         if not self.valves.OPENROUTER_API_KEY:
             return [{"id": "error", "name": "OpenRouter API key not configured"}]
 
+        # Validate API key before fetching models (the /models endpoint is
+        # public and succeeds even with invalid keys, so we verify via /auth/key)
+        auth_url = f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/auth/key"
+        try:
+            auth_resp = requests.get(
+                auth_url,
+                headers={"Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}"},
+                timeout=min(self.valves.REQUEST_TIMEOUT, 15),
+            )
+            if auth_resp.status_code != 200:
+                code = auth_resp.status_code
+                detail = ""
+                try:
+                    detail = auth_resp.json().get("error", {}).get("message", "")
+                except Exception:
+                    pass
+                msg = f"Invalid API key (HTTP {code})"
+                if detail:
+                    msg += f": {detail}"
+                msg += ". Check your OPENROUTER_API_KEY in valve settings."
+                return [{"id": "error", "name": msg}]
+        except Exception:
+            pass  # Network error; let the model fetch try and surface its own error
+
         headers = self._build_headers(include_content_type=False)
         try:
             response = requests.get(
@@ -191,8 +213,16 @@ class Pipe:
             if not model_id:
                 continue
 
-            if self.valves.FREE_ONLY and ":free" not in model_id.lower():
-                continue
+            if self.valves.FREE_ONLY:
+                is_free = ":free" in model_id.lower()
+                if not is_free:
+                    pricing = model.get("pricing") or {}
+                    is_free = (
+                        str(pricing.get("prompt", "")) == "0"
+                        and str(pricing.get("completion", "")) == "0"
+                    )
+                if not is_free:
+                    continue
 
             if provider_filter:
                 provider = model_id.split("/", 1)[0].lower()
@@ -265,11 +295,12 @@ class Pipe:
         return provider_icons.get(provider.lower())
 
     def _parse_provider_filter(self) -> Optional[set]:
-        if not self.valves.MODEL_PROVIDERS:
+        val = (self.valves.MODEL_PROVIDERS or "").strip()
+        if not val or val.upper() == "ALL":
             return None
         return {
             provider.strip().lower()
-            for provider in self.valves.MODEL_PROVIDERS.split(",")
+            for provider in val.split(",")
             if provider.strip()
         }
 
@@ -451,7 +482,7 @@ class Pipe:
                 if citations is not None:
                     latest_citations = citations
 
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
                 reasoning = delta.get("reasoning", "")
                 content = delta.get("content", "")
 
@@ -474,10 +505,22 @@ class Pipe:
             if rendered_citations:
                 yield rendered_citations
         except requests.exceptions.Timeout:
+            if in_think:
+                yield "\n</think>\n"
             yield f"OpenRouter Pipe Error: timeout {self.valves.REQUEST_TIMEOUT}s"
         except requests.exceptions.HTTPError as exc:
+            if in_think:
+                yield "\n</think>\n"
+            if exc.response is not None:
+                try:
+                    _ = exc.response.content  # Cache body before closing
+                except Exception:
+                    pass
+                exc.response.close()
             yield self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
+            if in_think:
+                yield "\n</think>\n"
             print(f"[OpenRouter Pipe] Stream error: {exc}")
             traceback.print_exc()
             yield f"OpenRouter Pipe Error: {exc}"

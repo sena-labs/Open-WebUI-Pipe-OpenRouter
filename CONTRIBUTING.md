@@ -23,10 +23,11 @@ python test_pipe.py
 ### Running Tests
 
 ```bash
-python test_pipe.py
+python test_pipe.py           # Unit tests (170 tests)
+python integration_test.py    # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
-All tests should pass. If adding new functionality, add corresponding tests.
+All unit tests must pass. If adding new functionality, add corresponding tests.
 
 ### Code Style
 
@@ -61,7 +62,7 @@ We use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ### PR Checklist
 
-- [ ] Tests pass (`python test_pipe.py` → 0 failures)
+- [ ] Tests pass (`python test_pipe.py` and `python integration_test.py` → 0 failures)
 - [ ] New features have corresponding tests
 - [ ] `CHANGELOG.md` updated
 - [ ] Code follows existing style conventions

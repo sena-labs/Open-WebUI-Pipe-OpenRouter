@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - 2026-02-13
+## [1.0.0] - 2026-02-14
 
 ### Added
 - Provider routing: sort by `price`/`throughput`/`latency`, preferred and ignored providers, `require_parameters`, data collection policy
@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-retry on timeout and connection errors (configurable `MAX_RETRIES`)
 - 22 provider icons (OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek, xAI, etc.)
 - Citation injection — `[n]` references replaced with markdown links
-- Comprehensive test suite covering all functions and error paths
+- Pre-flight API key validation via `/auth/key` — invalid keys are caught at model listing, not at chat time
+- Comprehensive test suite: 170 unit tests + 47 integration tests
+- GitHub Actions CI pipeline (Python 3.10–3.13)
+- Issue templates, security policy, and sponsor configuration
 
 ### Changed
 - `pipe()` is now `async` with `__user__` parameter (Open WebUI v0.4+)

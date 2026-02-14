@@ -1,0 +1,60 @@
+name: Bug Report
+description: Report a bug in OpenRouter Pipe
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the details below.
+
+  - type: input
+    id: owui-version
+    attributes:
+      label: Open WebUI Version
+      placeholder: "e.g. 0.4.5"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      placeholder: "e.g. 3.11.5"
+    validations:
+      required: true
+
+  - type: input
+    id: pipe-version
+    attributes:
+      label: Pipe Version
+      placeholder: "e.g. 1.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: What happened? What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs
+      description: "Check server logs for `[OpenRouter Pipe]` messages"
+      render: shell
