@@ -3,7 +3,7 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 1.0.0
+version: 1.1.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 
 # Keys injected by Open WebUI internals — must not be forwarded to OpenRouter
 _OWUI_INTERNAL_KEYS = frozenset(
-    {"chat_id", "title", "task", "task_id", "features", "citations"}
+    {"chat_id", "title", "task", "task_id", "features", "citations",
+     "metadata", "files", "tool_ids", "session_id", "message_id"}
 )
 
 
@@ -65,6 +66,7 @@ class Pipe:
         OPENROUTER_API_KEY: str = Field(
             default=os.getenv("OPENROUTER_API_KEY", ""),
             description="OpenRouter API key",
+            json_schema_extra={"input": {"type": "password"}},
         )
         OPENROUTER_BASE_URL: str = Field(
             default=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
@@ -73,6 +75,17 @@ class Pipe:
         REASONING_EFFORT: str = Field(
             default=os.getenv("OPENROUTER_REASONING_EFFORT", ""),
             description="Reasoning effort: empty=disabled, low, medium, high",
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "", "label": "Disabled"},
+                        {"value": "low", "label": "Low"},
+                        {"value": "medium", "label": "Medium"},
+                        {"value": "high", "label": "High"},
+                    ],
+                }
+            },
         )
         INCLUDE_REASONING: bool = Field(
             default=os.getenv("OPENROUTER_INCLUDE_REASONING", "true").lower() == "true",
@@ -97,6 +110,17 @@ class Pipe:
         PROVIDER_SORT: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_SORT", ""),
             description="Provider sort order: empty=default, price, throughput, latency",
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "", "label": "Default"},
+                        {"value": "price", "label": "Price"},
+                        {"value": "throughput", "label": "Throughput"},
+                        {"value": "latency", "label": "Latency"},
+                    ],
+                }
+            },
         )
         PROVIDER_ORDER: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_ORDER", ""),
@@ -114,6 +138,15 @@ class Pipe:
         DATA_COLLECTION: str = Field(
             default=os.getenv("OPENROUTER_DATA_COLLECTION", "allow"),
             description="Provider data collection policy: allow or deny",
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "allow", "label": "Allow"},
+                        {"value": "deny", "label": "Deny"},
+                    ],
+                }
+            },
         )
         FALLBACK_MODELS: str = Field(
             default=os.getenv("OPENROUTER_FALLBACK_MODELS", ""),
@@ -253,10 +286,21 @@ class Pipe:
         return models
 
     async def pipe(
-        self, body: dict, __user__: Optional[dict] = None
+        self,
+        body: dict,
+        __user__: Optional[dict] = None,
+        __event_emitter__=None,
     ) -> Union[str, Generator[str, None, None]]:
         if not self.valves.OPENROUTER_API_KEY:
             return "OpenRouter Pipe Error: OPENROUTER_API_KEY not configured"
+
+        if __event_emitter__:
+            await __event_emitter__(
+                {
+                    "type": "status",
+                    "data": {"description": "Querying OpenRouter...", "done": False},
+                }
+            )
 
         payload = self._prepare_payload(body)
         headers = self._build_headers()
@@ -264,7 +308,15 @@ class Pipe:
 
         if stream:
             return self._stream_response(headers, payload)
-        return self._non_stream_response(headers, payload)
+
+        result = self._non_stream_response(headers, payload)
+
+        if __event_emitter__:
+            await __event_emitter__(
+                {"type": "status", "data": {"description": "", "done": True}}
+            )
+
+        return result
 
     def _get_provider_icon(self, provider: str) -> Optional[str]:
         """Return icon URL for the given provider."""

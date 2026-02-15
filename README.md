@@ -2,7 +2,7 @@
 
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a1b2e,100:2d1b69&height=180&section=header&text=OpenRouter%20Pipe&fontColor=a78bfa&fontSize=42&animation=fadeIn&fontAlignY=36&desc=Open%20WebUI%20%E2%86%94%20OpenRouter%20Integration&descAlignY=56&descColor=8b5cf6" width="100%"/>
 
-<a href="https://github.com/sena-labs/OpenRouter-Pipe"><img src="https://img.shields.io/badge/version-1.0.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
+<a href="https://github.com/sena-labs/OpenRouter-Pipe"><img src="https://img.shields.io/badge/version-1.1.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-≥3.10-0d1117?style=for-the-badge&logo=python&logoColor=white&labelColor=3776AB" alt="python"></a>&nbsp;
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
 <a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
@@ -145,7 +145,7 @@ Open WebUI ↔️ Pipe.pipe()    → chat completions via OpenRouter /chat/compl
 | Method | Description |
 |--------|-------------|
 | `pipes()` | Fetches and filters the model catalog from OpenRouter |
-| `pipe(body, __user__)` | Routes chat completion to stream or non-stream handler |
+| `pipe(body, __user__, __event_emitter__)` | Routes chat completion to stream or non-stream handler, emits status events |
 | `_prepare_payload(body)` | Sanitizes OWUI internals, injects provider routing, reasoning, fallbacks |
 | `_stream_response(headers, payload)` | SSE parser with `<think>` management and mid-stream error recovery |
 | `_non_stream_response(headers, payload)` | JSON response handler with body-level error detection |
@@ -157,7 +157,10 @@ Open WebUI ↔️ Pipe.pipe()    → chat completions via OpenRouter /chat/compl
 The pipe strips these Open WebUI internal keys before forwarding to OpenRouter:
 
 ```python
-_OWUI_INTERNAL_KEYS = {"chat_id", "title", "task", "task_id", "features", "citations"}
+_OWUI_INTERNAL_KEYS = {
+    "chat_id", "title", "task", "task_id", "features", "citations",
+    "metadata", "files", "tool_ids", "session_id", "message_id"
+}
 ```
 
 It also removes `user` when sent as a dict (OWUI format) since OpenRouter expects a string.
@@ -181,7 +184,7 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 OpenRouter-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Unit test suite (170 tests)
+├── test_pipe.py            # Unit test suite (193 tests)
 ├── integration_test.py     # Live API integration tests (47 tests)
 ├── TESTING.md              # Pre-release testing checklist
 ├── SECURITY.md             # Security policy and vulnerability reporting
@@ -214,8 +217,9 @@ Tests cover:
 - Stream response (reasoning tags, mid-stream errors, auto-close, citations)
 - Non-stream response (API errors, empty choices, timeout handling)
 - Retry logic (success, retry on timeout, exhaustion, HTTPError passthrough)
-- Async `pipe()` entry point (stream/non-stream routing)
+- Async `pipe()` entry point (stream/non-stream routing, event emitter)
 - Model listing (`pipes()`) with filters, prefix, error handling
+- Valve `json_schema_extra` validation (password, dropdown menus)
 
 ---
 

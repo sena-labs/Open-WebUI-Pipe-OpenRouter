@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for OpenRouter Pipe v1.0.0
+Comprehensive test suite for OpenRouter Pipe v1.1.0
 Runs with: python test_pipe.py
 
 Author: Sena Labs (https://github.com/sena-labs)
@@ -186,6 +186,11 @@ body = {
     "task_id": "tid1",
     "features": {"web_search": True},
     "citations": True,
+    "metadata": {"session_id": "s1"},
+    "files": [{"id": "f1"}],
+    "tool_ids": ["tool1"],
+    "session_id": "s1",
+    "message_id": "m1",
     # user as dict (OWUI sends this)
     "user": {"id": "u1", "name": "Tester"},
 }
@@ -198,6 +203,11 @@ _assert("task" not in payload, "task stripped")
 _assert("task_id" not in payload, "task_id stripped")
 _assert("features" not in payload, "features stripped")
 _assert("citations" not in payload, "citations (OWUI) stripped")
+_assert("metadata" not in payload, "metadata stripped")
+_assert("files" not in payload, "files stripped")
+_assert("tool_ids" not in payload, "tool_ids stripped")
+_assert("session_id" not in payload, "session_id stripped")
+_assert("message_id" not in payload, "message_id stripped")
 _assert("user" not in payload, "dict user stripped")
 _assert(payload["model"] == "google/gemini-2.0-flash-exp", "model prefix removed")
 _assert(payload.get("include_reasoning") is True, "include_reasoning set")
@@ -694,6 +704,65 @@ async def _test_pipe_no_key():
 res = asyncio.run(_test_pipe_no_key())
 _assert("OPENROUTER_API_KEY" in res, "pipe: missing key error")
 
+# 14a2. __event_emitter__ is called for non-stream
+async def _test_pipe_event_emitter_non_stream():
+    mock_resp_ev = MagicMock()
+    mock_resp_ev.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    events = []
+    async def _emitter(event):
+        events.append(event)
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    with patch.object(p, "_retryable_request", return_value=mock_resp_ev):
+        result = await p.pipe(
+            {"model": "openai/gpt-4o", "messages": [], "stream": False},
+            __event_emitter__=_emitter,
+        )
+    return result, events
+
+res_ev, events_ev = asyncio.run(_test_pipe_event_emitter_non_stream())
+_assert(len(events_ev) == 2, "pipe event_emitter: 2 events (start + done)")
+_assert(events_ev[0]["type"] == "status", "pipe event_emitter: first event is status")
+_assert(events_ev[0]["data"]["done"] is False, "pipe event_emitter: first event not done")
+_assert(events_ev[1]["data"]["done"] is True, "pipe event_emitter: second event done")
+_assert("ok" in res_ev, "pipe event_emitter: content returned correctly")
+
+# 14a3. __event_emitter__ is called for stream (start only)
+async def _test_pipe_event_emitter_stream():
+    sse = _make_sse_response([
+        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]}).encode(),
+        b"data: [DONE]",
+    ])
+    events = []
+    async def _emitter(event):
+        events.append(event)
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    with patch.object(p, "_retryable_request", return_value=sse):
+        result = await p.pipe(
+            {"model": "openai/gpt-4o", "messages": [], "stream": True},
+            __event_emitter__=_emitter,
+        )
+        chunks = list(result)
+    return "".join(chunks), events
+
+res_s, events_s = asyncio.run(_test_pipe_event_emitter_stream())
+_assert(len(events_s) == 1, "pipe stream event_emitter: 1 event (start only)")
+_assert(events_s[0]["data"]["done"] is False, "pipe stream event_emitter: start not done")
+_assert("Hi" in res_s, "pipe stream event_emitter: content correct")
+
+# 14a4. pipe works without __event_emitter__ (backward compat)
+async def _test_pipe_no_emitter():
+    mock_resp_ne = MagicMock()
+    mock_resp_ne.json.return_value = {"choices": [{"message": {"content": "compat"}}]}
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    with patch.object(p, "_retryable_request", return_value=mock_resp_ne):
+        return await p.pipe({"model": "openai/gpt-4o", "messages": [], "stream": False})
+
+res_ne = asyncio.run(_test_pipe_no_emitter())
+_assert("compat" in res_ne, "pipe no emitter: backward compatible")
+
 # 14b. Non-stream returns string
 mock_json_ok = {
     "choices": [{"message": {"content": "Hello!"}}],
@@ -959,6 +1028,46 @@ with patch("requests.get", side_effect=_side_effect_no_match):
     models = pipe.pipes()
 _assert(models[0]["id"] == "error", "pipes provider no match: error id")
 _assert("No models match" in models[0]["name"], "pipes provider no match: correct message")
+
+# ── 16. Valve json_schema_extra ──────────────────────────────────────────────
+
+_section("16. Valve json_schema_extra")
+
+# 16a. API key uses password input type
+api_key_field = Pipe.Valves.model_fields["OPENROUTER_API_KEY"]
+_assert(
+    api_key_field.json_schema_extra is not None,
+    "API key: json_schema_extra present",
+)
+_assert(
+    api_key_field.json_schema_extra.get("input", {}).get("type") == "password",
+    "API key: input type is password",
+)
+
+# 16b. REASONING_EFFORT uses select with 4 options
+re_field = Pipe.Valves.model_fields["REASONING_EFFORT"]
+_assert(
+    re_field.json_schema_extra is not None,
+    "REASONING_EFFORT: json_schema_extra present",
+)
+re_options = re_field.json_schema_extra.get("input", {}).get("options", [])
+_assert(len(re_options) == 4, "REASONING_EFFORT: 4 options (disabled, low, medium, high)")
+re_values = [o["value"] for o in re_options]
+_assert("" in re_values and "high" in re_values, "REASONING_EFFORT: contains empty and high")
+
+# 16c. PROVIDER_SORT uses select with 4 options
+ps_field = Pipe.Valves.model_fields["PROVIDER_SORT"]
+ps_options = ps_field.json_schema_extra.get("input", {}).get("options", [])
+_assert(len(ps_options) == 4, "PROVIDER_SORT: 4 options")
+ps_values = [o["value"] for o in ps_options]
+_assert("price" in ps_values and "latency" in ps_values, "PROVIDER_SORT: price and latency")
+
+# 16d. DATA_COLLECTION uses select with 2 options
+dc_field = Pipe.Valves.model_fields["DATA_COLLECTION"]
+dc_options = dc_field.json_schema_extra.get("input", {}).get("options", [])
+_assert(len(dc_options) == 2, "DATA_COLLECTION: 2 options")
+dc_values = [o["value"] for o in dc_options]
+_assert("allow" in dc_values and "deny" in dc_values, "DATA_COLLECTION: allow and deny")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
