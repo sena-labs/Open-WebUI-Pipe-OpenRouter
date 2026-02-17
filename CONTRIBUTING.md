@@ -23,7 +23,7 @@ python test_pipe.py
 ### Running Tests
 
 ```bash
-python test_pipe.py           # Unit tests (170 tests)
+python test_pipe.py           # Unit tests (195 tests)
 python integration_test.py    # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

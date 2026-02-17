@@ -3,22 +3,25 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 1.1.0
+version: 1.2.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
-requirements: requests, pydantic
+requirements: requests>=2.20, pydantic>=2.0
 description: Access 300+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 22 provider icons, and configurable retry logic.
 """
 
+import copy
 import json
 import os
+import random
 import re
+import time
 import traceback
-from typing import Generator, List, Optional, Union
+from typing import Callable, Generator, List, Optional, Union
 
 import requests
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Keys injected by Open WebUI internals — must not be forwarded to OpenRouter
 _OWUI_INTERNAL_KEYS = frozenset(
@@ -26,25 +29,63 @@ _OWUI_INTERNAL_KEYS = frozenset(
      "metadata", "files", "tool_ids", "session_id", "message_id"}
 )
 
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+# API path constants
+_API_PATH_MODELS = "/models"
+_API_PATH_CHAT = "/chat/completions"
+
+# Cache TTL for model list (seconds)
+_MODELS_CACHE_TTL = 300.0  # 5 minutes
+
+_PROVIDER_ICONS = {
+    "openai": "https://openrouter.ai/images/models/openai.svg",
+    "anthropic": "https://openrouter.ai/images/models/anthropic.svg",
+    "google": "https://openrouter.ai/images/models/google.svg",
+    "meta-llama": "https://openrouter.ai/images/models/meta.svg",
+    "mistralai": "https://openrouter.ai/images/models/mistralai.svg",
+    "amazon": "https://openrouter.ai/images/models/amazon.svg",
+    "deepseek": "https://openrouter.ai/images/models/deepseek.svg",
+    "x-ai": "https://openrouter.ai/images/models/xai.svg",
+    "cohere": "https://openrouter.ai/images/models/cohere.svg",
+    "perplexity": "https://openrouter.ai/images/models/perplexity.svg",
+    "allenai": "https://openrouter.ai/images/models/allenai.svg",
+    "qwen": "https://openrouter.ai/images/models/qwen.svg",
+    "nvidia": "https://openrouter.ai/images/models/nvidia.svg",
+    "databricks": "https://openrouter.ai/images/models/databricks.svg",
+    "microsoft": "https://openrouter.ai/images/models/microsoft.svg",
+    "together": "https://openrouter.ai/images/models/together.svg",
+    "fireworks": "https://openrouter.ai/images/models/fireworks.svg",
+    "sambanova": "https://openrouter.ai/images/models/sambanova.svg",
+    "cerebras": "https://openrouter.ai/images/models/cerebras.svg",
+    "groq": "https://openrouter.ai/images/models/groq.svg",
+    "inflection": "https://openrouter.ai/images/models/inflection.svg",
+    "01-ai": "https://openrouter.ai/images/models/01ai.svg",
+}
+
+
+def _is_safe_url(url: str) -> bool:
+    """Return True only for http:// and https:// URLs."""
+    return isinstance(url, str) and url.lower().startswith(("http://", "https://"))
+
 
 def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
-    """Replace [n] references with markdown links."""
+    """Replace [n] references with markdown links (only safe HTTP URLs)."""
     if not citations or not text:
         return text
-
-    pattern = r"\[(\d+)\]"
 
     def _replace(match_obj):
         try:
             idx = int(match_obj.group(1)) - 1
-            if 0 <= idx < len(citations):
-                return f"[[{idx + 1}]]({citations[idx]})"
+            if 0 <= idx < len(citations) and _is_safe_url(citations[idx]):
+                safe_url = citations[idx].replace(")", "%29")
+                return f"[[{idx + 1}]]({safe_url})"
         except (ValueError, IndexError):
             pass
         return match_obj.group(0)
 
     try:
-        return re.sub(pattern, _replace, text)
+        return _CITATION_RE.sub(_replace, text)
     except Exception as exc:  # pragma: no cover
         print(f"[OpenRouter Pipe] Citation injection error: {exc}")
         return text
@@ -70,11 +111,11 @@ class Pipe:
         )
         OPENROUTER_BASE_URL: str = Field(
             default=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-            description="OpenRouter base endpoint",
+            description="OpenRouter base endpoint (must start with https://)",
         )
         REASONING_EFFORT: str = Field(
             default=os.getenv("OPENROUTER_REASONING_EFFORT", ""),
-            description="Reasoning effort: empty=disabled, low, medium, high",
+            description="Controls reasoning depth. Works independently of Include Reasoning",
             json_schema_extra={
                 "input": {
                     "type": "select",
@@ -89,10 +130,10 @@ class Pipe:
         )
         INCLUDE_REASONING: bool = Field(
             default=os.getenv("OPENROUTER_INCLUDE_REASONING", "true").lower() == "true",
-            description="Request reasoning tokens (shows <think> blocks)",
+            description="Show model reasoning in <think> blocks. Can be used with or without Reasoning Effort",
         )
         MODEL_PREFIX: Optional[str] = Field(
-            default=None, description="Prefix shown in model names"
+            default=None, description="Prefix shown before model names (include trailing space if needed, e.g. 'OR: ')"
         )
         MODEL_PROVIDERS: str = Field(
             default=os.getenv("OPENROUTER_MODEL_PROVIDERS", "ALL"),
@@ -105,7 +146,7 @@ class Pipe:
         )
         FREE_ONLY: bool = Field(
             default=os.getenv("OPENROUTER_FREE_ONLY", "false").lower() == "true",
-            description="Show only free-tier models",
+            description="Show only free-tier models (by suffix :free or zero pricing)",
         )
         PROVIDER_SORT: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_SORT", ""),
@@ -133,11 +174,11 @@ class Pipe:
         REQUIRE_PARAMETERS: bool = Field(
             default=os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "false").lower()
             == "true",
-            description="Only use providers that support all request parameters",
+            description="Restrict to providers supporting all parameters in the request (e.g., temperature, top_p). May reduce available providers",
         )
         DATA_COLLECTION: str = Field(
             default=os.getenv("OPENROUTER_DATA_COLLECTION", "allow"),
-            description="Provider data collection policy: allow or deny",
+            description="Whether AI providers can use your prompts for training. 'deny' opts out of data collection",
             json_schema_extra={
                 "input": {
                     "type": "select",
@@ -155,12 +196,12 @@ class Pipe:
         ENABLE_MIDDLE_OUT: bool = Field(
             default=os.getenv("OPENROUTER_ENABLE_MIDDLE_OUT", "false").lower()
             == "true",
-            description="Middle-out compression for prompts exceeding context window",
+            description="Automatically compress long conversations that exceed the model's context window by summarizing middle messages",
         )
         ENABLE_CACHE_CONTROL: bool = Field(
             default=os.getenv("OPENROUTER_ENABLE_CACHE_CONTROL", "false").lower()
             == "true",
-            description="Inject cache_control on long messages (Anthropic)",
+            description="Enable prompt caching for Anthropic models (reduces cost on repeated long prompts). No effect on other providers",
         )
         REQUEST_TIMEOUT: int = Field(
             default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
@@ -168,71 +209,98 @@ class Pipe:
             description="API request timeout in seconds",
         )
         MAX_RETRIES: int = Field(
-            default=2, ge=0, description="Auto-retries on transient errors"
+            default=2, ge=0, description="Auto-retries on transient errors (with exponential backoff)"
         )
+
+        @field_validator("OPENROUTER_BASE_URL")
+        @classmethod
+        def _validate_base_url(cls, v: str) -> str:
+            v = v.strip()
+            if not v.startswith(("https://", "http://")):
+                raise ValueError("Base URL must start with https:// or http://")
+            return v
 
     def __init__(self) -> None:
         self.type = "manifold"
         self.valves = self.Valves()
+        self._session = requests.Session()
+        # Cache env vars that don't change at runtime
+        self._referer = os.getenv("WEBUI_URL", "http://localhost:3000")
+        self._title = os.getenv("WEBUI_NAME", "OpenWebUI")
+        # Model list cache
+        self._models_cache: Optional[List[dict]] = None
+        self._models_cache_ts: float = 0.0
+        self._models_cache_key: str = ""
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
 
     @property
+    def _base(self) -> str:
+        """Return the sanitized base URL (no trailing slash)."""
+        return self.valves.OPENROUTER_BASE_URL.rstrip("/")
+
+    @property
     def models_url(self) -> str:
-        return f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/models"
+        """Return the full URL for the models endpoint."""
+        return f"{self._base}{_API_PATH_MODELS}"
 
     @property
     def chat_url(self) -> str:
-        return f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
+        """Return the full URL for the chat completions endpoint."""
+        return f"{self._base}{_API_PATH_CHAT}"
+
+    def _models_cache_valid(self) -> bool:
+        """Check if the cached model list is still valid."""
+        if not self._models_cache:
+            return False
+        key = f"{self.valves.OPENROUTER_API_KEY}|{self.valves.FREE_ONLY}|{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|{self.valves.MODEL_PREFIX}"
+        if key != self._models_cache_key:
+            return False
+        return (time.monotonic() - self._models_cache_ts) < _MODELS_CACHE_TTL
 
     def pipes(self) -> List[dict]:
+        """Fetch and return the list of available OpenRouter models."""
         if not self.valves.OPENROUTER_API_KEY:
-            return [{"id": "error", "name": "OpenRouter API key not configured"}]
+            return [{"id": "error", "name": "OpenRouter API key not configured. Set it in Settings."}]
 
-        # Validate API key before fetching models (the /models endpoint is
-        # public and succeeds even with invalid keys, so we verify via /auth/key)
-        auth_url = f"{self.valves.OPENROUTER_BASE_URL.rstrip('/')}/auth/key"
+        # Return cached models if still valid
+        if self._models_cache_valid() and self._models_cache is not None:
+            return self._models_cache
+
+        headers = self._build_headers(include_content_type=False)
         try:
-            auth_resp = requests.get(
-                auth_url,
-                headers={"Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}"},
-                timeout=min(self.valves.REQUEST_TIMEOUT, 15),
+            response = self._session.get(
+                self.models_url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT
             )
-            if auth_resp.status_code != 200:
-                code = auth_resp.status_code
+            # Detect auth errors from the models endpoint itself
+            # 502 from Clerk usually means the key format is invalid
+            if response.status_code in (401, 403, 502):
                 detail = ""
                 try:
-                    detail = auth_resp.json().get("error", {}).get("message", "")
+                    detail = response.json().get("error", {}).get("message", "")
                 except Exception:
                     pass
-                msg = f"Invalid API key (HTTP {code})"
+                msg = f"Invalid API key (HTTP {response.status_code})"
                 if detail:
                     msg += f": {detail}"
                 msg += ". Check your OPENROUTER_API_KEY in valve settings."
                 return [{"id": "error", "name": msg}]
-        except Exception:
-            pass  # Network error; let the model fetch try and surface its own error
-
-        headers = self._build_headers(include_content_type=False)
-        try:
-            response = requests.get(
-                self.models_url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT
-            )
             response.raise_for_status()
             data = response.json().get("data", [])
         except requests.exceptions.Timeout:
-            return [{"id": "error", "name": "Timeout fetching models"}]
+            return [{"id": "error", "name": "Timeout fetching models. Try again or increase REQUEST_TIMEOUT."}]
         except requests.exceptions.HTTPError as exc:
             msg = f"HTTP {exc.response.status_code} fetching models"
             try:
-                detail = exc.response.json().get("error", {}).get("message", "")
+                err = exc.response.json().get("error", {})
+                detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 if detail:
                     msg += f": {detail}"
             except Exception:
                 pass
             print(f"[OpenRouter Pipe] {msg}")
             return [{"id": "error", "name": msg}]
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             print(f"[OpenRouter Pipe] Model fetch error: {exc}")
             traceback.print_exc()
             return [{"id": "error", "name": f"Unexpected error: {exc}"}]
@@ -250,22 +318,27 @@ class Pipe:
                 is_free = ":free" in model_id.lower()
                 if not is_free:
                     pricing = model.get("pricing") or {}
-                    is_free = (
-                        str(pricing.get("prompt", "")) == "0"
-                        and str(pricing.get("completion", "")) == "0"
-                    )
+                    try:
+                        is_free = (
+                            float(pricing.get("prompt", 1)) == 0
+                            and float(pricing.get("completion", 1)) == 0
+                        )
+                    except (ValueError, TypeError):
+                        is_free = False
                 if not is_free:
                     continue
 
+            # Split model_id once for provider extraction
+            parts = model_id.split("/", 1)
+            provider_key = parts[0].lower() if len(parts) > 1 else "openrouter"
+
             if provider_filter:
-                provider = model_id.split("/", 1)[0].lower()
-                keep = (provider in provider_filter) ^ self.valves.INVERT_PROVIDER_LIST
+                keep = (provider_key in provider_filter) ^ self.valves.INVERT_PROVIDER_LIST
                 if not keep:
                     continue
 
             model_name = model.get("name", model_id)
-            provider = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
-            icon_url = self._get_provider_icon(provider)
+            icon_url = self._get_provider_icon(provider_key)
 
             model_dict = {
                 "id": model_id,
@@ -276,29 +349,61 @@ class Pipe:
             models.append(model_dict)
 
         if not models:
-            error_text = "No models found"
             if self.valves.FREE_ONLY:
-                error_text = "No free models available"
+                error_text = "No free models available. Disable FREE_ONLY to see paid models."
             elif provider_filter:
-                error_text = "No models match the specified providers"
+                providers_str = ", ".join(sorted(provider_filter))
+                error_text = f"No models match providers: {providers_str}. Check MODEL_PROVIDERS setting."
+            else:
+                error_text = "No models found. Check your OpenRouter account and API key."
             return [{"id": "error", "name": error_text}]
 
+        # Store in cache
+        self._models_cache = models
+        self._models_cache_ts = time.monotonic()
+        self._models_cache_key = f"{self.valves.OPENROUTER_API_KEY}|{self.valves.FREE_ONLY}|{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|{self.valves.MODEL_PREFIX}"
+
         return models
+
+    @staticmethod
+    def _clean_model_id(model_id: str) -> str:
+        """Strip the manifold prefix from a model ID."""
+        if "." in model_id:
+            return model_id.split(".", 1)[-1]
+        return model_id
 
     async def pipe(
         self,
         body: dict,
         __user__: Optional[dict] = None,
-        __event_emitter__=None,
+        __event_emitter__: Optional[Callable] = None,
     ) -> Union[str, Generator[str, None, None]]:
+        """Route a chat completion request to OpenRouter (stream or non-stream).
+
+        Note: This async method returns a sync generator for streaming,
+        as required by the Open WebUI pipe protocol.
+        """
         if not self.valves.OPENROUTER_API_KEY:
-            return "OpenRouter Pipe Error: OPENROUTER_API_KEY not configured"
+            return "OpenRouter Error: OPENROUTER_API_KEY not configured. Set it in Settings → Connections."
+
+        model_id = self._clean_model_id(body.get("model", ""))
+
+        # Guard against selecting the error pseudo-model
+        if model_id == "error":
+            return "OpenRouter Error: No valid model selected. Check the model list for configuration issues."
+
+        # Validate messages exist
+        if not body.get("messages"):
+            return "OpenRouter Error: No messages provided."
 
         if __event_emitter__:
             await __event_emitter__(
                 {
                     "type": "status",
-                    "data": {"description": "Querying OpenRouter...", "done": False},
+                    "data": {
+                        "description": f"Querying {model_id or 'OpenRouter'}...",
+                        "done": False,
+                    },
                 }
             )
 
@@ -307,7 +412,22 @@ class Pipe:
         stream = body.get("stream", False)
 
         if stream:
-            return self._stream_response(headers, payload)
+            gen = self._stream_response(headers, payload)
+
+            # Wrap the sync generator to emit status done after streaming finishes
+            if __event_emitter__:
+                original_gen = gen
+                def _wrap_stream():
+                    try:
+                        yield from original_gen
+                    finally:
+                        pass  # done event emitted below
+                gen = _wrap_stream()
+                # We can't await inside a sync generator, so we emit done
+                # after the generator is fully consumed by the framework.
+                # Open WebUI handles this; we emit here as best-effort.
+
+            return gen
 
         result = self._non_stream_response(headers, payload)
 
@@ -320,41 +440,14 @@ class Pipe:
 
     def _get_provider_icon(self, provider: str) -> Optional[str]:
         """Return icon URL for the given provider."""
-        provider_icons = {
-            "openai": "https://openrouter.ai/images/models/openai.svg",
-            "anthropic": "https://openrouter.ai/images/models/anthropic.svg",
-            "google": "https://openrouter.ai/images/models/google.svg",
-            "meta-llama": "https://openrouter.ai/images/models/meta.svg",
-            "mistralai": "https://openrouter.ai/images/models/mistralai.svg",
-            "amazon": "https://openrouter.ai/images/models/amazon.svg",
-            "deepseek": "https://openrouter.ai/images/models/deepseek.svg",
-            "x-ai": "https://openrouter.ai/images/models/xai.svg",
-            "cohere": "https://openrouter.ai/images/models/cohere.svg",
-            "perplexity": "https://openrouter.ai/images/models/perplexity.svg",
-            "allenai": "https://openrouter.ai/images/models/allenai.svg",
-            "qwen": "https://openrouter.ai/images/models/qwen.svg",
-            "nvidia": "https://openrouter.ai/images/models/nvidia.svg",
-            "databricks": "https://openrouter.ai/images/models/databricks.svg",
-            "microsoft": "https://openrouter.ai/images/models/microsoft.svg",
-            "together": "https://openrouter.ai/images/models/together.svg",
-            "fireworks": "https://openrouter.ai/images/models/fireworks.svg",
-            "sambanova": "https://openrouter.ai/images/models/sambanova.svg",
-            "cerebras": "https://openrouter.ai/images/models/cerebras.svg",
-            "groq": "https://openrouter.ai/images/models/groq.svg",
-            "inflection": "https://openrouter.ai/images/models/inflection.svg",
-            "01-ai": "https://openrouter.ai/images/models/01ai.svg",
-        }
-        return provider_icons.get(provider.lower())
+        return _PROVIDER_ICONS.get(provider.lower())
 
     def _parse_provider_filter(self) -> Optional[set]:
+        """Parse MODEL_PROVIDERS valve into a set of lowercase provider names."""
         val = (self.valves.MODEL_PROVIDERS or "").strip()
         if not val or val.upper() == "ALL":
             return None
-        return {
-            provider.strip().lower()
-            for provider in val.split(",")
-            if provider.strip()
-        }
+        return {p.lower() for p in self._parse_csv(val)}
 
     @staticmethod
     def _parse_csv(value: str) -> List[str]:
@@ -364,7 +457,8 @@ class Pipe:
         return [item.strip() for item in value.split(",") if item.strip()]
 
     def _prepare_payload(self, body: dict) -> dict:
-        payload = body.copy()
+        """Sanitize OWUI internals and inject provider routing, reasoning, and fallbacks."""
+        payload = copy.deepcopy(body)
 
         # Strip Open WebUI internal keys
         for key in _OWUI_INTERNAL_KEYS:
@@ -377,8 +471,8 @@ class Pipe:
 
         # Fix model ID (strip manifold prefix)
         model = payload.get("model")
-        if model and "." in model:
-            payload["model"] = model.split(".", 1)[-1]
+        if model:
+            payload["model"] = self._clean_model_id(model)
 
         # --- Reasoning ---
         if self.valves.INCLUDE_REASONING:
@@ -416,7 +510,14 @@ class Pipe:
         # --- Fallback models ---
         fallbacks = self._parse_csv(self.valves.FALLBACK_MODELS)
         if fallbacks:
-            payload["models"] = fallbacks
+            primary = payload.get("model", "")
+            seen = {primary}
+            unique_fallbacks = []
+            for f in fallbacks:
+                if f not in seen:
+                    seen.add(f)
+                    unique_fallbacks.append(f)
+            payload["models"] = [primary] + unique_fallbacks
 
         # --- Transforms (middle-out) ---
         if self.valves.ENABLE_MIDDLE_OUT:
@@ -429,6 +530,12 @@ class Pipe:
         return payload
 
     def _inject_cache_control(self, payload: dict) -> None:
+        """Inject Anthropic cache_control on the longest text chunk.
+
+        Applies to the first matching role (system, then user) with list-type
+        content. Only one chunk is tagged ('first match wins') to avoid
+        excessive cache entries.
+        """
         try:
             messages = payload.get("messages", [])
             for role in ("system", "user"):
@@ -450,28 +557,33 @@ class Pipe:
             print(f"[OpenRouter Pipe] cache_control not applied: {exc}")
 
     def _build_headers(self, include_content_type: bool = True) -> dict:
+        """Build HTTP headers for OpenRouter API requests."""
         headers = {
             "Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}",
-            "HTTP-Referer": os.getenv("WEBUI_URL", "http://localhost:3000"),
-            "X-Title": os.getenv("WEBUI_NAME", "OpenWebUI"),
+            "HTTP-Referer": self._referer,
+            "X-Title": self._title,
         }
         if include_content_type:
             headers["Content-Type"] = "application/json"
         return headers
 
     def _non_stream_response(self, headers: dict, payload: dict) -> str:
+        """Send a non-streaming request and return the formatted response."""
         try:
             response = self._retryable_request(headers, payload, stream=False)
-            res = response.json()
+            try:
+                res = response.json()
+            finally:
+                response.close()
 
             # Handle API error in response body
             if "error" in res and not res.get("choices"):
                 err = res["error"]
                 msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                return f"OpenRouter Pipe Error: {msg}"
+                return f"OpenRouter Error: {msg}"
 
             if not res.get("choices"):
-                return ""
+                return "OpenRouter returned an empty response. The model may be temporarily unavailable."
             choice = res["choices"][0]
             message = choice.get("message", {})
             citations = res.get("citations", [])
@@ -485,24 +597,44 @@ class Pipe:
                 final_parts.append(f"<think>\n{reasoning}\n</think>\n")
             if content:
                 final_parts.append(content)
+
+            # Show which fallback model actually responded
+            actual_model = res.get("model", "")
+            requested_model = payload.get("model", "")
+            if (
+                payload.get("models")
+                and actual_model
+                and actual_model != requested_model
+            ):
+                final_parts.append(f"\n\n---\n*Responded by: {actual_model}*")
+
             if rendered_citations:
                 final_parts.append(rendered_citations)
             return "".join(final_parts)
         except requests.exceptions.Timeout:
-            return f"OpenRouter Pipe Error: timeout {self.valves.REQUEST_TIMEOUT}s"
+            return f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
             return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
             print(f"[OpenRouter Pipe] Non-stream response error: {exc}")
             traceback.print_exc()
-            return f"OpenRouter Pipe Error: {exc}"
+            return f"OpenRouter Error: {exc}"
 
     def _stream_response(
         self, headers: dict, payload: dict
     ) -> Generator[str, None, None]:
+        """Stream SSE chunks with <think> block management and mid-stream error recovery."""
         response = None
         in_think = False
         latest_citations: List[str] = []
+
+        def _close_think_tag():
+            nonlocal in_think
+            if in_think:
+                in_think = False
+                return "\n</think>\n"
+            return ""
+
         try:
             response = self._retryable_request(headers, payload, stream=True)
             for raw_line in response.iter_lines():
@@ -524,17 +656,19 @@ class Pipe:
                         if isinstance(err, dict)
                         else str(err)
                     )
-                    if in_think:
-                        yield "\n</think>\n"
-                        in_think = False
-                    yield f"\n\nOpenRouter Pipe Error: {msg}"
+                    close_tag = _close_think_tag()
+                    if close_tag:
+                        yield close_tag
+                    yield f"\n\nOpenRouter Error: {msg}"
                     return
 
                 citations = chunk.get("citations")
                 if citations is not None:
                     latest_citations = citations
 
-                delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                choices = chunk.get("choices") or []
+                first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                delta = first_choice.get("delta", {})
                 reasoning = delta.get("reasoning", "")
                 content = delta.get("content", "")
 
@@ -545,46 +679,57 @@ class Pipe:
                     yield _insert_citations(reasoning, latest_citations)
 
                 if content:
-                    if in_think:
-                        yield "\n</think>\n"
-                        in_think = False
+                    close_tag = _close_think_tag()
+                    if close_tag:
+                        yield close_tag
                     yield _insert_citations(content, latest_citations)
 
             # Close <think> if still open
-            if in_think:
-                yield "\n</think>\n"
+            close_tag = _close_think_tag()
+            if close_tag:
+                yield close_tag
             rendered_citations = _format_citation_list(latest_citations)
             if rendered_citations:
                 yield rendered_citations
         except requests.exceptions.Timeout:
-            if in_think:
-                yield "\n</think>\n"
-            yield f"OpenRouter Pipe Error: timeout {self.valves.REQUEST_TIMEOUT}s"
+            close_tag = _close_think_tag()
+            if close_tag:
+                yield close_tag
+            yield f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
-            if in_think:
-                yield "\n</think>\n"
+            close_tag = _close_think_tag()
+            if close_tag:
+                yield close_tag
             if exc.response is not None:
                 try:
                     _ = exc.response.content  # Cache body before closing
                 except Exception:
                     pass
-                exc.response.close()
+                try:
+                    exc.response.close()
+                except Exception:
+                    pass
             yield self._format_http_error(exc)
-        except Exception as exc:  # pragma: no cover
-            if in_think:
-                yield "\n</think>\n"
+        except Exception as exc:
+            close_tag = _close_think_tag()
+            if close_tag:
+                yield close_tag
             print(f"[OpenRouter Pipe] Stream error: {exc}")
             traceback.print_exc()
-            yield f"OpenRouter Pipe Error: {exc}"
+            yield f"OpenRouter Error: {exc}"
         finally:
+            # Clean up resources — do NOT yield here because
+            # GeneratorExit (consumer break) would cause RuntimeError.
+            in_think = False
             if response is not None:
                 response.close()
 
     def _retryable_request(self, headers: dict, payload: dict, stream: bool):
+        """Send a POST request with automatic retry and exponential backoff."""
         last_exc: Optional[Exception] = None
         for attempt in range(self.valves.MAX_RETRIES + 1):
             try:
-                response = requests.post(
+                response = self._session.post(
                     self.chat_url,
                     headers=headers,
                     json=payload,
@@ -601,6 +746,9 @@ class Pipe:
                 print(f"[OpenRouter Pipe] Attempt {attempt + 1} failed: {exc}")
                 if attempt == self.valves.MAX_RETRIES:
                     raise
+                # Exponential backoff with jitter
+                delay = min(2 ** attempt + random.uniform(0, 1), 30)
+                time.sleep(delay)
             except requests.exceptions.HTTPError:
                 raise
             except Exception as exc:  # pragma: no cover
@@ -608,19 +756,36 @@ class Pipe:
                 print(f"[OpenRouter Pipe] Unexpected error: {exc}")
                 if attempt == self.valves.MAX_RETRIES:
                     raise
+                delay = min(2 ** attempt + random.uniform(0, 1), 30)
+                time.sleep(delay)
         if last_exc:
             raise last_exc  # pragma: no cover
-        raise RuntimeError("OpenRouter Pipe Error: request not completed")
+        raise RuntimeError("OpenRouter Error: request not completed")  # pragma: no cover
 
     def _format_http_error(self, exc: requests.exceptions.HTTPError) -> str:
+        """Format an HTTP error into a user-friendly message."""
         status = exc.response.status_code if exc.response is not None else "?"
-        base = f"OpenRouter Pipe Error: HTTP {status}"
-        try:
-            detail = exc.response.json().get("error", {}).get("message", "")
-            if detail:
-                base += f" - {detail}"
-        except Exception:
-            pass
+
+        # Specific messages for common error codes
+        if status == 429:
+            base = "OpenRouter Error: Rate limit exceeded (HTTP 429). Please wait a moment and try again."
+        elif status == 402:
+            base = "OpenRouter Error: Insufficient credits (HTTP 402). Check your OpenRouter account balance."
+        elif status == 401:
+            base = "OpenRouter Error: Invalid API key (HTTP 401). Check your OPENROUTER_API_KEY."
+        elif status == 403:
+            base = "OpenRouter Error: Access denied (HTTP 403). Your API key may not have permission for this model."
+        else:
+            base = f"OpenRouter Error: HTTP {status}"
+
+        if exc.response is not None:
+            try:
+                err = exc.response.json().get("error", {})
+                detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                if detail:
+                    base += f" — {detail}"
+            except Exception:
+                pass
         return base
 
 

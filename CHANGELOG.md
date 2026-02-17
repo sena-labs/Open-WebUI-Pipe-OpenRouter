@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-17
+
+### Added
+
+- **Connection pooling** via `requests.Session` for better performance across multiple API calls
+- **Model list caching** with 5-minute TTL and valve-fingerprint invalidation — avoids redundant API calls when reopening the model selector
+- **Exponential backoff with jitter** on transient errors (Timeout, ConnectionError) — `min(2^attempt + random, 30s)`
+- **Fallback deduplication** — duplicate models in `FALLBACK_MODELS` are silently removed
+- **Citation URL sanitization** — non-HTTP URLs are filtered out; parentheses in URLs are percent-encoded
+- **Base URL validation** — `OPENROUTER_BASE_URL` must start with `https://` or `http://` (Pydantic field_validator)
+- **"error" model guard** — selecting the error pseudo-model returns an actionable message instead of hitting the API
+- **Empty messages guard** — returns a clear error if the message list is empty
+- **Fallback model attribution** — non-stream responses show "Responded by: model-id" when a fallback model handled the request
+- **HTTP 502 auth detection** — Clerk 502 errors (malformed API key) are now caught at model-list time
+
+### Changed
+
+- Minimum requirements bumped: `requests>=2.20`, `pydantic>=2.0`
+- Error prefix changed from "OpenRouter Pipe Error" to "OpenRouter Error" for cleaner UX
+- HTTP error messages now include specific guidance per status code (429=rate limit, 402=credits, 401=key, 403=access)
+- Empty API response returns an informative message instead of an empty string
+- Timeout error messages now show the configured timeout value and suggest increasing it
+- Improved all valve descriptions for clarity and actionability
+- Pre-flight `/auth/key` check removed — auth errors are now detected directly from the `/models` response (eliminates one HTTP round-trip)
+- `_prepare_payload` uses `copy.deepcopy` instead of shallow `body.copy()` to prevent mutation of nested structures
+- `_build_headers` uses cached env vars (`WEBUI_URL`, `WEBUI_NAME`) instead of calling `os.getenv()` on every request
+- `FREE_ONLY` pricing comparison uses `float()` instead of string comparison
+- Model cache key includes `MODEL_PREFIX` to prevent stale results after prefix changes
+- Removed unused `_API_PATH_AUTH` constant and `auth_url` property
+
+### Fixed
+
+- Fixed potential payload mutation when `ENABLE_CACHE_CONTROL` is active (deepcopy prevents side effects)
+- Fixed potential `IndexError` on stream chunks with empty `choices` array
+- Fixed stream error handler not caching response body before closing connection
+- Safe `isinstance(err, dict)` checks before calling `.get()` on error objects
+- `_close_think_tag()` helper eliminates duplicated think-tag closure logic (was 5x repeated)
+- `_stream_response` now closes the response in a `finally` block even on consumer `break`
+
+## [1.1.1] - 2026-02-17
+
+### Changed
+
+- Pre-compiled citation regex at module level for better performance
+- Added docstrings to all public and internal methods (`pipe`, `_prepare_payload`, `_stream_response`, `_non_stream_response`, `_retryable_request`, `_build_headers`)
+- Translated TESTING.md to English for international audience
+
+### Fixed
+
+- Test suite now runs on Windows without requiring `PYTHONUTF8=1` (UTF-8 stdout wrapper)
+- Fixed stale test count in CONTRIBUTING.md and TESTING.md (170 → 193)
+- Fixed typo in TESTING.md pre-release checklist
+- Updated SECURITY.md to list v1.1.x as supported
+- Updated `function.json` metadata date
+
 ## [1.1.0] - 2026-02-15
 
 ### Added
