@@ -17,13 +17,19 @@ python test_pipe.py
 ### Prerequisites
 
 - Python 3.10+
-- `requests` library
-- `pydantic` library
+- `requests` >= 2.20
+- `pydantic` >= 2.0
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
 
 ### Running Tests
 
 ```bash
-python test_pipe.py           # Unit tests (195 tests)
+python test_pipe.py           # Unit tests (234 tests)
 python integration_test.py    # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

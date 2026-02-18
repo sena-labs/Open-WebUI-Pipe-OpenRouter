@@ -1066,6 +1066,255 @@ _assert(len(dc_options) == 2, "DATA_COLLECTION: 2 options")
 dc_values = [o["value"] for o in dc_options]
 _assert("allow" in dc_values and "deny" in dc_values, "DATA_COLLECTION: allow and deny")
 
+# ── 17. _is_safe_url() ──────────────────────────────────────────────────────
+
+_section("17. _is_safe_url()")
+
+_is_safe_url = mod._is_safe_url
+
+_assert(_is_safe_url("https://example.com") is True, "https URL is safe")
+_assert(_is_safe_url("http://example.com") is True, "http URL is safe")
+_assert(_is_safe_url("HTTP://EXAMPLE.COM") is True, "case-insensitive http")
+_assert(_is_safe_url("HTTPS://EXAMPLE.COM") is True, "case-insensitive https")
+_assert(_is_safe_url("javascript:alert(1)") is False, "javascript: not safe")
+_assert(_is_safe_url("data:text/html,<h1>hi</h1>") is False, "data: not safe")
+_assert(_is_safe_url("ftp://files.example.com") is False, "ftp: not safe")
+_assert(_is_safe_url("") is False, "empty string not safe")
+_assert(_is_safe_url(123) is False, "non-string not safe")
+_assert(_is_safe_url(None) is False, "None not safe")
+
+# ── 18. _clean_model_id() ───────────────────────────────────────────────────
+
+_section("18. _clean_model_id()")
+
+_assert(Pipe._clean_model_id("openrouter.google/gemini") == "google/gemini", "strips manifold prefix")
+_assert(Pipe._clean_model_id("google/gemini") == "google/gemini", "no prefix → unchanged")
+_assert(Pipe._clean_model_id("") == "", "empty string → empty")
+_assert(Pipe._clean_model_id("a.b.c/d") == "b.c/d", "multiple dots → splits on first")
+
+# ── 19. Model caching ───────────────────────────────────────────────────────
+
+_section("19. Model caching")
+
+import time as _time_mod
+
+_MODELS_CACHE_TTL = mod._MODELS_CACHE_TTL
+
+# 19a. Second call uses cache (no API call)
+_pipe_cache = Pipe()
+_pipe_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_cache._models_cache = None
+
+_mock_cache_resp = MagicMock()
+_mock_cache_resp.status_code = 200
+_mock_cache_resp.json.return_value = {"data": [
+    {"id": "openai/gpt-4o", "name": "GPT-4o"},
+]}
+_mock_cache_resp.raise_for_status = MagicMock()
+
+_call_count = 0
+_original_get = _pipe_cache._session.get
+
+def _counting_get(*args, **kwargs):
+    global _call_count
+    _call_count += 1
+    return _mock_cache_resp
+
+with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
+    _pipe_cache.pipes()  # first call → populates cache
+    _pipe_cache.pipes()  # second call → should use cache
+_assert(_call_count == 1, "cache hit: API called only once for two pipes() calls")
+
+# 19b. Changing a valve invalidates cache
+_pipe_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+_call_count = 0
+with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
+    _pipe_cache.pipes()  # should miss cache (valve changed)
+_assert(_call_count == 1, "cache miss: API called after valve change")
+
+# 19c. Expired TTL invalidates cache
+_pipe_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_cache._models_cache = None
+_call_count = 0
+with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
+    _pipe_cache.pipes()
+_assert(_call_count == 1, "cache: first call hits API")
+
+# Simulate TTL expiration
+_pipe_cache._models_cache_ts -= _MODELS_CACHE_TTL + 1
+_call_count = 0
+with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
+    _pipe_cache.pipes()
+_assert(_call_count == 1, "cache expired: API called after TTL")
+
+# ── 20. Base URL validator ───────────────────────────────────────────────────
+
+_section("20. Base URL validator")
+
+from pydantic import ValidationError as _ValidationError
+
+# 20a. Invalid URL raises
+_url_raised = False
+try:
+    Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="not-a-url")
+except _ValidationError:
+    _url_raised = True
+_assert(_url_raised, "base URL without http(s):// raises ValidationError")
+
+# 20b. Valid https passes
+_url_ok = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="https://custom.api.example.com")
+_assert(_url_ok.OPENROUTER_BASE_URL == "https://custom.api.example.com", "valid https URL accepted")
+
+# 20c. http also passes
+_url_http = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="http://localhost:8080")
+_assert(_url_http.OPENROUTER_BASE_URL == "http://localhost:8080", "http URL accepted")
+
+# ── 21. pipe() guards ───────────────────────────────────────────────────────
+
+_section("21. pipe() guards")
+
+# 21a. model_id == "error" returns actionable message
+async def _test_pipe_error_model():
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    return await p.pipe({"model": "openrouter.error", "messages": [{"role": "user", "content": "hi"}], "stream": False})
+
+_res_err_model = asyncio.run(_test_pipe_error_model())
+_assert("No valid model selected" in _res_err_model, "error model guard: actionable message")
+_assert("OpenRouter Error:" in _res_err_model, "error model guard: has prefix")
+
+# 21b. Empty messages returns error
+async def _test_pipe_empty_msgs():
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    return await p.pipe({"model": "openai/gpt-4o", "messages": [], "stream": False})
+
+_res_empty_msgs = asyncio.run(_test_pipe_empty_msgs())
+_assert("No messages provided" in _res_empty_msgs, "empty messages guard: clear error")
+_assert("OpenRouter Error:" in _res_empty_msgs, "empty messages guard: has prefix")
+
+# 21c. No messages key at all
+async def _test_pipe_no_msgs_key():
+    p = Pipe()
+    p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+    return await p.pipe({"model": "openai/gpt-4o", "stream": False})
+
+_res_no_key = asyncio.run(_test_pipe_no_msgs_key())
+_assert("No messages provided" in _res_no_key, "missing messages key: clear error")
+
+# ── 22. Fallback model attribution ──────────────────────────────────────────
+
+_section("22. Fallback model attribution")
+
+# 22a. "Responded by" shown when fallback model responds
+_mock_fallback_json = {
+    "choices": [{"message": {"content": "Fallback reply"}}],
+    "model": "anthropic/claude-3.5-sonnet",
+}
+_mock_fallback_resp = MagicMock()
+_mock_fallback_resp.json.return_value = _mock_fallback_json
+
+_pipe_fb = Pipe()
+_pipe_fb.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_fallback_resp):
+    _fb_result = _pipe_fb._non_stream_response({}, {
+        "model": "openai/gpt-4o",
+        "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
+    })
+_assert("Responded by: anthropic/claude-3.5-sonnet" in _fb_result, "fallback attribution shown")
+
+# 22b. No attribution when primary model responds
+_mock_primary_json = {
+    "choices": [{"message": {"content": "Primary reply"}}],
+    "model": "openai/gpt-4o",
+}
+_mock_primary_resp = MagicMock()
+_mock_primary_resp.json.return_value = _mock_primary_json
+
+with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_primary_resp):
+    _primary_result = _pipe_fb._non_stream_response({}, {
+        "model": "openai/gpt-4o",
+        "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
+    })
+_assert("Responded by" not in _primary_result, "no attribution when primary responds")
+
+# ── 23. Citation edge cases ─────────────────────────────────────────────────
+
+_section("23. Citation edge cases")
+
+# 23a. URL with parentheses gets encoded
+_paren_citations = ["https://en.wikipedia.org/wiki/Test_(disambiguation)"]
+_paren_result = _insert_citations("See [1].", _paren_citations)
+_assert("%29" in _paren_result, "parenthesis in URL encoded as %29")
+_assert("Test_(disambiguation" in _paren_result, "citation content preserved")
+
+# 23b. Unsafe URL not linked
+_unsafe_citations = ["javascript:alert(1)"]
+_unsafe_result = _insert_citations("See [1].", _unsafe_citations)
+_assert("[1]" in _unsafe_result, "unsafe URL: reference kept as-is")
+_assert("javascript:" not in _unsafe_result.replace("[1]", ""), "unsafe URL: not linked")
+
+# 23c. Mixed safe and unsafe
+_mixed_citations = ["https://safe.com", "javascript:alert(1)"]
+_mixed_result = _insert_citations("See [1] and [2].", _mixed_citations)
+_assert("[[1]](https://safe.com)" in _mixed_result, "mixed: safe URL linked")
+_assert("[[2]]" not in _mixed_result, "mixed: unsafe URL not linked")
+
+# ── 24. pipes() edge cases ──────────────────────────────────────────────────
+
+_section("24. pipes() edge cases")
+
+# 24a. Model without "id" is skipped
+_pipe_skip = Pipe()
+_pipe_skip.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_pipe_skip._models_cache = None
+_mock_skip_resp = MagicMock()
+_mock_skip_resp.status_code = 200
+_mock_skip_resp.json.return_value = {"data": [
+    {"name": "Missing ID Model"},
+    {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    {"id": "", "name": "Empty ID Model"},
+]}
+_mock_skip_resp.raise_for_status = MagicMock()
+
+with patch.object(_pipe_skip._session, "get", return_value=_mock_skip_resp):
+    _skip_models = _pipe_skip.pipes()
+_assert(len(_skip_models) == 1, "pipes: skips models without id")
+_assert(_skip_models[0]["id"] == "openai/gpt-4o", "pipes: only valid model kept")
+
+# 24b. FREE_ONLY with :free suffix
+_pipe_free = Pipe()
+_pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_ONLY=True)
+_pipe_free._models_cache = None
+_mock_free_resp = MagicMock()
+_mock_free_resp.status_code = 200
+_mock_free_resp.json.return_value = {"data": [
+    {"id": "openai/gpt-4o:free", "name": "GPT-4o Free", "pricing": {"prompt": "0", "completion": "0"}},
+    {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
+]}
+_mock_free_resp.raise_for_status = MagicMock()
+
+with patch.object(_pipe_free._session, "get", return_value=_mock_free_resp):
+    _free_models = _pipe_free.pipes()
+_assert(len(_free_models) == 1, "FREE_ONLY: only :free model kept")
+_assert(":free" in _free_models[0]["id"], "FREE_ONLY: model has :free suffix")
+
+# 24c. Provider icon assignment
+_pipe_icon = Pipe()
+_pipe_icon.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_pipe_icon._models_cache = None
+_mock_icon_resp = MagicMock()
+_mock_icon_resp.status_code = 200
+_mock_icon_resp.json.return_value = {"data": [
+    {"id": "openai/gpt-4o", "name": "GPT-4o"},
+]}
+_mock_icon_resp.raise_for_status = MagicMock()
+
+with patch.object(_pipe_icon._session, "get", return_value=_mock_icon_resp):
+    _icon_models = _pipe_icon.pipes()
+_assert("openai" in _icon_models[0]["info"]["meta"]["profile_image_url"], "provider icon: openai icon assigned")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

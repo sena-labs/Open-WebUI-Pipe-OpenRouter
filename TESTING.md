@@ -12,7 +12,7 @@ Manual checklist to verify every Pipe feature before release.
 python test_pipe.py
 ```
 
-Must print **195/195 passed**. If any test fails, **do not release**.
+Must print **234/234 passed**. If any test fails, **do not release**.
 
 ---
 
@@ -191,7 +191,7 @@ Must print **195/195 passed**. If any test fails, **do not release**.
 ## Quick pre-release checklist
 
 ```
-[ ] python test_pipe.py → 195/195 ✓
+[ ] python test_pipe.py → 234/234 ✓
 [ ] python integration_test.py → 47/47 ✓
 [ ] Empty API key → clear error
 [ ] Valid API key → 340+ models

@@ -21,6 +21,23 @@ Provider routing · Reasoning tokens · Streaming · Fallbacks · Cache control
 
 ---
 
+## Table of Contents
+
+- [Why OpenRouter Pipe?](#why-openrouter-pipe)
+- [Screenshots](#screenshots)
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+- [Compatibility](#compatibility)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 ## Why OpenRouter Pipe?
 
 OpenRouter Pipe is the most feature-complete integration between [Open WebUI](https://docs.openwebui.com) and [OpenRouter](https://openrouter.ai). It gives you access to **300+ AI models** — including GPT-5, Claude 4, Gemini 2.5, Llama 4, DeepSeek R1, and more — directly in your Open WebUI interface, with zero configuration beyond an API key.
@@ -31,6 +48,20 @@ OpenRouter Pipe is the most feature-complete integration between [Open WebUI](ht
 - **Native reasoning tokens** — `<think>` blocks with configurable effort levels
 - **Production-grade reliability** — retry logic, fallback models, mid-stream error recovery
 - **22 provider icons** — visual model identification in the selector
+
+---
+
+## Screenshots
+
+<!-- TODO: Add screenshots of the pipe in action -->
+<!-- Suggested screenshots:
+  1. Model selector showing OpenRouter models with provider icons
+  2. Streaming response with <think> reasoning blocks
+  3. Valve configuration panel in Open WebUI admin
+  4. Fallback model attribution ("Responded by: ...")
+-->
+
+*Screenshots coming soon — contributions welcome!*
 
 ---
 
@@ -184,7 +215,7 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 OpenRouter-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Unit test suite (195 tests)
+├── test_pipe.py            # Unit test suite (234 tests)
 ├── integration_test.py     # Live API integration tests (47 tests)
 ├── TESTING.md              # Pre-release testing checklist
 ├── SECURITY.md             # Security policy and vulnerability reporting
@@ -193,8 +224,11 @@ OpenRouter-Pipe/
 ├── CONTRIBUTING.md         # Contribution guidelines
 ├── LICENSE                 # MIT License
 ├── .gitignore              # Git ignore rules
+├── requirements.txt        # Python dependencies
 └── .github/
     ├── FUNDING.yml          # GitHub Sponsors configuration
+    ├── CODE_OF_CONDUCT.md   # Contributor Covenant v2.1
+    ├── PULL_REQUEST_TEMPLATE.md  # PR checklist template
     ├── workflows/
     │   └── tests.yml        # CI pipeline (Python 3.10–3.13)
     └── ISSUE_TEMPLATE/
@@ -220,6 +254,55 @@ Tests cover:
 - Async `pipe()` entry point (stream/non-stream routing, event emitter)
 - Model listing (`pipes()`) with filters, prefix, error handling
 - Valve `json_schema_extra` validation (password, dropdown menus)
+
+---
+
+## Troubleshooting
+
+<details>
+<summary><strong>"OpenRouter API key not configured"</strong></summary>
+
+Set your API key in **Admin Panel → Functions → OpenRouter Pipe → Valves** (⚙️ icon), or set the `OPENROUTER_API_KEY` environment variable on the server.
+</details>
+
+<details>
+<summary><strong>"Invalid API key (HTTP 401/502)"</strong></summary>
+
+Your API key is incorrect or malformed. Get a valid key from [openrouter.ai/keys](https://openrouter.ai/keys) and make sure it starts with `sk-or-`.
+</details>
+
+<details>
+<summary><strong>"Rate limit exceeded (HTTP 429)"</strong></summary>
+
+You're sending too many requests. Wait a moment and try again. Consider setting `MAX_RETRIES` to `2` or higher for automatic backoff.
+</details>
+
+<details>
+<summary><strong>"Insufficient credits (HTTP 402)"</strong></summary>
+
+Your OpenRouter account balance is too low. Add credits at [openrouter.ai/credits](https://openrouter.ai/credits).
+</details>
+
+<details>
+<summary><strong>"Request timed out"</strong></summary>
+
+The model took too long to respond. Increase `REQUEST_TIMEOUT` in the valve settings (default: 90 seconds), or try a different model.
+</details>
+
+<details>
+<summary><strong>No models showing in the selector</strong></summary>
+
+1. Check that your API key is valid
+2. If using `MODEL_PROVIDERS`, verify the provider names are correct (e.g., `openai`, `anthropic`, `google`)
+3. If `FREE_ONLY` is enabled, some providers may not have free models available
+4. Try setting `MODEL_PROVIDERS` to `ALL` to see all models
+</details>
+
+<details>
+<summary><strong>Models load but chat returns errors</strong></summary>
+
+Some models may be temporarily unavailable on OpenRouter. Try a different model or check [OpenRouter Status](https://status.openrouter.ai).
+</details>
 
 ---
 

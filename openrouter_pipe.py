@@ -583,7 +583,7 @@ class Pipe:
                 return f"OpenRouter Error: {msg}"
 
             if not res.get("choices"):
-                return "OpenRouter returned an empty response. The model may be temporarily unavailable."
+                return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
             choice = res["choices"][0]
             message = choice.get("message", {})
             citations = res.get("citations", [])
