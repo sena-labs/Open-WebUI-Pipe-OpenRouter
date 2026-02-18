@@ -19,7 +19,7 @@ If you discover a security vulnerability, please report it responsibly:
 ## Security Design
 
 - API keys are never logged or included in error messages
-- Pre-flight API key validation prevents requests with invalid credentials
+- API key validation at model-fetch time prevents requests with invalid credentials
 - All HTTP requests use TLS (HTTPS)
 - Open WebUI internal keys are stripped before forwarding to OpenRouter
 - No user data is stored by the pipe
