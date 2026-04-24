@@ -277,12 +277,12 @@ _assert("Authorization" in headers_no_ct, "auth still present")
 
 # ── 7. _get_provider_icon ────────────────────────────────────────────────────
 
-_section("7. _get_provider_icon()")
+_section("7. get_provider_icon()")
 
 pipe = Pipe()
-_assert(pipe._get_provider_icon("openai") is not None, "openai icon found")
-_assert(pipe._get_provider_icon("Anthropic") is not None, "Anthropic (case) icon found")
-_assert(pipe._get_provider_icon("unknown-provider") is None, "unknown → None")
+_assert(Pipe.get_provider_icon("openai") is not None, "openai icon found")
+_assert(Pipe.get_provider_icon("Anthropic") is not None, "Anthropic (case) icon found")
+_assert(Pipe.get_provider_icon("unknown-provider") is None, "unknown → None")
 
 # ── 8. _parse_provider_filter ────────────────────────────────────────────────
 
@@ -777,12 +777,13 @@ async def _test_pipe_event_emitter_stream():
             {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
             __event_emitter__=_emitter,
         )
-        chunks = list(result)
+        chunks = [chunk async for chunk in result]
     return "".join(chunks), events
 
 res_s, events_s = asyncio.run(_test_pipe_event_emitter_stream())
-_assert(len(events_s) == 1, "pipe stream event_emitter: 1 event (start only)")
+_assert(len(events_s) == 2, "pipe stream event_emitter: 2 events (start + done)")
 _assert(events_s[0]["data"]["done"] is False, "pipe stream event_emitter: start not done")
+_assert(events_s[1]["data"]["done"] is True, "pipe stream event_emitter: done event emitted")
 _assert("Hi" in res_s, "pipe stream event_emitter: content correct")
 
 # 14a4. pipe works without __event_emitter__ (backward compat)
@@ -857,8 +858,7 @@ with patch.object(pipe._session, "get", return_value=mock_resp):
 
 _assert(len(models) == 3, "pipes: returns 3 models")
 _assert(models[0]["id"] == "openai/gpt-4o", "pipes: first model ID")
-_assert("info" in models[0], "pipes: info key present")
-_assert("meta" in models[0]["info"], "pipes: meta key present")
+_assert("info" not in models[0], "pipes: info key removed (dead code)")
 
 # 15b. FREE_ONLY filter
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
@@ -1300,20 +1300,165 @@ with patch.object(_pipe_free._session, "get", return_value=_mock_free_resp):
 _assert(len(_free_models) == 1, "FREE_ONLY: only :free model kept")
 _assert(":free" in _free_models[0]["id"], "FREE_ONLY: model has :free suffix")
 
-# 24c. Provider icon assignment
-_pipe_icon = Pipe()
-_pipe_icon.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
-_pipe_icon._models_cache = None
-_mock_icon_resp = MagicMock()
-_mock_icon_resp.status_code = 200
-_mock_icon_resp.json.return_value = {"data": [
-    {"id": "openai/gpt-4o", "name": "GPT-4o"},
-]}
-_mock_icon_resp.raise_for_status = MagicMock()
+# 24c. Provider icon utility (static method)
+_assert(Pipe.get_provider_icon("openai") is not None, "provider icon: openai icon available")
+_assert("openai" in Pipe.get_provider_icon("openai"), "provider icon: openai URL correct")
+_assert(Pipe.get_provider_icon("unknown-xyz") is None, "provider icon: unknown returns None")
 
-with patch.object(_pipe_icon._session, "get", return_value=_mock_icon_resp):
-    _icon_models = _pipe_icon.pipes()
-_assert("openai" in _icon_models[0]["info"]["meta"]["profile_image_url"], "provider icon: openai icon assigned")
+# ── 25. _sync_model_icons ───────────────────────────────────────────────────
+
+_section("25. _sync_model_icons()")
+
+# 25a. Graceful no-op outside Open WebUI (ImportError on open_webui.models.models)
+_pipe_sync = Pipe()
+_pipe_sync.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe_sync._sync_model_icons([
+    {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude"},
+    {"id": "error", "name": "Error model"},
+    {"id": "unknown-provider/model", "name": "Unknown"},
+])
+_assert(True, "_sync_model_icons: no error outside Open WebUI (graceful ImportError)")
+
+# 25b. SYNC_PROVIDER_ICONS=False skips sync entirely
+_pipe_no_sync = Pipe()
+_pipe_no_sync.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=False)
+_pipe_no_sync._models_cache = None
+_mock_nosync = MagicMock()
+_mock_nosync.status_code = 200
+_mock_nosync.json.return_value = {"data": [{"id": "openai/gpt-4o", "name": "GPT-4o"}]}
+_mock_nosync.raise_for_status = MagicMock()
+with patch.object(_pipe_no_sync._session, "get", return_value=_mock_nosync):
+    _pipe_no_sync.pipes()
+_assert(len(_pipe_no_sync._icons_synced) == 0, "SYNC_PROVIDER_ICONS=False: no sync")
+
+# 25c. SYNC_PROVIDER_ICONS=True calls _sync_model_icons
+_pipe_with_sync = Pipe()
+_pipe_with_sync.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe_with_sync._models_cache = None
+_mock_withsync = MagicMock()
+_mock_withsync.status_code = 200
+_mock_withsync.json.return_value = {"data": [{"id": "openai/gpt-4o", "name": "GPT-4o"}]}
+_mock_withsync.raise_for_status = MagicMock()
+with patch.object(_pipe_with_sync._session, "get", return_value=_mock_withsync):
+    with patch.object(_pipe_with_sync, "_sync_model_icons") as mock_sync:
+        _pipe_with_sync.pipes()
+        _assert(mock_sync.called, "SYNC_PROVIDER_ICONS=True: _sync_model_icons called")
+
+# 25d. Valve default is True
+_assert(Pipe.Valves(OPENROUTER_API_KEY="k").SYNC_PROVIDER_ICONS is True, "SYNC_PROVIDER_ICONS default is True")
+
+# 25e. Non-function module → returns early without DB calls
+_pipe_nofunc = Pipe()
+_pipe_nofunc.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_mock_Models_nf = MagicMock()
+_fake_owui_nf = ModuleType("open_webui.models.models")
+_fake_owui_nf.Models = _mock_Models_nf
+_fake_owui_nf.ModelForm = MagicMock()
+_fake_owui_nf.ModelMeta = MagicMock()
+_fake_owui_nf.ModelParams = MagicMock()
+_orig_module_nf = Pipe.__module__
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_nf
+    # Module name doesn't start with "function_" → should skip
+    Pipe.__module__ = "openrouter_pipe"
+    _pipe_nofunc._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
+    _assert(
+        not _mock_Models_nf.get_model_by_id.called,
+        "_sync_model_icons: skips DB when module is not function_*",
+    )
+finally:
+    Pipe.__module__ = _orig_module_nf
+    sys.modules.pop("open_webui.models.models", None)
+
+# 25f. With function_ module → uses prefixed IDs for DB operations
+_pipe_func = Pipe()
+_pipe_func.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_mock_Models_f = MagicMock()
+_mock_Models_f.get_model_by_id.return_value = None  # No existing record
+_mock_ModelForm_f = MagicMock()
+_mock_ModelMeta_f = MagicMock()
+_mock_ModelParams_f = MagicMock()
+_fake_owui_f = ModuleType("open_webui.models.models")
+_fake_owui_f.Models = _mock_Models_f
+_fake_owui_f.ModelForm = _mock_ModelForm_f
+_fake_owui_f.ModelMeta = _mock_ModelMeta_f
+_fake_owui_f.ModelParams = _mock_ModelParams_f
+_orig_module_f = Pipe.__module__
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_f
+    Pipe.__module__ = "function_openrouter_pipe"
+    _pipe_func._sync_model_icons([
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5"},
+    ])
+    # Verify DB lookups used prefixed IDs
+    _lookup_ids = [c.args[0] for c in _mock_Models_f.get_model_by_id.call_args_list]
+    _assert(
+        "openrouter_pipe.openai/gpt-4o" in _lookup_ids,
+        "_sync_model_icons: DB lookup uses prefixed ID (openai)",
+    )
+    _assert(
+        "openrouter_pipe.anthropic/claude-3.5-sonnet" in _lookup_ids,
+        "_sync_model_icons: DB lookup uses prefixed ID (anthropic)",
+    )
+    # Verify insert_new_model was called (since get_model_by_id returned None)
+    _assert(
+        _mock_Models_f.insert_new_model.called,
+        "_sync_model_icons: insert_new_model called for new models",
+    )
+    # Verify the ModelForm ID is prefixed
+    _insert_form = _mock_Models_f.insert_new_model.call_args_list[0].args[0]
+    _insert_id = _mock_ModelForm_f.call_args_list[0].kwargs.get("id", _mock_ModelForm_f.call_args_list[0].args[0] if _mock_ModelForm_f.call_args_list[0].args else "")
+    # ModelForm was called with id=prefixed_id
+    _form_calls = _mock_ModelForm_f.call_args_list
+    _form_ids = [c.kwargs.get("id", "") for c in _form_calls]
+    _assert(
+        "openrouter_pipe.openai/gpt-4o" in _form_ids,
+        "_sync_model_icons: ModelForm uses prefixed ID (openai)",
+    )
+    _assert(
+        "openrouter_pipe.anthropic/claude-3.5-sonnet" in _form_ids,
+        "_sync_model_icons: ModelForm uses prefixed ID (anthropic)",
+    )
+    # Verify _icons_synced tracks the RAW model IDs
+    _assert(
+        "openai/gpt-4o" in _pipe_func._icons_synced,
+        "_sync_model_icons: _icons_synced uses raw model ID",
+    )
+finally:
+    Pipe.__module__ = _orig_module_f
+    sys.modules.pop("open_webui.models.models", None)
+
+# 25g. Existing model with icon → skips overwrite
+_pipe_skip = Pipe()
+_pipe_skip.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_mock_Models_s = MagicMock()
+_existing_model = MagicMock()
+_existing_model.meta.profile_image_url = "https://custom-icon.example.com/icon.png"
+_existing_model.name = "Custom GPT"
+_mock_Models_s.get_model_by_id.return_value = _existing_model
+_fake_owui_s = ModuleType("open_webui.models.models")
+_fake_owui_s.Models = _mock_Models_s
+_fake_owui_s.ModelForm = MagicMock()
+_fake_owui_s.ModelMeta = MagicMock()
+_fake_owui_s.ModelParams = MagicMock()
+_orig_module_s = Pipe.__module__
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_s
+    Pipe.__module__ = "function_openrouter_pipe"
+    _pipe_skip._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
+    _assert(
+        not _mock_Models_s.update_model_by_id.called,
+        "_sync_model_icons: skips update when model has custom icon",
+    )
+    _assert(
+        not _mock_Models_s.insert_new_model.called,
+        "_sync_model_icons: skips insert when model has custom icon",
+    )
+finally:
+    Pipe.__module__ = _orig_module_s
+    sys.modules.pop("open_webui.models.models", None)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary

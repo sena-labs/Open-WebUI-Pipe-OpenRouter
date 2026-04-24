@@ -18,7 +18,7 @@ import random
 import re
 import time
 import traceback
-from typing import Callable, Generator, List, Optional, Union
+from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
 
 import requests
 from pydantic import BaseModel, Field, field_validator
@@ -38,6 +38,9 @@ _API_PATH_CHAT = "/chat/completions"
 # Cache TTL for model list (seconds)
 _MODELS_CACHE_TTL = 300.0  # 5 minutes
 
+# Provider icons — synced into the Open WebUI Models database by
+# _sync_model_icons() so the frontend can serve them via
+# /models/model/profile/image.  Disable with SYNC_PROVIDER_ICONS = False.
 _PROVIDER_ICONS = {
     "openai": "https://openrouter.ai/images/models/openai.svg",
     "anthropic": "https://openrouter.ai/images/models/anthropic.svg",
@@ -203,6 +206,10 @@ class Pipe:
             == "true",
             description="Enable prompt caching for Anthropic models (reduces cost on repeated long prompts). No effect on other providers",
         )
+        SYNC_PROVIDER_ICONS: bool = Field(
+            default=os.getenv("OPENROUTER_SYNC_ICONS", "true").lower() == "true",
+            description="Automatically sync provider icons into Open WebUI's model database so they appear in the UI",
+        )
         REQUEST_TIMEOUT: int = Field(
             default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
             gt=0,
@@ -231,6 +238,8 @@ class Pipe:
         self._models_cache: Optional[List[dict]] = None
         self._models_cache_ts: float = 0.0
         self._models_cache_key: str = ""
+        # Track which model IDs already have icons synced (avoids repeated DB writes)
+        self._icons_synced: set = set()
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
 
@@ -338,12 +347,10 @@ class Pipe:
                     continue
 
             model_name = model.get("name", model_id)
-            icon_url = self._get_provider_icon(provider_key)
 
             model_dict = {
                 "id": model_id,
                 "name": f"{prefix}{model_name}",
-                "info": {"meta": {"profile_image_url": icon_url or ""}},
             }
 
             models.append(model_dict)
@@ -363,6 +370,10 @@ class Pipe:
         self._models_cache_ts = time.monotonic()
         self._models_cache_key = f"{self.valves.OPENROUTER_API_KEY}|{self.valves.FREE_ONLY}|{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|{self.valves.MODEL_PREFIX}"
 
+        # Sync provider icons into Open WebUI's Models database
+        if self.valves.SYNC_PROVIDER_ICONS:
+            self._sync_model_icons(models)
+
         return models
 
     @staticmethod
@@ -377,11 +388,11 @@ class Pipe:
         body: dict,
         __user__: Optional[dict] = None,
         __event_emitter__: Optional[Callable] = None,
-    ) -> Union[str, Generator[str, None, None]]:
+    ) -> Union[str, Generator[str, None, None], AsyncGenerator[str, None]]:
         """Route a chat completion request to OpenRouter (stream or non-stream).
 
-        Note: This async method returns a sync generator for streaming,
-        as required by the Open WebUI pipe protocol.
+        Returns an async generator for streaming (allows proper status cleanup),
+        or a plain string for non-streaming responses.
         """
         if not self.valves.OPENROUTER_API_KEY:
             return "OpenRouter Error: OPENROUTER_API_KEY not configured. Set it in Settings → Connections."
@@ -414,18 +425,17 @@ class Pipe:
         if stream:
             gen = self._stream_response(headers, payload)
 
-            # Wrap the sync generator to emit status done after streaming finishes
+            # Wrap in an async generator so we can await the done event
             if __event_emitter__:
-                original_gen = gen
-                def _wrap_stream():
+                async def _wrap_stream():
                     try:
-                        yield from original_gen
+                        for chunk in gen:
+                            yield chunk
                     finally:
-                        pass  # done event emitted below
-                gen = _wrap_stream()
-                # We can't await inside a sync generator, so we emit done
-                # after the generator is fully consumed by the framework.
-                # Open WebUI handles this; we emit here as best-effort.
+                        await __event_emitter__(
+                            {"type": "status", "data": {"description": "", "done": True}}
+                        )
+                return _wrap_stream()
 
             return gen
 
@@ -438,7 +448,107 @@ class Pipe:
 
         return result
 
-    def _get_provider_icon(self, provider: str) -> Optional[str]:
+    def _sync_model_icons(self, models: List[dict]) -> None:
+        """Write provider icons into Open WebUI's Models DB.
+
+        Open WebUI serves model icons from its database, not from the dicts
+        returned by ``pipes()``.  Crucially, Open WebUI prefixes every pipe
+        model ID with ``{function_id}.`` (e.g. ``openrouter_pipe.openai/gpt-4o``)
+        and the frontend requests icons using that prefixed ID.  This method
+        discovers the pipe's own *function_id* from ``type(self).__module__``
+        (set to ``function_{id}`` by Open WebUI's module loader) and writes
+        DB records keyed by the full prefixed ID.
+
+        Models that already have a custom icon in the DB are skipped.
+        This is a best-effort operation — failures are silently logged.
+        """
+        try:
+            from open_webui.models.models import (
+                ModelForm,
+                ModelMeta,
+                ModelParams,
+                Models,
+            )
+        except ImportError:
+            # Running outside Open WebUI (e.g. standalone tests) — skip silently
+            return
+
+        # Discover the pipe's function_id.  Open WebUI loads pipe modules as
+        # ``function_{function_id}`` so type(self).__module__ exposes it.
+        func_module = type(self).__module__ or ""
+        if func_module.startswith("function_"):
+            function_id = func_module[len("function_"):]
+        else:
+            # Cannot determine the pipe's function_id — skip icon sync
+            return
+
+        for model in models:
+            model_id = model.get("id", "")
+            if not model_id or model_id == "error":
+                continue
+
+            # Skip if already synced this session
+            if model_id in self._icons_synced:
+                continue
+
+            # Determine provider icon
+            parts = model_id.split("/", 1)
+            provider_key = parts[0].lower() if len(parts) > 1 else ""
+            icon_url = _PROVIDER_ICONS.get(provider_key)
+            if not icon_url:
+                self._icons_synced.add(model_id)
+                continue
+
+            # Build the prefixed ID that Open WebUI uses in the frontend
+            db_model_id = f"{function_id}.{model_id}"
+
+            try:
+                existing = Models.get_model_by_id(db_model_id)
+                if existing:
+                    # If model already has a custom icon, don't overwrite it
+                    existing_icon = ""
+                    if hasattr(existing, "meta") and existing.meta:
+                        existing_icon = (
+                            getattr(existing.meta, "profile_image_url", "") or ""
+                        )
+                    if existing_icon:
+                        self._icons_synced.add(model_id)
+                        continue
+
+                    # Update existing model with icon
+                    Models.update_model_by_id(
+                        db_model_id,
+                        ModelForm(
+                            id=db_model_id,
+                            name=(
+                                existing.name
+                                if hasattr(existing, "name")
+                                else model.get("name", model_id)
+                            ),
+                            meta=ModelMeta(profile_image_url=icon_url),
+                            params=ModelParams(),
+                        ),
+                    )
+                else:
+                    # Insert new model record with icon
+                    Models.insert_new_model(
+                        ModelForm(
+                            id=db_model_id,
+                            name=model.get("name", model_id),
+                            meta=ModelMeta(profile_image_url=icon_url),
+                            params=ModelParams(),
+                        ),
+                        user_id="pipe:openrouter",
+                    )
+
+                self._icons_synced.add(model_id)
+            except Exception as exc:
+                # Best-effort — don't let icon sync break model listing
+                print(f"[OpenRouter Pipe] Icon sync failed for {db_model_id}: {exc}")
+                self._icons_synced.add(model_id)  # Don't retry on every refresh
+
+    @staticmethod
+    def get_provider_icon(provider: str) -> Optional[str]:
         """Return icon URL for the given provider."""
         return _PROVIDER_ICONS.get(provider.lower())
 
