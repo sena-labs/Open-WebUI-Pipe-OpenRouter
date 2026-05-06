@@ -1,8 +1,12 @@
 # Pre-Release Testing Guide
 
-Manual checklist to verify every Pipe feature before release.
+Manual checklist to verify every Pipe feature before release. Run the automated suite first,
+then work through each section in order against a live Open WebUI instance.
 
-> **Prerequisites**: Open WebUI >= 0.4.0 running, valid OpenRouter API key.
+## Prerequisites
+
+- **Open WebUI** ≥ 0.4.0 running locally or in Docker.
+- A valid **OpenRouter API key** (starts with `sk-or-`).
 
 ---
 
@@ -190,22 +194,20 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ## Quick pre-release checklist
 
-```
-[ ] python test_pipe.py → 252 passed, 0 failed ✓
-[ ] python integration_test.py → 47/47 ✓
-[ ] Empty API key → clear error
-[ ] Valid API key → 340+ models
-[ ] Non-streaming chat works
-[ ] Streaming chat works (token by token)
-[ ] Reasoning tokens shown with <think>
-[ ] FREE_ONLY filters correctly (suffix + pricing)
-[ ] Provider filter + inversion works
-[ ] Prefix applied and removable
-[ ] Fallbacks in payload
-[ ] Middle-out in payload
-[ ] Cache control on list content
-[ ] Retry on timeout, no retry on 4xx
-[ ] Errors formatted correctly
-[ ] No secrets in logs/messages
-[ ] OWUI internal fields removed from payload
-```
+- [ ] `python test_pipe.py` → 252 passed, 0 failed
+- [ ] `python integration_test.py` → 47/47
+- [ ] Empty API key → clear error message in model selector
+- [ ] Valid API key → 340+ models with provider icons
+- [ ] Non-streaming chat works
+- [ ] Streaming chat works (token by token)
+- [ ] Reasoning tokens shown with `<think>`
+- [ ] `FREE_ONLY` filters correctly (`:free` suffix + 0/0 pricing)
+- [ ] Provider filter + inversion works
+- [ ] Model prefix applied and removable
+- [ ] Fallback models present in payload
+- [ ] Middle-out present in payload
+- [ ] Cache control applied on list-type message content
+- [ ] Retry on timeout, no retry on 4xx errors
+- [ ] Errors formatted correctly (no raw tracebacks)
+- [ ] No secrets in logs or error messages
+- [ ] Open WebUI internal fields removed from payload

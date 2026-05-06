@@ -1,97 +1,169 @@
 # Contributing to OpenRouter Pipe
 
-> **Maintained by [Sena Labs](https://github.com/sena-labs)** · [GitHub](https://github.com/sena-labs/OpenRouter-Pipe)
+Thanks for wanting to contribute! This document is intentionally opinionated: it codifies the
+**deliverable-PR playbook** the maintainers use day-to-day so new contributors can ship changes
+with the same cadence and quality.
 
-Thanks for your interest in contributing.
+## Table of Contents
 
-## Quick Start
+- [Code of Conduct](#code-of-conduct)
+- [Getting started](#getting-started)
+- [Development setup](#development-setup)
+- [Deliverable-PR playbook](#deliverable-pr-playbook)
+- [Commit messages](#commit-messages)
+- [Coding standards](#coding-standards)
+- [Testing](#testing)
+- [Reporting bugs](#reporting-bugs)
+- [Suggesting features](#suggesting-features)
 
-```bash
-git clone https://github.com/sena-labs/OpenRouter-Pipe.git
-cd OpenRouter-Pipe
-python test_pipe.py
-```
+## Code of Conduct
 
-## Development
+This project follows the [Contributor Covenant Code of Conduct](.github/CODE_OF_CONDUCT.md).
+By participating, you agree to uphold this code.
+
+## Getting started
+
+1. **Fork** the repository on GitHub.
+2. **Clone** your fork locally:
+
+   ```bash
+   git clone https://github.com/<your-username>/OpenRouter-Pipe.git
+   cd OpenRouter-Pipe
+   ```
+
+3. **Install** dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Verify** the baseline is green before changing anything:
+
+   ```bash
+   python test_pipe.py
+   ```
+
+## Development setup
 
 ### Prerequisites
 
-- Python 3.10+
-- `requests` >= 2.20
-- `pydantic` >= 2.0
+- **Python** ≥ 3.10 (matches the CI matrix).
+- **`requests`** ≥ 2.20.
+- **`pydantic`** ≥ 2.0.
 
-Install dependencies:
+### Useful commands
 
-```bash
-pip install -r requirements.txt
+| Command | Description |
+| --- | --- |
+| `python test_pipe.py` | Run the full unit test suite (252 tests) |
+| `python integration_test.py` | Run live API tests (requires `OPENROUTER_API_KEY`) |
+
+## Deliverable-PR playbook
+
+Every change is shipped as a **single-deliverable pull request**. One PR = one reviewable unit
+of value. The playbook:
+
+1. **Sync `main`** and create a branch with a descriptive slug:
+
+   ```bash
+   git checkout main && git pull
+   git checkout -b feat/<slug>
+   ```
+
+2. **Implement** the smallest complete slice of the change. Prefer surgical edits over
+   incidental refactors.
+
+3. **Add or update tests.** A change without test coverage needs a written justification
+   in the PR body. The unit test suite must remain at 252/252.
+
+4. **Validate locally** using the same commands CI runs:
+
+   ```bash
+   python test_pipe.py
+   python integration_test.py   # optional, requires a valid API key
+   ```
+
+5. **Update `CHANGELOG.md`.** Prepend a bullet under `## [Unreleased]` describing the
+   user-visible impact.
+
+6. **Commit with Conventional Commits** (see [Commit messages](#commit-messages)) and push:
+
+   ```bash
+   git push -u origin feat/<slug>
+   ```
+
+7. **Open the pull request** using the [PR template](.github/PULL_REQUEST_TEMPLATE.md) and
+   fill every section.
+
+8. **Verify CI** goes green. A failing test leg blocks the merge — fix forward rather than
+   disabling the check.
+
+Keep the branch focused: if the diff grows beyond ~300 lines of non-generated code, split it.
+
+## Commit messages
+
+We follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
 ```
 
-### Running Tests
+**Types:** `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`.
 
-```bash
-python test_pipe.py           # Unit tests (252 tests)
-python integration_test.py    # Live API tests (requires OPENROUTER_API_KEY)
+**Examples:**
+
+```text
+feat(routing): add PROVIDER_IGNORE valve
+fix(stream): close think tag on mid-stream error
+docs: update README installation steps
+test: add retry exhaustion coverage
 ```
 
-All unit tests must pass. If adding new functionality, add corresponding tests.
+## Coding standards
 
-### Code Style
+- **PEP 8** — enforced by convention; keep line length ≤ 100 chars.
+- **Type hints** on every function signature.
+- **One responsibility per method** — keep functions under ~50 lines; extract helpers when they grow.
+- **Docstrings** on every public method using the one-line summary style.
+- **Logging** via `print(f"[OpenRouter Pipe] …")` — never log API keys or user content.
+- No `any`-equivalent type erasure; use proper `dict[str, Any]` annotations.
 
-- Follow PEP 8 conventions
-- Use type hints for all function signatures
-- Keep methods focused — one responsibility per method
-- Add docstrings for public methods
-- Use `print(f"[OpenRouter Pipe] ...")` for debug logging
+## Testing
 
-## Pull Request Process
+- **Framework:** Python `unittest` (stdlib).
+- **Mock strategy:** `unittest.mock.patch` for HTTP calls and Open WebUI internals.
+- **Conventions:**
+  - Test path mirrors source: `openrouter_pipe.py` ↔ `test_pipe.py`.
+  - Each test class covers one unit (`TestPreparePayload`, `TestStreamResponse`, etc.).
+  - Use descriptive method names: `test_fallback_deduplication_removes_duplicates`.
+- **Run the suite the same way CI does:** `python test_pipe.py`. Integration tests require a
+  live API key and are optional for most contributions.
 
-1. **Fork** the repository
-2. Create a **feature branch** (`git checkout -b feature/my-feature`)
-3. Make your changes
-4. **Run the test suite** and ensure all tests pass
-5. Update `CHANGELOG.md` with your changes under `[Unreleased]`
-6. Commit with a clear message (`git commit -m "feat: add XYZ support"`)
-7. Push to your fork and **open a Pull Request**
+## Reporting bugs
 
-### Commit Convention
+When reporting a bug, open a [GitHub issue](https://github.com/sena-labs/OpenRouter-Pipe/issues)
+using the **Bug report** template and include:
 
-We use [Conventional Commits](https://www.conventionalcommits.org/):
+1. **Open WebUI version** (`Admin Panel → About`).
+2. **Python version** (`python --version`).
+3. **Steps to reproduce** the issue.
+4. **Expected vs. actual behavior.**
+5. **Error logs** — check the Open WebUI server logs and filter for `[OpenRouter Pipe]` messages.
 
-| Prefix | Usage |
-|--------|-------|
-| `feat:` | New feature |
-| `fix:` | Bug fix |
-| `docs:` | Documentation only |
-| `refactor:` | Code restructuring |
-| `test:` | Adding or updating tests |
-| `chore:` | Maintenance tasks |
+**Do not** include your API key in the issue. Redact it before pasting logs.
 
-### PR Checklist
+## Suggesting features
 
-- [ ] Tests pass (`python test_pipe.py` and `python integration_test.py` → 0 failures)
-- [ ] New features have corresponding tests
-- [ ] `CHANGELOG.md` updated
-- [ ] Code follows existing style conventions
-- [ ] No OpenRouter API keys or secrets committed
+Before opening a feature request:
 
-## Reporting Issues
+1. Check the [OpenRouter API docs](https://openrouter.ai/docs) to confirm the feature exists upstream.
+2. Check the [Open WebUI Pipe docs](https://docs.openwebui.com/features/plugin/functions/pipe) for compatibility constraints.
+3. Open an issue using the **Feature request** template and describe the use case and expected behavior.
 
-When reporting a bug, please include:
+---
 
-1. **Open WebUI version** you're running
-2. **Python version** (`python --version`)
-3. **Steps to reproduce** the issue
-4. **Expected vs actual behavior**
-5. **Error logs** (check Open WebUI server logs for `[OpenRouter Pipe]` messages)
-
-## Feature Requests
-
-Before requesting a feature:
-
-1. Check [OpenRouter API docs](https://openrouter.ai/docs) to confirm the feature exists upstream
-2. Check [Open WebUI Pipe docs](https://docs.openwebui.com/features/plugin/functions/pipe) for compatibility
-3. Open an issue describing the feature and its use case
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).
+Thanks for helping improve OpenRouter Pipe! 🚀
