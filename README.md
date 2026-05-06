@@ -150,6 +150,7 @@ All settings are configurable via **Valves** in the Open WebUI admin panel. Ever
 | `FALLBACK_MODELS` | `OPENROUTER_FALLBACK_MODELS` | `""` | Fallback model IDs (comma-separated) |
 | `ENABLE_MIDDLE_OUT` | `OPENROUTER_ENABLE_MIDDLE_OUT` | `false` | Middle-out compression for long prompts |
 | `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Anthropic cache_control injection |
+| `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
 
 ### Network
 
@@ -215,7 +216,7 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 OpenRouter-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Unit test suite (234 tests)
+├── test_pipe.py            # Unit test suite (252 tests)
 ├── integration_test.py     # Live API integration tests (47 tests)
 ├── TESTING.md              # Pre-release testing checklist
 ├── SECURITY.md             # Security policy and vulnerability reporting
@@ -274,7 +275,7 @@ Your API key is incorrect or malformed. Get a valid key from [openrouter.ai/keys
 <details>
 <summary><strong>"Rate limit exceeded (HTTP 429)"</strong></summary>
 
-You're sending too many requests. Wait a moment and try again. Consider setting `MAX_RETRIES` to `2` or higher for automatic backoff.
+You're sending too many requests. Wait a moment and try again, or consider upgrading your OpenRouter plan. Note: `MAX_RETRIES` only retries on network timeouts and connection failures — HTTP rate limit errors are returned immediately without retry.
 </details>
 
 <details>

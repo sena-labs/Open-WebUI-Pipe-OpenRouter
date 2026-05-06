@@ -1026,6 +1026,38 @@ with patch.object(pipe._session, "get", return_value=mock_resp):
 _assert(models[0]["id"] == "error", "pipes provider no match: error id")
 _assert("No models match" in models[0]["name"], "pipes provider no match: correct message")
 
+# 15o. response.close() called via finally on auth-error branch (401)
+_close_auth_resp = MagicMock()
+_close_auth_resp.status_code = 401
+_close_auth_resp.json.return_value = {"error": {"message": "Unauthorized"}}
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_close_auth_resp):
+    pipe.pipes()
+_assert(_close_auth_resp.close.call_count == 1, "pipes response.close(): called after 401 auth error")
+
+# 15p. response.close() called via finally when response.json() raises (JSONDecodeError)
+_close_json_err_resp = MagicMock()
+_close_json_err_resp.status_code = 200
+_close_json_err_resp.raise_for_status = MagicMock()
+_close_json_err_resp.json.side_effect = ValueError("No JSON object could be decoded")
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_close_json_err_resp):
+    pipe.pipes()
+_assert(_close_json_err_resp.close.call_count == 1, "pipes response.close(): called after JSON decode error")
+
+# 15q. response.close() called via finally on success path
+_close_ok_resp = MagicMock()
+_close_ok_resp.status_code = 200
+_close_ok_resp.raise_for_status = MagicMock()
+_close_ok_resp.json.return_value = {"data": [{"id": "openai/gpt-4o", "name": "GPT-4o"}]}
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_close_ok_resp):
+    pipe.pipes()
+_assert(_close_ok_resp.close.call_count == 1, "pipes response.close(): called after successful listing")
+
 # ── 16. Valve json_schema_extra ──────────────────────────────────────────────
 
 _section("16. Valve json_schema_extra")

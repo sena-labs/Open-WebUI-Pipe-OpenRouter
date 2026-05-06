@@ -12,7 +12,7 @@ Manual checklist to verify every Pipe feature before release.
 python test_pipe.py
 ```
 
-Must print **234/234 passed**. If any test fails, **do not release**.
+Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, **do not release**.
 
 ---
 
@@ -41,7 +41,7 @@ Must print **234/234 passed**. If any test fails, **do not release**.
 | # | Action | Expected result |
 |---|--------|-----------------|
 | 3.1 | Select a model (e.g. `openai/gpt-4o`), type "Hello" with `stream: false` | The response appears all at once, correct text |
-| 3.2 | Select a reasoning model (e.g. `anthropic/claude-3.7-sonnet:thinking`) | The response contains `<think>...</think>` blocks followed by content |
+| 3.2 | Select a reasoning model (e.g. `deepseek/deepseek-r1`) | The response contains `<think>...</think>` blocks followed by content |
 
 ---
 
@@ -105,7 +105,7 @@ Must print **234/234 passed**. If any test fails, **do not release**.
 
 | # | Action | Expected result |
 |---|--------|-----------------|
-| 9.1 | Set `FALLBACK_MODELS = openai/gpt-4o, anthropic/claude-3.5-sonnet` | payload > `"models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]` |
+| 9.1 | While using `openai/gpt-4o` as primary, set `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` | payload contains `"models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]` (primary model first, then fallbacks) |
 | 9.2 | Leave `FALLBACK_MODELS` empty | No `models` field in payload |
 
 ---
@@ -191,7 +191,7 @@ Must print **234/234 passed**. If any test fails, **do not release**.
 ## Quick pre-release checklist
 
 ```
-[ ] python test_pipe.py → 234/234 ✓
+[ ] python test_pipe.py → 252 passed, 0 failed ✓
 [ ] python integration_test.py → 47/47 ✓
 [ ] Empty API key → clear error
 [ ] Valid API key → 340+ models
