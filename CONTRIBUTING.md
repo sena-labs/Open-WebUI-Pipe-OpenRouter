@@ -27,8 +27,8 @@ By participating, you agree to uphold this code.
 2. **Clone** your fork locally:
 
    ```bash
-   git clone https://github.com/<your-username>/OpenRouter-Pipe.git
-   cd OpenRouter-Pipe
+   git clone https://github.com/<your-username>/Open-WebUI-Pipe-OpenRouter.git
+   cd Open-WebUI-Pipe-OpenRouter
    ```
 
 3. **Install** dependencies:
@@ -145,7 +145,7 @@ test: add retry exhaustion coverage
 
 ## Reporting bugs
 
-When reporting a bug, open a [GitHub issue](https://github.com/sena-labs/OpenRouter-Pipe/issues)
+When reporting a bug, open a [GitHub issue](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/issues)
 using the **Bug report** template and include:
 
 1. **Open WebUI version** (`Admin Panel → About`).

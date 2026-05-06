@@ -60,9 +60,9 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement via
-[GitHub Issues](https://github.com/sena-labs/OpenRouter-Pipe/issues) or by
+[GitHub Issues](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/issues) or by
 contacting the maintainers through
-[GitHub private vulnerability reporting](https://github.com/sena-labs/OpenRouter-Pipe/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/security/advisories/new).
 
 All complaints will be reviewed and investigated promptly and fairly.
 

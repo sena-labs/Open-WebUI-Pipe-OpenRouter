@@ -30,7 +30,7 @@ Instead, please send an email to **<isena86@gmail.com>** with:
 5. **Suggested fix** (if you have one).
 
 Alternatively, use
-[GitHub's private vulnerability reporting](https://github.com/sena-labs/OpenRouter-Pipe/security/advisories/new).
+[GitHub's private vulnerability reporting](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/security/advisories/new).
 
 ### What to Expect
 
@@ -76,4 +76,4 @@ Every push to `main` and every pull request runs:
 
 - We follow [coordinated vulnerability disclosure](https://en.wikipedia.org/wiki/Coordinated_vulnerability_disclosure).
 - We aim to release patches within 14 days of confirming a vulnerability.
-- Security advisories are published via [GitHub Security Advisories](https://github.com/sena-labs/OpenRouter-Pipe/security/advisories).
+- Security advisories are published via [GitHub Security Advisories](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/security/advisories).
