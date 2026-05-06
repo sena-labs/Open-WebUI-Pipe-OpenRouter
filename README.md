@@ -1,6 +1,6 @@
 # OpenRouter Pipe
 
-[![Build](https://github.com/sena-labs/OpenRouter-Pipe/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/OpenRouter-Pipe/actions/workflows/tests.yml)
+[![Build](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -99,8 +99,8 @@ All OpenRouter models will appear in the model selector immediately.
 ### From source
 
 ```bash
-git clone https://github.com/sena-labs/OpenRouter-Pipe.git
-cd OpenRouter-Pipe
+git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
+cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
 python test_pipe.py        # 252 tests — verify everything is green
 ```
@@ -202,7 +202,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 | Enrichment | `_inject_cache_control()`, `_insert_citations()` | Post-processing |
 
 ```text
-OpenRouter-Pipe/
+Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
 ├── test_pipe.py            # Unit test suite (252 tests)
