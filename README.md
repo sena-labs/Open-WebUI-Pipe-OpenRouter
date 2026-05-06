@@ -216,7 +216,7 @@ It also removes `user` when sent as a dict (OWUI format) since OpenRouter expect
 OpenRouter-Pipe/
 ├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
 ├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Unit test suite (249 tests)
+├── test_pipe.py            # Unit test suite (252 tests)
 ├── integration_test.py     # Live API integration tests (47 tests)
 ├── TESTING.md              # Pre-release testing checklist
 ├── SECURITY.md             # Security policy and vulnerability reporting
