@@ -13,7 +13,7 @@
 ## Checklist
 
 - [ ] I have read the [CONTRIBUTING.md](../CONTRIBUTING.md) guidelines
-- [ ] All tests pass (`python test_pipe.py` — 234/234 ✓)
+- [ ] All tests pass (`python test_pipe.py` — 249/249 ✓)
 - [ ] I have added tests for new functionality (if applicable)
 - [ ] I have updated `CHANGELOG.md` under `[Unreleased]`
 - [ ] I have updated documentation (if applicable)

@@ -277,6 +277,7 @@ class Pipe:
             return self._models_cache
 
         headers = self._build_headers(include_content_type=False)
+        response = None
         try:
             response = self._session.get(
                 self.models_url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT
@@ -313,6 +314,9 @@ class Pipe:
             print(f"[OpenRouter Pipe] Model fetch error: {exc}")
             traceback.print_exc()
             return [{"id": "error", "name": f"Unexpected error: {exc}"}]
+        finally:
+            if response is not None:
+                response.close()
 
         provider_filter = self._parse_provider_filter()
         prefix = self.valves.MODEL_PREFIX or ""

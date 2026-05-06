@@ -29,7 +29,7 @@ pip install -r requirements.txt
 ### Running Tests
 
 ```bash
-python test_pipe.py           # Unit tests (234 tests)
+python test_pipe.py           # Unit tests (249 tests)
 python integration_test.py    # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
