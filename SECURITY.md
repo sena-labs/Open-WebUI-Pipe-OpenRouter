@@ -61,7 +61,7 @@ The pipe implements the following security practices:
 
 - **No key logging** — `OPENROUTER_API_KEY` is never written to logs or included in error messages.
 - **Pre-flight validation** — invalid keys are caught at model-fetch time via the `/models` response, before any user message is sent.
-- **TLS only** — all HTTP requests use HTTPS; the `OPENROUTER_BASE_URL` validator rejects non-HTTPS values.
+- **TLS enforced by default** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; the Pydantic validator requires the value to start with `https://` or `http://` and rejects any other scheme.
 - **Internal key stripping** — Open WebUI internal fields (`chat_id`, `title`, `task`, `metadata`, `files`, `tool_ids`, `session_id`, `message_id`) are removed from the payload before forwarding.
 - **No data persistence** — the pipe does not store user messages, model responses, or API keys beyond the scope of a single request.
 - **Deep-copy payload** — `copy.deepcopy` is used on the request body to prevent mutation of Open WebUI's internal state.
@@ -71,7 +71,6 @@ The pipe implements the following security practices:
 Every push to `main` and every pull request runs:
 
 - **Unit tests** (`.github/workflows/tests.yml`) — 252 tests across Python 3.10–3.13. Failures block merge.
-- **Dependabot** — weekly dependency updates for `requests` and `pydantic` with reviewer auto-assignment.
 
 ## Disclosure Policy
 

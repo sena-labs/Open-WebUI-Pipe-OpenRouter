@@ -22,7 +22,7 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 <!-- TODO: media/screenshot-reasoning.png -->
 *`<think>` blocks streamed in real time with configurable effort levels.*
 
-### Provider routing
+### Provider routing in action
 
 <!-- TODO: media/screenshot-routing.png -->
 *Sort, prefer, exclude and require parameters across providers per request.*
@@ -107,7 +107,7 @@ python test_pipe.py        # 252 tests — verify everything is green
 
 ## Usage
 
-All behaviour is controlled through **Valves** in the Open WebUI admin panel. Every valve accepts
+All behavior is controlled through **Valves** in the Open WebUI admin panel. Every valve accepts
 an environment variable fallback (see [Configuration](#configuration)).
 
 ### Common valve combinations
