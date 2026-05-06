@@ -1,192 +1,227 @@
-<div align="center">
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a1b2e,100:2d1b69&height=180&section=header&text=OpenRouter%20Pipe&fontColor=a78bfa&fontSize=42&animation=fadeIn&fontAlignY=36&desc=Open%20WebUI%20%E2%86%94%20OpenRouter%20Integration&descAlignY=56&descColor=8b5cf6" width="100%"/>
-
-<a href="https://github.com/sena-labs/OpenRouter-Pipe"><img src="https://img.shields.io/badge/version-1.2.0-0d1117?style=for-the-badge&labelColor=7c3aed&color=0d1117" alt="version"></a>&nbsp;
-<a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-≥3.10-0d1117?style=for-the-badge&logo=python&logoColor=white&labelColor=3776AB" alt="python"></a>&nbsp;
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0d1117?style=for-the-badge&labelColor=blue" alt="license"></a>&nbsp;
-<a href="https://docs.openwebui.com"><img src="https://img.shields.io/badge/Open%20WebUI-compatible-0d1117?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=&logoColor=white&labelColor=1a1a2e" alt="openwebui"></a>
-
-<a href="https://github.com/sena-labs/OpenRouter-Pipe/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/sena-labs/OpenRouter-Pipe/tests.yml?branch=main&style=for-the-badge&label=tests&labelColor=0d1117&color=238636" alt="tests"></a>&nbsp;
-<a href="https://github.com/sena-labs/OpenRouter-Pipe/stargazers"><img src="https://img.shields.io/github/stars/sena-labs/OpenRouter-Pipe?style=for-the-badge&labelColor=0d1117&color=e3b341" alt="stars"></a>&nbsp;
-<a href="https://github.com/sena-labs/OpenRouter-Pipe/issues"><img src="https://img.shields.io/github/issues/sena-labs/OpenRouter-Pipe?style=for-the-badge&labelColor=0d1117&color=3fb950" alt="issues"></a>
-
-</div>
-
 # OpenRouter Pipe
 
-**Access 300+ AI models through OpenRouter directly inside Open WebUI.**
+[![Build](https://github.com/sena-labs/OpenRouter-Pipe/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/OpenRouter-Pipe/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Provider routing · Reasoning tokens · Streaming · Fallbacks · Cache control
+Access **300+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
+reasoning tokens, streaming, fallbacks, and cache control out of the box.
+
+<!-- TODO: Add a hero screenshot of the model selector with provider icons -->
+<!-- Suggested: media/screenshot.png -->
+
+## Feature gallery
+
+### Model selector
+
+<!-- TODO: media/screenshot-models.png -->
+*Models from OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek and more — each with its provider icon.*
+
+### Reasoning tokens
+
+<!-- TODO: media/screenshot-reasoning.png -->
+*`<think>` blocks streamed in real time with configurable effort levels.*
+
+### Provider routing in action
+
+<!-- TODO: media/screenshot-routing.png -->
+*Sort, prefer, exclude and require parameters across providers per request.*
 
 ---
 
 ## Table of Contents
 
-- [Why OpenRouter Pipe?](#why-openrouter-pipe)
-- [Screenshots](#screenshots)
-- [Quick Start](#quick-start)
 - [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [From Open WebUI Community](#from-open-webui-community)
+  - [Manual install](#manual-install)
+  - [From source](#from-source)
+- [Usage](#usage)
 - [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Compatibility](#compatibility)
-- [Project Structure](#project-structure)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
+  - [Core](#core)
+  - [Reasoning](#reasoning)
+  - [Display & Filtering](#display--filtering)
+  - [Provider Routing](#provider-routing)
+  - [Advanced](#advanced)
+  - [Network](#network)
+- [Architecture](#architecture)
+- [Development](#development)
 - [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
 - [License](#license)
-
----
-
-## Why OpenRouter Pipe?
-
-OpenRouter Pipe is the most feature-complete integration between [Open WebUI](https://docs.openwebui.com) and [OpenRouter](https://openrouter.ai). It gives you access to **300+ AI models** — including GPT-5, Claude 4, Gemini 2.5, Llama 4, DeepSeek R1, and more — directly in your Open WebUI interface, with zero configuration beyond an API key.
-
-**Key differentiators:**
-- **Pre-flight API key validation** — invalid keys are caught at model-fetch time, not after you send a message
-- **Full provider routing** — sort, prefer, exclude, and require parameters across providers
-- **Native reasoning tokens** — `<think>` blocks with configurable effort levels
-- **Production-grade reliability** — retry logic, fallback models, mid-stream error recovery
-- **22 provider icons** — visual model identification in the selector
-
----
-
-## Screenshots
-
-<!-- TODO: Add screenshots of the pipe in action -->
-<!-- Suggested screenshots:
-  1. Model selector showing OpenRouter models with provider icons
-  2. Streaming response with <think> reasoning blocks
-  3. Valve configuration panel in Open WebUI admin
-  4. Fallback model attribution ("Responded by: ...")
--->
-
-*Screenshots coming soon — contributions welcome!*
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- [Open WebUI](https://docs.openwebui.com) v0.4+ running
-- [OpenRouter](https://openrouter.ai) API key
-
-### Installation
-
-1. **Open your Open WebUI instance**
-2. Navigate to **Admin Panel → Functions**
-3. Click **"+ Add Function"** (or **Import**)
-4. Paste the entire contents of [`openrouter_pipe.py`](openrouter_pipe.py)
-5. Save and **enable** the function
-6. Go to **Valves** (⚙️ icon) and enter your `OPENROUTER_API_KEY`
-7. All OpenRouter models will appear in your model selector
-
-> **Tip:** You can also set the API key via environment variable `OPENROUTER_API_KEY` on the server.
-
-Alternatively, search for **"OpenRouter Pipe"** on [openwebui.com](https://openwebui.com) and install it directly from the community hub.
 
 ---
 
 ## Features
 
-| Feature | Description |
-|---------|-------------|
-| **Manifold Pipe** | Exposes all OpenRouter models as native Open WebUI models |
-| **Provider Routing** | Sort by price/throughput/latency, prefer or exclude providers |
-| **Reasoning Tokens** | `<think>` tags with configurable effort (low/medium/high) |
-| **Streaming** | Full SSE streaming with mid-stream error handling |
-| **Model Fallbacks** | Automatic failover to backup models |
-| **Middle-Out Compression** | Fit long prompts within context windows |
-| **Cache Control** | Anthropic-style prompt caching for cost savings |
-| **Citations** | Auto-inject citation links from web-search enabled models |
-| **Provider Icons** | 22 provider logos displayed in the model selector |
-| **Retry Logic** | Configurable auto-retry on timeout/connection errors |
-| **FREE_ONLY Mode** | Filter to show only free-tier models |
+- **Manifold pipe** — exposes all OpenRouter models as native Open WebUI models in the model selector.
+- **Provider routing** — sort by `price`, `throughput`, or `latency`; prefer or exclude specific providers; enforce `require_parameters`.
+- **Reasoning tokens** — `<think>` blocks streamed in real time with configurable effort (`low`, `medium`, `high`).
+- **Streaming** — full SSE streaming with mid-stream error handling and automatic `<think>` closure on error.
+- **Model fallbacks** — automatic failover to one or more backup models via `FALLBACK_MODELS`.
+- **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
+- **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
+- **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
+- **Provider icons** — 22 provider logos synced directly into Open WebUI's model database.
+- **Retry logic** — exponential backoff with jitter on timeout and connection errors.
+- **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).
+- **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
 
----
+## Requirements
+
+- **[Open WebUI](https://docs.openwebui.com/)** ≥ 0.4.0 running locally or in Docker.
+- **[OpenRouter API key](https://openrouter.ai/keys)** — free account, key starts with `sk-or-`.
+- **Python** ≥ 3.10 (managed by Open WebUI; no separate install needed for the pipe).
+
+## Installation
+
+### From Open WebUI Community
+
+Search for **"OpenRouter Pipe"** on [openwebui.com](https://openwebui.com) and install it directly
+from the community hub — no copy-paste required.
+
+### Manual install
+
+1. Copy the full content of [`openrouter_pipe.py`](openrouter_pipe.py).
+2. In Open WebUI, navigate to **Admin Panel → Functions**.
+3. Click **+ Add Function** (or **Import**).
+4. Paste the code and save.
+5. **Enable** the function using the toggle.
+6. Click the **⚙️ Valves** icon and enter your `OPENROUTER_API_KEY`.
+
+All OpenRouter models will appear in the model selector immediately.
+
+> **Note:** You can also set `OPENROUTER_API_KEY` as a server environment variable instead of
+> entering it in Valves.
+
+### From source
+
+```bash
+git clone https://github.com/sena-labs/OpenRouter-Pipe.git
+cd OpenRouter-Pipe
+pip install -r requirements.txt
+python test_pipe.py        # 252 tests — verify everything is green
+```
+
+## Usage
+
+All behavior is controlled through **Valves** in the Open WebUI admin panel. Every valve accepts
+an environment variable fallback (see [Configuration](#configuration)).
+
+### Common valve combinations
+
+| Goal | Valves to set |
+| --- | --- |
+| Show only OpenAI and Anthropic models | `MODEL_PROVIDERS = openai,anthropic` |
+| Show only free models | `FREE_ONLY = true` |
+| Use DeepSeek for reasoning | select `deepseek/deepseek-r1`, `INCLUDE_REASONING = true` |
+| Route cheapest provider first | `PROVIDER_SORT = price` |
+| Add a fallback model | `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` |
+
+### Reasoning tokens
+
+When `INCLUDE_REASONING` is enabled (default), the pipe requests reasoning tokens from models that
+support them. The internal reasoning appears inside `<think>…</think>` blocks before the main
+response.
+
+Set `REASONING_EFFORT` to `low`, `medium`, or `high` to control how much compute the model
+allocates to reasoning. Leave it empty to let the model decide.
+
+### Citations
+
+Models with web-search capabilities return citation annotations. The pipe automatically converts
+`[1]`, `[2]` references to `[[1]](url)` markdown links and appends a numbered **Citations:**
+section at the end of the response.
 
 ## Configuration
 
-All settings are configurable via **Valves** in the Open WebUI admin panel. Every valve also accepts an environment variable fallback.
+Every valve accepts an environment variable fallback. The table below lists both.
 
 ### Core
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
+| --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` | `""` | Your OpenRouter API key |
 | `OPENROUTER_BASE_URL` | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
 
 ### Reasoning
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
-| `INCLUDE_REASONING` | `OPENROUTER_INCLUDE_REASONING` | `true` | Request reasoning tokens (shows `<think>` blocks) |
-| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Effort level: `low`, `medium`, `high`, or empty to disable |
+| --- | --- | --- | --- |
+| `INCLUDE_REASONING` | `OPENROUTER_INCLUDE_REASONING` | `true` | Request reasoning tokens (`<think>` blocks) |
+| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Effort level: `low`, `medium`, `high`, or empty |
 
 ### Display & Filtering
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
+| --- | --- | --- | --- |
 | `MODEL_PREFIX` | — | `None` | Custom prefix for model names (e.g. `🔥 `) |
-| `MODEL_PROVIDERS` | `OPENROUTER_MODEL_PROVIDERS` | `ALL` | Provider filter (e.g. `openai,anthropic`). Use `ALL` for all models |
-| `INVERT_PROVIDER_LIST` | `OPENROUTER_INVERT_PROVIDER_LIST` | `false` | Invert filter → exclusion list |
-| `FREE_ONLY` | `OPENROUTER_FREE_ONLY` | `false` | Show only free-tier models (by suffix or pricing) |
+| `MODEL_PROVIDERS` | `OPENROUTER_MODEL_PROVIDERS` | `ALL` | Provider filter (e.g. `openai,anthropic`). `ALL` means no filter |
+| `INVERT_PROVIDER_LIST` | `OPENROUTER_INVERT_PROVIDER_LIST` | `false` | Treat `MODEL_PROVIDERS` as an exclusion list |
+| `FREE_ONLY` | `OPENROUTER_FREE_ONLY` | `false` | Show only free-tier models |
 
 ### Provider Routing
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
+| --- | --- | --- | --- |
 | `PROVIDER_SORT` | `OPENROUTER_PROVIDER_SORT` | `""` | Sort: `price`, `throughput`, `latency` |
 | `PROVIDER_ORDER` | `OPENROUTER_PROVIDER_ORDER` | `""` | Preferred providers (comma-separated) |
 | `PROVIDER_IGNORE` | `OPENROUTER_PROVIDER_IGNORE` | `""` | Excluded providers (comma-separated) |
-| `REQUIRE_PARAMETERS` | `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Only use providers supporting all request params |
+| `REQUIRE_PARAMETERS` | `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Only use providers that support all request parameters |
 | `DATA_COLLECTION` | `OPENROUTER_DATA_COLLECTION` | `allow` | Data policy: `allow` or `deny` |
 
 ### Advanced
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
+| --- | --- | --- | --- |
 | `FALLBACK_MODELS` | `OPENROUTER_FALLBACK_MODELS` | `""` | Fallback model IDs (comma-separated) |
 | `ENABLE_MIDDLE_OUT` | `OPENROUTER_ENABLE_MIDDLE_OUT` | `false` | Middle-out compression for long prompts |
-| `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Anthropic cache_control injection |
+| `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Inject Anthropic `cache_control` on the longest message |
 | `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
 
 ### Network
 
 | Valve | Env Var | Default | Description |
-|-------|---------|---------|-------------|
+| --- | --- | --- | --- |
 | `REQUEST_TIMEOUT` | `OPENROUTER_REQUEST_TIMEOUT` | `90` | HTTP timeout in seconds |
-| `MAX_RETRIES` | — | `2` | Auto-retry on transient errors |
+| `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors |
 
----
+## Architecture
 
-## API Reference
+The pipe implements the **Manifold** pattern: one pipe entry point that surfaces multiple models.
 
-### Architecture
+| Layer | Files | Responsibility |
+| --- | --- | --- |
+| Entry points | `Pipe.pipes()`, `Pipe.pipe()` | Model listing and chat routing |
+| Payload | `_prepare_payload()` | Sanitize OWUI internals, inject routing and reasoning |
+| Transport | `_retryable_request()` | Retry wrapper with exponential backoff |
+| Streaming | `_stream_response()` | SSE parser, `<think>` management, mid-stream errors |
+| Non-streaming | `_non_stream_response()` | JSON response, body-level error detection |
+| Enrichment | `_inject_cache_control()`, `_insert_citations()` | Post-processing |
 
-This pipe implements the **Manifold** pattern:
-
+```text
+OpenRouter-Pipe/
+├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
+├── function.json           # Open WebUI community manifest
+├── test_pipe.py            # Unit test suite (252 tests)
+├── integration_test.py     # Live API integration tests (47 tests)
+├── TESTING.md              # Manual pre-release checklist
+├── SECURITY.md             # Security policy
+├── CONTRIBUTING.md         # Contribution guidelines
+├── CHANGELOG.md            # Version history
+├── LICENSE                 # MIT License
+├── requirements.txt        # Python dependencies
+└── .github/
+    ├── workflows/
+    │   └── tests.yml       # CI pipeline (Python 3.10–3.13)
+    └── ISSUE_TEMPLATE/
+        ├── bug_report.yml
+        └── feature_request.yml
 ```
-Open WebUI ↔️ Pipe.pipes()   → model list from OpenRouter /models
-Open WebUI ↔️ Pipe.pipe()    → chat completions via OpenRouter /chat/completions
-```
 
-### Key Methods
-
-| Method | Description |
-|--------|-------------|
-| `pipes()` | Fetches and filters the model catalog from OpenRouter |
-| `pipe(body, __user__, __event_emitter__)` | Routes chat completion to stream or non-stream handler, emits status events |
-| `_prepare_payload(body)` | Sanitizes OWUI internals, injects provider routing, reasoning, fallbacks |
-| `_stream_response(headers, payload)` | SSE parser with `<think>` management and mid-stream error recovery |
-| `_non_stream_response(headers, payload)` | JSON response handler with body-level error detection |
-| `_retryable_request(headers, payload, stream)` | Retry wrapper for timeout/connection errors |
-| `_inject_cache_control(payload)` | Applies Anthropic `cache_control` to longest message chunk |
-
-### Payload Sanitization
-
-The pipe strips these Open WebUI internal keys before forwarding to OpenRouter:
+The pipe strips these Open WebUI-internal keys before forwarding to OpenRouter:
 
 ```python
 _OWUI_INTERNAL_KEYS = {
@@ -195,138 +230,99 @@ _OWUI_INTERNAL_KEYS = {
 }
 ```
 
-It also removes `user` when sent as a dict (OWUI format) since OpenRouter expects a string.
+It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter expects a string.
 
----
-
-## Compatibility
-
-| Component | Version |
-|-----------|----------|
-| Open WebUI | v0.4.0+ |
-| Python | 3.10, 3.11, 3.12, 3.13 |
-| Pydantic | v2.x (v2.0+) |
-| OpenRouter API | v1 |
-
----
-
-## Project Structure
-
-```
-OpenRouter-Pipe/
-├── openrouter_pipe.py      # Main pipe source (install this in Open WebUI)
-├── function.json           # Open WebUI community manifest (metadata, tags, categories)
-├── test_pipe.py            # Unit test suite (252 tests)
-├── integration_test.py     # Live API integration tests (47 tests)
-├── TESTING.md              # Pre-release testing checklist
-├── SECURITY.md             # Security policy and vulnerability reporting
-├── README.md               # This file
-├── CHANGELOG.md            # Version history
-├── CONTRIBUTING.md         # Contribution guidelines
-├── LICENSE                 # MIT License
-├── .gitignore              # Git ignore rules
-├── requirements.txt        # Python dependencies
-└── .github/
-    ├── FUNDING.yml          # GitHub Sponsors configuration
-    ├── CODE_OF_CONDUCT.md   # Contributor Covenant v2.1
-    ├── PULL_REQUEST_TEMPLATE.md  # PR checklist template
-    ├── workflows/
-    │   └── tests.yml        # CI pipeline (Python 3.10–3.13)
-    └── ISSUE_TEMPLATE/
-        ├── bug_report.yml   # Bug report template
-        └── feature_request.yml  # Feature request template
-```
-
----
-
-## Testing
+## Development
 
 ```bash
-python test_pipe.py
+python test_pipe.py                       # Unit tests (252 tests)
+python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
-Tests cover:
-- Helper functions (`_insert_citations`, `_format_citation_list`, `_parse_csv`)
-- Valve defaults and validation
-- Payload preparation (key stripping, model ID fix, provider routing, fallbacks)
-- Stream response (reasoning tags, mid-stream errors, auto-close, citations)
-- Non-stream response (API errors, empty choices, timeout handling)
-- Retry logic (success, retry on timeout, exhaustion, HTTPError passthrough)
-- Async `pipe()` entry point (stream/non-stream routing, event emitter)
-- Model listing (`pipes()`) with filters, prefix, error handling
-- Valve `json_schema_extra` validation (password, dropdown menus)
-
----
-
-## Troubleshooting
-
-<details>
-<summary><strong>"OpenRouter API key not configured"</strong></summary>
-
-Set your API key in **Admin Panel → Functions → OpenRouter Pipe → Valves** (⚙️ icon), or set the `OPENROUTER_API_KEY` environment variable on the server.
-</details>
-
-<details>
-<summary><strong>"Invalid API key (HTTP 401/502)"</strong></summary>
-
-Your API key is incorrect or malformed. Get a valid key from [openrouter.ai/keys](https://openrouter.ai/keys) and make sure it starts with `sk-or-`.
-</details>
-
-<details>
-<summary><strong>"Rate limit exceeded (HTTP 429)"</strong></summary>
-
-You're sending too many requests. Wait a moment and try again, or consider upgrading your OpenRouter plan. Note: `MAX_RETRIES` only retries on network timeouts and connection failures — HTTP rate limit errors are returned immediately without retry.
-</details>
-
-<details>
-<summary><strong>"Insufficient credits (HTTP 402)"</strong></summary>
-
-Your OpenRouter account balance is too low. Add credits at [openrouter.ai/credits](https://openrouter.ai/credits).
-</details>
-
-<details>
-<summary><strong>"Request timed out"</strong></summary>
-
-The model took too long to respond. Increase `REQUEST_TIMEOUT` in the valve settings (default: 90 seconds), or try a different model.
-</details>
-
-<details>
-<summary><strong>No models showing in the selector</strong></summary>
-
-1. Check that your API key is valid
-2. If using `MODEL_PROVIDERS`, verify the provider names are correct (e.g., `openai`, `anthropic`, `google`)
-3. If `FREE_ONLY` is enabled, some providers may not have free models available
-4. Try setting `MODEL_PROVIDERS` to `ALL` to see all models
-</details>
-
-<details>
-<summary><strong>Models load but chat returns errors</strong></summary>
-
-Some models may be temporarily unavailable on OpenRouter. Try a different model or check [OpenRouter Status](https://status.openrouter.ai).
-</details>
-
----
+The unit test suite covers: valve defaults, payload preparation, streaming and non-streaming
+responses, retry logic, citation injection, model listing, and `pipe()` routing.
 
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full playbook.
 
----
+## Troubleshooting
+
+### "OpenRouter API key not configured"
+
+#### Solution
+
+Set your API key in **Admin Panel → Functions → OpenRouter Pipe → Valves** (⚙️), or set the
+`OPENROUTER_API_KEY` environment variable on the server and restart Open WebUI.
+
+### "Invalid API key (HTTP 401 / 502)"
+
+#### Solution
+
+Your key is incorrect or malformed. Retrieve a valid key from
+[openrouter.ai/keys](https://openrouter.ai/keys) — it should start with `sk-or-`.
+
+### "Rate limit exceeded (HTTP 429)"
+
+#### Solution
+
+Wait a moment and retry. `MAX_RETRIES` only retries on network timeouts and connection failures —
+HTTP 429 errors are returned immediately. Consider upgrading your OpenRouter plan for higher limits.
+
+### "Insufficient credits (HTTP 402)"
+
+#### Solution
+
+Add credits at [openrouter.ai/credits](https://openrouter.ai/credits).
+
+### "Request timed out"
+
+#### Solution
+
+Increase `REQUEST_TIMEOUT` in Valves (default: 90 seconds), or try a faster model. Some large
+reasoning models can take over a minute for complex prompts.
+
+### No models appear in the selector
+
+#### Solution
+
+1. Verify your API key is valid (a single "error" model appears if it is not).
+2. If `MODEL_PROVIDERS` is set, confirm the provider names are lowercase: `openai`, `anthropic`, `google`.
+3. If `FREE_ONLY` is enabled, some providers may have no free models — try disabling it.
+4. Set `MODEL_PROVIDERS = ALL` to show the full catalog.
+
+### Models load but chat returns errors
+
+#### Solution
+
+Some models may be temporarily unavailable. Try a different model or check
+[status.openrouter.ai](https://status.openrouter.ai).
+
+## FAQ
+
+**Q: Does this work with Open WebUI's native tool calling?**
+
+A: Tool calling is handled by Open WebUI before the pipe receives the request — the pipe forwards
+the composed messages as-is. Whether a given OpenRouter model supports tool use depends on
+OpenRouter's provider support for that model.
+
+**Q: Why does `FREE_ONLY` include models without a `:free` suffix?**
+
+A: Some models (e.g. `google/gemma-*`, `qwen/qwen3-*`) are genuinely free but are not suffixed
+with `:free`. The pipe checks both the suffix and the actual pricing (`0/0` prompt and completion
+cost) to catch these cases.
+
+**Q: Can I use multiple provider filters at once?**
+
+A: `MODEL_PROVIDERS` accepts a comma-separated list (e.g. `openai,anthropic`). Enable
+`INVERT_PROVIDER_LIST` to turn it into an exclusion list instead.
+
+**Q: How do fallback models work?**
+
+A: `FALLBACK_MODELS` adds extra model IDs to the `models` array in the OpenRouter request. If the
+primary model fails, OpenRouter automatically tries the next one. Non-streaming responses include
+a "Responded by: model-id" attribution when a fallback handled the request.
 
 ## License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-```
-Copyright (c) 2026 Sena Labs
-```
-
----
-
-<div align="center">
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:2d1b69,50:1a1b2e,100:0d1117&height=100&section=footer" width="100%"/>
-
-Powered by **[Sena Labs](https://github.com/sena-labs)**
-
-</div>

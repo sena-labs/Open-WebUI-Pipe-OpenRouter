@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to **OpenRouter Pipe** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dead provider-icon code removed** — `info.meta.profile_image_url` was included in model dicts returned by `pipes()` but Open WebUI ignores all fields except `id` and `name`; the field has been removed in favour of the new DB-sync approach
 - **`pipes()` response always closed** — added `finally: response.close()` to guarantee HTTP connections are returned to the session pool in all code paths (auth errors, JSON decode failures, unexpected exceptions)
 
-## [1.2.0] - 2026-02-17
+## [1.2.0] — 2026-02-17
 
 ### Added
 
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `_close_think_tag()` helper eliminates duplicated think-tag closure logic (was 5x repeated)
 - `_stream_response` now closes the response in a `finally` block even on consumer `break`
 
-## [1.1.1] - 2026-02-17
+## [1.1.1] — 2026-02-17
 
 ### Changed
 
@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated SECURITY.md to list v1.1.x as supported
 - Updated `function.json` metadata date
 
-## [1.1.0] - 2026-02-15
+## [1.1.0] — 2026-02-15
 
 ### Added
 
@@ -82,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `__event_emitter__` support — shows "Querying OpenRouter..." status in chat UI
 - Additional defensive keys (`metadata`, `files`, `tool_ids`, `session_id`, `message_id`) stripped from payload
 
-## [1.0.0] - 2026-02-14
+## [1.0.0] — 2026-02-14
 
 ### Added
 
@@ -114,7 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stream parser no longer crashes on malformed JSON chunks
 - HTTP error handler no longer crashes when response body is not JSON
 
-## [0.1.0] - 2026-01-21
+## [0.1.0] — 2026-01-21
 
 ### Added
 
