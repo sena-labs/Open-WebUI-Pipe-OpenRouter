@@ -907,6 +907,48 @@ with patch.object(pipe._session, "get", return_value=mock_resp):
     models = pipe.pipes()
 _assert(len(models) == 2, "pipes invert: excludes openai → 2 models")
 
+# 15d-2. Provider filter includes tilde (~) latest-alias models for their base provider
+_mock_tilde = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "~anthropic/claude-haiku-latest", "name": "Claude Haiku (Latest)"},
+        {"id": "~openai/gpt-latest", "name": "GPT (Latest)"},
+        {"id": "google/gemini-2.0-flash", "name": "Gemini 2.0 Flash"},
+    ]
+}
+_mock_resp_tilde = MagicMock()
+_mock_resp_tilde.status_code = 200
+_mock_resp_tilde.json.return_value = _mock_tilde
+_mock_resp_tilde.raise_for_status = MagicMock()
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="openai")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
+    _tilde_models = pipe.pipes()
+_tilde_ids = {m["id"] for m in _tilde_models}
+_assert("openai/gpt-4o" in _tilde_ids, "pipes tilde: base openai model included")
+_assert("~openai/gpt-latest" in _tilde_ids, "pipes tilde: ~openai model included by openai filter")
+_assert("~anthropic/claude-haiku-latest" not in _tilde_ids, "pipes tilde: ~anthropic excluded by openai filter")
+_assert("google/gemini-2.0-flash" not in _tilde_ids, "pipes tilde: google excluded by openai filter")
+
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="anthropic")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
+    _tilde_models2 = pipe.pipes()
+_tilde_ids2 = {m["id"] for m in _tilde_models2}
+_assert("~anthropic/claude-haiku-latest" in _tilde_ids2, "pipes tilde: ~anthropic model included by anthropic filter")
+_assert("openai/gpt-4o" not in _tilde_ids2, "pipes tilde: openai excluded by anthropic filter")
+
+pipe.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="anthropic", INVERT_PROVIDER_LIST=True
+)
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
+    _tilde_models3 = pipe.pipes()
+_tilde_ids3 = {m["id"] for m in _tilde_models3}
+_assert("~anthropic/claude-haiku-latest" not in _tilde_ids3, "pipes tilde: ~anthropic excluded by inverted anthropic filter")
+_assert("openai/gpt-4o" in _tilde_ids3, "pipes tilde: openai kept by inverted anthropic filter")
+
 # 15e. PREFIX
 pipe.valves = Pipe.Valves(
     OPENROUTER_API_KEY="test-key", MODEL_PREFIX="🔥 "
@@ -1125,7 +1167,26 @@ _section("18. _clean_model_id()")
 _assert(Pipe._clean_model_id("openrouter.google/gemini") == "google/gemini", "strips manifold prefix")
 _assert(Pipe._clean_model_id("google/gemini") == "google/gemini", "no prefix → unchanged")
 _assert(Pipe._clean_model_id("") == "", "empty string → empty")
-_assert(Pipe._clean_model_id("a.b.c/d") == "b.c/d", "multiple dots → splits on first")
+_assert(Pipe._clean_model_id("a.b.c/d") == "b.c/d", "no '/' before first '.' → strip prefix")
+_assert(
+    Pipe._clean_model_id("anthropic/claude-3.5-sonnet") == "anthropic/claude-3.5-sonnet",
+    "'/' before '.' → preserve dotted model name",
+)
+_assert(
+    Pipe._clean_model_id("openrouter.anthropic/claude-3.5-sonnet")
+    == "anthropic/claude-3.5-sonnet",
+    "manifold prefix stripped, dotted model preserved",
+)
+_assert(
+    Pipe._clean_model_id("meta-llama/llama-3.1-8b-instruct")
+    == "meta-llama/llama-3.1-8b-instruct",
+    "real OpenRouter ID with dots preserved",
+)
+_assert(
+    Pipe._clean_model_id("function_xyz.meta-llama/llama-3.3-70b-instruct")
+    == "meta-llama/llama-3.3-70b-instruct",
+    "OWUI function_id prefix stripped, dotted model preserved",
+)
 
 # ── 19. Model caching ───────────────────────────────────────────────────────
 
@@ -1337,7 +1398,7 @@ _assert(":free" in _free_models[0]["id"], "FREE_ONLY: model has :free suffix")
 
 # 24c. Provider icon utility (static method)
 _assert(Pipe.get_provider_icon("openai") is not None, "provider icon: openai icon available")
-_assert("openai" in Pipe.get_provider_icon("openai"), "provider icon: openai URL correct")
+_assert("images/icons" in Pipe.get_provider_icon("openai"), "provider icon: openai URL uses /images/icons/")
 _assert(Pipe.get_provider_icon("unknown-xyz") is None, "provider icon: unknown returns None")
 
 # ── 25. _sync_model_icons ───────────────────────────────────────────────────
@@ -1532,7 +1593,9 @@ finally:
 _is_owui = mod._is_owui_managed_icon
 _assert(_is_owui(""), "_is_owui_managed_icon: empty string → True (no icon)")
 _assert(_is_owui("data:image/svg+xml;base64,ABC"), "_is_owui_managed_icon: data: URL → True")
-_assert(_is_owui("https://openrouter.ai/images/models/openai.svg"), "_is_owui_managed_icon: openrouter.ai URL → True")
+_assert(_is_owui("https://openrouter.ai/images/models/openai.svg"), "_is_owui_managed_icon: old /images/models/ URL → True")
+_assert(_is_owui("https://openrouter.ai/images/icons/OpenAI.svg"), "_is_owui_managed_icon: new /images/icons/ URL → True")
+_assert(_is_owui("https://openrouter.ai/images/icons/Anthropic.svg"), "_is_owui_managed_icon: icons path anthropic → True")
 _assert(not _is_owui("https://custom-icon.example.com/icon.png"), "_is_owui_managed_icon: external URL → False")
 _assert(not _is_owui("https://cdn.openai.com/logo.png"), "_is_owui_managed_icon: other https URL → False")
 
@@ -1807,18 +1870,30 @@ _assert("1." in _result_fmt_dup and "2." in _result_fmt_dup, "citations: both en
 
 _section("31. All provider icons")
 
+# Providers confirmed to have icons at /images/icons/ (verified May 2025)
 _ALL_PROVIDER_KEYS = [
     "openai", "anthropic", "google", "meta-llama", "mistralai",
-    "amazon", "deepseek", "x-ai", "cohere", "perplexity",
-    "allenai", "qwen", "nvidia", "databricks", "microsoft",
-    "together", "fireworks", "sambanova", "cerebras", "groq",
-    "inflection", "01-ai",
+    "amazon", "deepseek", "cohere", "perplexity", "qwen",
+    "microsoft", "fireworks", "moonshotai",
 ]
 for _prov_key in _ALL_PROVIDER_KEYS:
     _prov_icon = Pipe.get_provider_icon(_prov_key)
     _assert(
         _prov_icon is not None and len(_prov_icon) > 0,
         f"provider icon: '{_prov_key}' → non-empty URL",
+    )
+    _assert(
+        "images/icons" in (_prov_icon or ""),
+        f"provider icon: '{_prov_key}' URL uses /images/icons/",
+    )
+
+# Providers without icons should return None (no broken-URL fallback)
+_NO_ICON_PROVIDERS = ["x-ai", "allenai", "nvidia", "databricks", "together",
+                      "sambanova", "cerebras", "groq", "inflection", "01-ai"]
+for _prov_key in _NO_ICON_PROVIDERS:
+    _assert(
+        Pipe.get_provider_icon(_prov_key) is None,
+        f"provider icon: '{_prov_key}' → None (no valid icon available)",
     )
 
 _assert(Pipe.get_provider_icon("unknown-provider") is None, "provider icon: unknown → None")
