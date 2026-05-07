@@ -43,6 +43,7 @@ Pipe = mod.Pipe
 _insert_citations = mod._insert_citations
 _format_citation_list = mod._format_citation_list
 _OWUI_INTERNAL_KEYS = mod._OWUI_INTERNAL_KEYS
+_is_owui_managed_icon = mod._is_owui_managed_icon
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _PASS = 0
@@ -1380,7 +1381,9 @@ with patch.object(_pipe_with_sync._session, "get", return_value=_mock_withsync):
 # 25d. Valve default is True
 _assert(Pipe.Valves(OPENROUTER_API_KEY="k").SYNC_PROVIDER_ICONS is True, "SYNC_PROVIDER_ICONS default is True")
 
-# 25e. Non-function module → returns early without DB calls
+# 25e. No function_id → returns early without DB calls
+# function_id is cached in __init__; pipes created in tests have _function_id=None
+# because the test module name doesn't start with "function_".
 _pipe_nofunc = Pipe()
 _pipe_nofunc.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
 _mock_Models_nf = MagicMock()
@@ -1389,25 +1392,25 @@ _fake_owui_nf.Models = _mock_Models_nf
 _fake_owui_nf.ModelForm = MagicMock()
 _fake_owui_nf.ModelMeta = MagicMock()
 _fake_owui_nf.ModelParams = MagicMock()
-_orig_module_nf = Pipe.__module__
 try:
     sys.modules["open_webui.models.models"] = _fake_owui_nf
-    # Module name doesn't start with "function_" → should skip
-    Pipe.__module__ = "openrouter_pipe"
+    # _pipe_nofunc._function_id is None (no "function_" prefix at init time) → skip
+    _assert(_pipe_nofunc._function_id is None, "_sync_model_icons: _function_id is None outside OWUI")
     _pipe_nofunc._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
     _assert(
         not _mock_Models_nf.get_model_by_id.called,
-        "_sync_model_icons: skips DB when module is not function_*",
+        "_sync_model_icons: skips DB when _function_id is None",
     )
 finally:
-    Pipe.__module__ = _orig_module_nf
     sys.modules.pop("open_webui.models.models", None)
 
-# 25f. With function_ module → uses prefixed IDs for DB operations
+# 25f. With function_id set → uses prefixed IDs; does NOT add to _icons_synced after insert
+# (OWUI may overwrite the record after pipes() returns; confirmed on next call)
 _pipe_func = Pipe()
 _pipe_func.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe_func._function_id = "openrouter_pipe"  # simulate OWUI module naming
 _mock_Models_f = MagicMock()
-_mock_Models_f.get_model_by_id.return_value = None  # No existing record
+_mock_Models_f.get_model_by_id.return_value = None  # No existing record yet
 _mock_ModelForm_f = MagicMock()
 _mock_ModelMeta_f = MagicMock()
 _mock_ModelParams_f = MagicMock()
@@ -1416,10 +1419,8 @@ _fake_owui_f.Models = _mock_Models_f
 _fake_owui_f.ModelForm = _mock_ModelForm_f
 _fake_owui_f.ModelMeta = _mock_ModelMeta_f
 _fake_owui_f.ModelParams = _mock_ModelParams_f
-_orig_module_f = Pipe.__module__
 try:
     sys.modules["open_webui.models.models"] = _fake_owui_f
-    Pipe.__module__ = "function_openrouter_pipe"
     _pipe_func._sync_model_icons([
         {"id": "openai/gpt-4o", "name": "GPT-4o"},
         {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5"},
@@ -1440,9 +1441,6 @@ try:
         "_sync_model_icons: insert_new_model called for new models",
     )
     # Verify the ModelForm ID is prefixed
-    _insert_form = _mock_Models_f.insert_new_model.call_args_list[0].args[0]
-    _insert_id = _mock_ModelForm_f.call_args_list[0].kwargs.get("id", _mock_ModelForm_f.call_args_list[0].args[0] if _mock_ModelForm_f.call_args_list[0].args else "")
-    # ModelForm was called with id=prefixed_id
     _form_calls = _mock_ModelForm_f.call_args_list
     _form_ids = [c.kwargs.get("id", "") for c in _form_calls]
     _assert(
@@ -1453,44 +1451,88 @@ try:
         "openrouter_pipe.anthropic/claude-3.5-sonnet" in _form_ids,
         "_sync_model_icons: ModelForm uses prefixed ID (anthropic)",
     )
-    # Verify _icons_synced tracks the RAW model IDs
+    # After insert (model not yet registered by OWUI), _icons_synced must NOT be updated.
+    # The next cache-hit call will confirm the icon is set correctly.
     _assert(
-        "openai/gpt-4o" in _pipe_func._icons_synced,
-        "_sync_model_icons: _icons_synced uses raw model ID",
+        "openai/gpt-4o" not in _pipe_func._icons_synced,
+        "_sync_model_icons: _icons_synced NOT updated after insert (allows retry)",
     )
 finally:
-    Pipe.__module__ = _orig_module_f
     sys.modules.pop("open_webui.models.models", None)
 
-# 25g. Existing model with icon → skips overwrite
+# 25g. Existing model with user custom icon → skips overwrite
 _pipe_skip = Pipe()
 _pipe_skip.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe_skip._function_id = "openrouter_pipe"  # simulate OWUI module naming
 _mock_Models_s = MagicMock()
 _existing_model = MagicMock()
 _existing_model.meta.profile_image_url = "https://custom-icon.example.com/icon.png"
 _existing_model.name = "Custom GPT"
+_existing_model.params = None
 _mock_Models_s.get_model_by_id.return_value = _existing_model
 _fake_owui_s = ModuleType("open_webui.models.models")
 _fake_owui_s.Models = _mock_Models_s
 _fake_owui_s.ModelForm = MagicMock()
 _fake_owui_s.ModelMeta = MagicMock()
 _fake_owui_s.ModelParams = MagicMock()
-_orig_module_s = Pipe.__module__
 try:
     sys.modules["open_webui.models.models"] = _fake_owui_s
-    Pipe.__module__ = "function_openrouter_pipe"
     _pipe_skip._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
     _assert(
         not _mock_Models_s.update_model_by_id.called,
-        "_sync_model_icons: skips update when model has custom icon",
+        "_sync_model_icons: skips update when model has user custom icon",
     )
     _assert(
         not _mock_Models_s.insert_new_model.called,
-        "_sync_model_icons: skips insert when model has custom icon",
+        "_sync_model_icons: skips insert when model has user custom icon",
+    )
+    _assert(
+        "openai/gpt-4o" in _pipe_skip._icons_synced,
+        "_sync_model_icons: adds to _icons_synced when skipping custom icon",
     )
 finally:
-    Pipe.__module__ = _orig_module_s
     sys.modules.pop("open_webui.models.models", None)
+
+# 25h. Existing model with OWUI default (data: URL) icon → updates with provider icon
+_pipe_update = Pipe()
+_pipe_update.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe_update._function_id = "openrouter_pipe"  # simulate OWUI module naming
+_mock_Models_u = MagicMock()
+_existing_default = MagicMock()
+_existing_default.name = "GPT-4o"
+_existing_default.meta.profile_image_url = "data:image/svg+xml;base64,ABC123=="
+_existing_default.params = None
+_mock_Models_u.get_model_by_id.return_value = _existing_default
+_fake_owui_u = ModuleType("open_webui.models.models")
+_fake_owui_u.Models = _mock_Models_u
+_fake_owui_u.ModelForm = MagicMock()
+_fake_owui_u.ModelMeta = MagicMock()
+_fake_owui_u.ModelParams = MagicMock()
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_u
+    _pipe_update._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
+    _assert(
+        _mock_Models_u.update_model_by_id.called,
+        "_sync_model_icons: updates model when icon is OWUI default (data: URL)",
+    )
+    _assert(
+        not _mock_Models_u.insert_new_model.called,
+        "_sync_model_icons: does not insert when model already exists",
+    )
+    _assert(
+        "openai/gpt-4o" in _pipe_update._icons_synced,
+        "_sync_model_icons: adds to _icons_synced after successful update",
+    )
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# 25i. _is_owui_managed_icon helper
+_is_owui = mod._is_owui_managed_icon
+_assert(_is_owui(""), "_is_owui_managed_icon: empty string → True (no icon)")
+_assert(_is_owui("data:image/svg+xml;base64,ABC"), "_is_owui_managed_icon: data: URL → True")
+_assert(_is_owui("https://openrouter.ai/images/models/openai.svg"), "_is_owui_managed_icon: openrouter.ai URL → True")
+_assert(not _is_owui("https://custom-icon.example.com/icon.png"), "_is_owui_managed_icon: external URL → False")
+_assert(not _is_owui("https://cdn.openai.com/logo.png"), "_is_owui_managed_icon: other https URL → False")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary

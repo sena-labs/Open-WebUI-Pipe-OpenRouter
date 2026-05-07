@@ -72,6 +72,21 @@ def _is_safe_url(url: str) -> bool:
     return isinstance(url, str) and url.lower().startswith(("http://", "https://"))
 
 
+def _is_owui_managed_icon(url: str) -> bool:
+    """Return True if the icon URL was set by OWUI or our sync logic.
+
+    data: URLs are the pipe's own SVG icon that OWUI assigns as default to all
+    manifold child models.  openrouter.ai/images/models/ URLs are the provider
+    icons we write.  Any other URL is assumed to be a user-set custom icon and
+    must not be overwritten.
+    """
+    return (
+        not url
+        or url.startswith("data:")
+        or url.startswith("https://openrouter.ai/images/models/")
+    )
+
+
 def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
     """Replace [n] references with markdown links (only safe HTTP URLs)."""
     if not citations or not text:
@@ -240,6 +255,11 @@ class Pipe:
         self._models_cache_key: str = ""
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
+        # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
+        _fm = type(self).__module__ or ""
+        self._function_id: Optional[str] = (
+            _fm[len("function_"):] if _fm.startswith("function_") else None
+        )
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
 
@@ -274,6 +294,11 @@ class Pipe:
 
         # Return cached models if still valid
         if self._models_cache_valid() and self._models_cache is not None:
+            # Continue syncing icons on cache hits until all models are confirmed.
+            # This resolves the race condition where OWUI registers models (and may
+            # overwrite icons) only after the first pipes() call returns.
+            if self.valves.SYNC_PROVIDER_ICONS and len(self._icons_synced) < len(self._models_cache):
+                self._sync_model_icons(self._models_cache)
             return self._models_cache
 
         headers = self._build_headers(include_content_type=False)
@@ -456,14 +481,18 @@ class Pipe:
         """Write provider icons into Open WebUI's Models DB.
 
         Open WebUI serves model icons from its database, not from the dicts
-        returned by ``pipes()``.  Crucially, Open WebUI prefixes every pipe
-        model ID with ``{function_id}.`` (e.g. ``openrouter_pipe.openai/gpt-4o``)
-        and the frontend requests icons using that prefixed ID.  This method
-        discovers the pipe's own *function_id* from ``type(self).__module__``
-        (set to ``function_{id}`` by Open WebUI's module loader) and writes
-        DB records keyed by the full prefixed ID.
+        returned by ``pipes()``.  OWUI prefixes every pipe model ID with
+        ``{function_id}.`` (e.g. ``openrouter_pipe.openai/gpt-4o``) and the
+        frontend requests icons using that prefixed ID.
 
-        Models that already have a custom icon in the DB are skipped.
+        Called both on cache miss and on subsequent cache hits (until all
+        models are confirmed synced).  The cache-hit path is needed because
+        OWUI registers models *after* ``pipes()`` returns, potentially
+        overwriting any early insert with its own default icon; the second
+        call finds the models already in DB and updates them correctly.
+
+        User-set custom icons (any URL that is not a ``data:`` URL and does not
+        start with ``https://openrouter.ai/images/models/``) are preserved.
         This is a best-effort operation — failures are silently logged.
         """
         try:
@@ -477,14 +506,10 @@ class Pipe:
             # Running outside Open WebUI (e.g. standalone tests) — skip silently
             return
 
-        # Discover the pipe's function_id.  Open WebUI loads pipe modules as
-        # ``function_{function_id}`` so type(self).__module__ exposes it.
-        func_module = type(self).__module__ or ""
-        if func_module.startswith("function_"):
-            function_id = func_module[len("function_"):]
-        else:
-            # Cannot determine the pipe's function_id — skip icon sync
+        # function_id was resolved once in __init__ from type(self).__module__
+        if not self._function_id:
             return
+        function_id = self._function_id
 
         for model in models:
             model_id = model.get("id", "")
@@ -509,17 +534,28 @@ class Pipe:
             try:
                 existing = Models.get_model_by_id(db_model_id)
                 if existing:
-                    # If model already has a custom icon, don't overwrite it
                     existing_icon = ""
                     if hasattr(existing, "meta") and existing.meta:
                         existing_icon = (
                             getattr(existing.meta, "profile_image_url", "") or ""
                         )
-                    if existing_icon:
+
+                    # Skip if icon is already the correct provider URL
+                    if existing_icon == icon_url:
                         self._icons_synced.add(model_id)
                         continue
 
-                    # Update existing model with icon
+                    # Skip if icon was set by the user (not by OWUI or our sync).
+                    # data: URLs are OWUI defaults; openrouter.ai URLs are ours.
+                    if existing_icon and not _is_owui_managed_icon(existing_icon):
+                        self._icons_synced.add(model_id)
+                        continue
+
+                    # Proceed: icon is empty, an OWUI default, or one of our URLs
+                    # Update existing model with icon, preserving user-set params
+                    existing_params = ModelParams()
+                    if hasattr(existing, "params") and existing.params:
+                        existing_params = existing.params
                     Models.update_model_by_id(
                         db_model_id,
                         ModelForm(
@@ -530,26 +566,34 @@ class Pipe:
                                 else model.get("name", model_id)
                             ),
                             meta=ModelMeta(profile_image_url=icon_url),
-                            params=ModelParams(),
+                            params=existing_params,
                         ),
                     )
                 else:
-                    # Insert new model record with icon
-                    Models.insert_new_model(
-                        ModelForm(
-                            id=db_model_id,
-                            name=model.get("name", model_id),
-                            meta=ModelMeta(profile_image_url=icon_url),
-                            params=ModelParams(),
-                        ),
-                        user_id="pipe:openrouter",
-                    )
+                    # Model not yet in DB — best-effort early insert.
+                    # OWUI will register models after pipes() returns and may
+                    # overwrite this record, so do NOT mark as synced here.
+                    # The next cache-hit call to _sync_model_icons will find the
+                    # model in DB and update it correctly.
+                    try:
+                        Models.insert_new_model(
+                            ModelForm(
+                                id=db_model_id,
+                                name=model.get("name", model_id),
+                                meta=ModelMeta(profile_image_url=icon_url),
+                                params=ModelParams(),
+                            ),
+                            user_id="pipe:openrouter",
+                        )
+                    except Exception:
+                        pass
+                    continue  # do not add to _icons_synced yet
 
                 self._icons_synced.add(model_id)
             except Exception as exc:
                 # Best-effort — don't let icon sync break model listing
+                # Do NOT add to _icons_synced: allow retry on next call
                 print(f"[OpenRouter Pipe] Icon sync failed for {db_model_id}: {exc}")
-                self._icons_synced.add(model_id)  # Don't retry on every refresh
 
     @staticmethod
     def get_provider_icon(provider: str) -> Optional[str]:
