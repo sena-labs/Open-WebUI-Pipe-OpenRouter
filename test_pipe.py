@@ -2145,6 +2145,18 @@ _assert("not_a_dict" not in _result_mixed, "_format_image_output: string item no
 _img_no_url = [{"image_url": {}}, {"image_url": {"url": ""}}]
 _assert(_format_image_output(_img_no_url) == "", "_format_image_output: missing/empty url → empty string")
 
+# 34e2. Unsafe URL schemes are rejected
+_img_js = [{"image_url": {"url": "javascript:alert(1)"}}]
+_assert(_format_image_output(_img_js) == "", "_format_image_output: javascript: scheme → empty (rejected)")
+_img_file = [{"image_url": {"url": "file:///etc/passwd"}}]
+_assert(_format_image_output(_img_file) == "", "_format_image_output: file: scheme → empty (rejected)")
+
+# 34e3. Closing parenthesis in URL is percent-encoded
+_img_paren = [{"image_url": {"url": "https://example.com/img(1).png"}}]
+_result_paren = _format_image_output(_img_paren)
+_assert("%29" in _result_paren, "_format_image_output: ) in URL → percent-encoded as %29")
+_assert("(1)" not in _result_paren, "_format_image_output: raw ) not in output")
+
 # ── Non-streaming audio response ───────────────────────────────────────────
 
 _pipe34 = Pipe()
@@ -2208,7 +2220,7 @@ with patch.object(_pipe34, "_retryable_request", return_value=_mock_image):
 _assert("![Generated image]" in _image_result, "non-stream image: markdown image tag present")
 _assert("IMGDATA==" in _image_result, "non-stream image: URL data in output")
 
-# 34j. Image output with text content → both text and image in response
+# 34j. Image output with text content → both text and image in response, separated by blank line
 _mock_image_with_text = MagicMock()
 _mock_image_with_text.json.return_value = {
     "choices": [{
@@ -2222,6 +2234,21 @@ with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_with_t
     _image_text_result = _pipe34._non_stream_response({}, {})
 _assert("Here is the image:" in _image_text_result, "non-stream image+text: text preserved")
 _assert("![Generated image]" in _image_text_result, "non-stream image+text: image markdown present")
+_assert("\n\n![Generated image]" in _image_text_result, "non-stream image+text: blank line before image tag")
+
+# 34j2. Image-only (no text) → no leading blank lines before image tag
+_mock_image_only = MagicMock()
+_mock_image_only.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": None,
+            "images": [{"image_url": {"url": "data:image/png;base64,ONLY=="}}],
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_only):
+    _image_only_result = _pipe34._non_stream_response({}, {})
+_assert(_image_only_result.startswith("![Generated image]"), "non-stream image-only: no leading blank lines")
 
 # 34k. message.content = None handled without crash (or "")
 _mock_content_null = MagicMock()

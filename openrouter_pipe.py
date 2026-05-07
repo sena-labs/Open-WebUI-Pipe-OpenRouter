@@ -157,14 +157,22 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
 
 
 def _format_image_output(images: list) -> str:
-    """Format OpenRouter image output objects as markdown image tags."""
+    """Format OpenRouter image output objects as markdown image tags.
+
+    Only http(s) and data:image/* URLs are rendered; others are dropped.
+    Closing parentheses in URLs are percent-encoded to avoid breaking markdown.
+    """
     parts = []
     for img in (images or []):
         if not isinstance(img, dict):
             continue
         url = (img.get("image_url") or {}).get("url", "")
-        if url:
-            parts.append(f"![Generated image]({url})")
+        if not url:
+            continue
+        lower = url.lower()
+        if not (lower.startswith(("http://", "https://")) or lower.startswith("data:image/")):
+            continue
+        parts.append(f"![Generated image]({url.replace(')', '%29')})")
     return "\n\n".join(parts)
 
 
@@ -889,7 +897,9 @@ class Pipe:
             if content:
                 final_parts.append(content)
             if image_md:
-                final_parts.append(image_md)
+                # Ensure a blank line before the image when there is preceding text
+                prefix = "\n\n" if final_parts else ""
+                final_parts.append(prefix + image_md)
 
             # Show which fallback model actually responded
             actual_model = res.get("model", "")
