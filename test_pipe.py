@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for OpenRouter Pipe v1.2.0
+Comprehensive test suite for OpenRouter Pipe v1.3.0
 Runs with: python test_pipe.py
 
 Author: Sena Labs (https://github.com/sena-labs)
