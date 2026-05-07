@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Access **300+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
+Access **340+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
 reasoning tokens, streaming, fallbacks, and cache control out of the box.
 
 ## Feature gallery
@@ -58,7 +58,7 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — 22 provider logos synced directly into Open WebUI's model database.
+- **Provider icons** — 13 provider logos synced directly into Open WebUI's model database.
 - **Retry logic** — exponential backoff with jitter on timeout and connection errors.
 - **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).
 - **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
@@ -96,7 +96,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 252 tests — verify everything is green
+python test_pipe.py        # 431 tests — verify everything is green
 ```
 
 ## Usage
@@ -199,8 +199,8 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (252 tests)
-├── integration_test.py     # Live API integration tests (47 tests)
+├── test_pipe.py            # Unit test suite (431 tests)
+├── integration_test.py     # Live API integration tests (43 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
 ├── CONTRIBUTING.md         # Contribution guidelines
@@ -229,7 +229,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (252 tests)
+python test_pipe.py                       # Unit tests (431 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

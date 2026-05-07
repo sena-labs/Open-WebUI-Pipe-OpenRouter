@@ -1,5 +1,5 @@
 """
-Integration test for OpenRouter Pipe v1.2.0
+Integration test for OpenRouter Pipe v1.3.0
 Tests the pipe against the LIVE OpenRouter API.
 
 Usage:
