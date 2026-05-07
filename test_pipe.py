@@ -1534,6 +1534,326 @@ _assert(_is_owui("https://openrouter.ai/images/models/openai.svg"), "_is_owui_ma
 _assert(not _is_owui("https://custom-icon.example.com/icon.png"), "_is_owui_managed_icon: external URL → False")
 _assert(not _is_owui("https://cdn.openai.com/logo.png"), "_is_owui_managed_icon: other https URL → False")
 
+# ── 26. _stream_response() edge cases ────────────────────────────────────────
+
+_section("26. _stream_response() edge cases")
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 26a. Reasoning + content in same chunk → <think>…</think> then content
+sse_mixed_chunk = [
+    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Inner thought", "content": "Answer"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_mixed_chunk)):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("<think>" in full, "stream mixed chunk: <think> opened for reasoning")
+_assert("Inner thought" in full, "stream mixed chunk: reasoning present")
+_assert("</think>" in full, "stream mixed chunk: </think> closed before content")
+_assert("Answer" in full, "stream mixed chunk: content present after think")
+
+# 26b. Empty reasoning string → <think> NOT opened
+sse_empty_reason = [
+    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "", "content": "Only content"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_reason)):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("<think>" not in full, "stream empty reasoning: <think> NOT opened")
+_assert("Only content" in full, "stream empty reasoning: content still present")
+
+# 26c. Empty content string → nothing yielded for that chunk
+sse_empty_content = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": ""}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_content)):
+    output = list(pipe._stream_response({}, {}))
+_assert("".join(output) == "", "stream empty content string: nothing yielded")
+
+# 26d. Non-dict item in choices[0] → skipped safely, next chunk processed
+sse_bad_choice = [
+    b"data: " + json.dumps({"choices": [42]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "OK"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_bad_choice)):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("OK" in full, "stream non-dict choice: skipped safely, next chunk processed")
+
+# 26e. Citations-only chunk (no choices) → updates citations used by later content
+sse_citations_first = [
+    b"data: " + json.dumps({"citations": ["https://example.com"]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "See [1]"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_citations_first)):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("https://example.com" in full, "stream citations-only chunk: citation applied to later content")
+_assert("Citations:" in full, "stream citations-only chunk: citation list appended")
+
+# 26f. Generic exception raised by _retryable_request → yields OpenRouter Error
+with patch.object(pipe, "_retryable_request", side_effect=ValueError("unexpected")):
+    output = list(pipe._stream_response({}, {}))
+full = "".join(output)
+_assert("OpenRouter Error" in full, "stream generic exception: error yielded")
+_assert("unexpected" in full, "stream generic exception: detail preserved")
+
+# ── 27. pipes() additional paths ─────────────────────────────────────────────
+
+_section("27. pipes() additional paths")
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+
+# 27a. Model missing "id" key → skipped
+_mock_no_id = MagicMock()
+_mock_no_id.status_code = 200
+_mock_no_id.raise_for_status = MagicMock()
+_mock_no_id.json.return_value = {
+    "data": [
+        {"name": "No ID model"},
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    ]
+}
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_no_id):
+    models = pipe.pipes()
+_assert(len(models) == 1, "pipes: model missing 'id' is skipped")
+_assert(models[0]["id"] == "openai/gpt-4o", "pipes: model with valid id kept")
+
+# 27b. Model missing "name" key → falls back to model_id as name
+_mock_no_name = MagicMock()
+_mock_no_name.status_code = 200
+_mock_no_name.raise_for_status = MagicMock()
+_mock_no_name.json.return_value = {
+    "data": [
+        {"id": "openai/gpt-4o"},
+    ]
+}
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_no_name):
+    models = pipe.pipes()
+_assert(len(models) == 1, "pipes: model missing 'name' returns 1 entry")
+_assert("openai/gpt-4o" in models[0]["name"], "pipes: model_id used as fallback name")
+
+# 27c. FREE_ONLY with invalid pricing string (ValueError) → is_free=False → model excluded
+_mock_invalid_price = MagicMock()
+_mock_invalid_price.status_code = 200
+_mock_invalid_price.raise_for_status = MagicMock()
+_mock_invalid_price.json.return_value = {
+    "data": [
+        {"id": "some/model", "name": "Model", "pricing": {"prompt": "not-a-number", "completion": "0"}},
+    ]
+}
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_invalid_price):
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes FREE_ONLY invalid pricing: model excluded → error entry")
+_assert("No free models" in models[0]["name"], "pipes FREE_ONLY invalid pricing: correct error message")
+
+# 27d. HTTPError on /models with non-JSON body → graceful error (no crash)
+_mock_5xx_no_json = MagicMock()
+_mock_5xx_no_json.status_code = 503
+_mock_5xx_no_json.json.side_effect = ValueError("not JSON")
+_mock_5xx_no_json.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_5xx_no_json)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+pipe._models_cache = None
+with patch.object(pipe._session, "get", return_value=_mock_5xx_no_json):
+    models = pipe.pipes()
+_assert(models[0]["id"] == "error", "pipes models non-JSON HTTPError: error id")
+_assert("503" in models[0]["name"], "pipes models non-JSON HTTPError: status code in name")
+
+# ── 28. _inject_cache_control() edge cases ────────────────────────────────────
+
+_section("28. _inject_cache_control() edge cases")
+
+pipe = Pipe()
+
+# 28a. All image_url chunks → no cache_control applied (no text chunks to tag)
+payload_all_img = {
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://img.example.com/a.jpg"}},
+                {"type": "image_url", "image_url": {"url": "https://img.example.com/b.jpg"}},
+            ],
+        }
+    ]
+}
+pipe._inject_cache_control(payload_all_img)
+_assert(
+    all("cache_control" not in chunk for chunk in payload_all_img["messages"][0]["content"]),
+    "cache_control: all image chunks → nothing applied",
+)
+
+# 28b. Mixed image + text chunks → text chunk gets cache_control, image chunk does not
+payload_mixed_img = {
+    "messages": [
+        {
+            "role": "system",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://img.example.com/a.jpg"}},
+                {"type": "text", "text": "Describe this image in detail."},
+            ],
+        }
+    ]
+}
+pipe._inject_cache_control(payload_mixed_img)
+_assert(
+    "cache_control" not in payload_mixed_img["messages"][0]["content"][0],
+    "cache_control: image_url chunk skipped in mixed content",
+)
+_assert(
+    payload_mixed_img["messages"][0]["content"][1].get("cache_control") == {"type": "ephemeral"},
+    "cache_control: text chunk in mixed content gets cache_control",
+)
+
+# 28c. User role list content (no system) → falls through to user, applies cache_control
+payload_user_list = {
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Short"},
+                {"type": "text", "text": "A longer user message that should receive cache_control injection"},
+            ],
+        }
+    ]
+}
+pipe._inject_cache_control(payload_user_list)
+_assert(
+    payload_user_list["messages"][0]["content"][1].get("cache_control") == {"type": "ephemeral"},
+    "cache_control: user role list content gets cache_control when no system role",
+)
+
+# ── 29. _non_stream_response() edge cases ────────────────────────────────────
+
+_section("29. _non_stream_response() edge cases")
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 29a. choices=[] AND top-level "error" → error message (not "empty response")
+_mock_err_empty_choices = MagicMock()
+_mock_err_empty_choices.json.return_value = {
+    "choices": [],
+    "error": {"message": "Context window exceeded"},
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_err_empty_choices):
+    result = pipe._non_stream_response({}, {})
+_assert("Context window exceeded" in result, "non-stream: error field takes priority over empty choices")
+
+# 29b. message.content is None → no crash, returns empty string
+_mock_none_content = MagicMock()
+_mock_none_content.json.return_value = {
+    "choices": [{"message": {"content": None}}]
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_none_content):
+    result = pipe._non_stream_response({}, {})
+_assert(isinstance(result, str), "non-stream: None content → still returns string")
+_assert(result == "", "non-stream: None content → empty string (no crash)")
+
+# 29c. message dict missing "content" key → returns empty string (no crash)
+_mock_no_content_key = MagicMock()
+_mock_no_content_key.json.return_value = {
+    "choices": [{"message": {"role": "assistant"}}]
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_no_content_key):
+    result = pipe._non_stream_response({}, {})
+_assert(isinstance(result, str), "non-stream: missing content key → still returns string")
+_assert(result == "", "non-stream: missing content key → empty string (no crash)")
+
+# ── 30. Citation helper edge cases ───────────────────────────────────────────
+
+_section("30. Citation helper edge cases")
+
+# 30a. [0] reference → left unchanged (1-based; idx = -1 is out of range)
+_assert(
+    _insert_citations("See [0].", ["https://example.com"]) == "See [0].",
+    "citations: [0] reference left unchanged (1-based indexing)",
+)
+
+# 30b. Multiple [1] references in same text → all replaced with the same URL
+_result_dup = _insert_citations("See [1] and also [1].", ["https://example.com"])
+_assert(
+    _result_dup == "See [[1]](https://example.com) and also [[1]](https://example.com).",
+    "citations: duplicate [1] references both replaced",
+)
+
+# 30c. Citation URL with query params → URL preserved verbatim in the link
+_cite_url_params = "https://example.com/article?q=test&ref=2"
+_result_params = _insert_citations("Check [1].", [_cite_url_params])
+_assert(
+    _cite_url_params in _result_params,
+    "citations: URL query params preserved verbatim in link",
+)
+
+# 30d. _format_citation_list() with duplicate URLs → both listed (no deduplication)
+_result_fmt_dup = _format_citation_list(["https://a.com", "https://a.com"])
+_assert(_result_fmt_dup.count("https://a.com") == 2, "citations: duplicate URLs both listed")
+_assert("1." in _result_fmt_dup and "2." in _result_fmt_dup, "citations: both entries numbered")
+
+# ── 31. All provider icons ───────────────────────────────────────────────────
+
+_section("31. All provider icons")
+
+_ALL_PROVIDER_KEYS = [
+    "openai", "anthropic", "google", "meta-llama", "mistralai",
+    "amazon", "deepseek", "x-ai", "cohere", "perplexity",
+    "allenai", "qwen", "nvidia", "databricks", "microsoft",
+    "together", "fireworks", "sambanova", "cerebras", "groq",
+    "inflection", "01-ai",
+]
+for _prov_key in _ALL_PROVIDER_KEYS:
+    _prov_icon = Pipe.get_provider_icon(_prov_key)
+    _assert(
+        _prov_icon is not None and len(_prov_icon) > 0,
+        f"provider icon: '{_prov_key}' → non-empty URL",
+    )
+
+_assert(Pipe.get_provider_icon("unknown-provider") is None, "provider icon: unknown → None")
+_assert(
+    Pipe.get_provider_icon("OPENAI") is not None,
+    "provider icon: uppercase input → case-insensitive match",
+)
+
+# ── 32. _retryable_request() stream flag ─────────────────────────────────────
+
+_section("32. _retryable_request() stream flag")
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 32a. stream=True → requests.Session.post called with stream=True
+_mock_ok_stream = MagicMock()
+_mock_ok_stream.raise_for_status = MagicMock()
+with patch.object(pipe._session, "post", return_value=_mock_ok_stream) as _mock_post_s:
+    pipe._retryable_request({}, {}, stream=True)
+_assert(
+    _mock_post_s.call_args.kwargs.get("stream") is True
+    or _mock_post_s.call_args[1].get("stream") is True,
+    "retryable: stream=True forwarded to requests.Session.post",
+)
+
+# 32b. stream=False → requests.Session.post called with stream=False
+_mock_ok_nostream = MagicMock()
+_mock_ok_nostream.raise_for_status = MagicMock()
+with patch.object(pipe._session, "post", return_value=_mock_ok_nostream) as _mock_post_ns:
+    pipe._retryable_request({}, {}, stream=False)
+_assert(
+    _mock_post_ns.call_args.kwargs.get("stream") is False
+    or _mock_post_ns.call_args[1].get("stream") is False,
+    "retryable: stream=False forwarded to requests.Session.post",
+)
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
