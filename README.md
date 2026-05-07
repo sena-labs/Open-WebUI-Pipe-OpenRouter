@@ -296,15 +296,18 @@ Some models may be temporarily unavailable. Try a different model or check
 
 **Q: Does this work with Open WebUI's native tool calling?**
 
-A: Tool calling is handled by Open WebUI before the pipe receives the request — the pipe forwards
-the composed messages as-is. Whether a given OpenRouter model supports tool use depends on
+A: Open WebUI manages tool calling in an iterative loop: when the pipe's response contains
+tool calls, Open WebUI executes them, appends the results as `role: "tool"` messages, and
+re-invokes the pipe with the updated thread. The pipe forwards the full message list to
+OpenRouter on each invocation. Whether a model can generate tool calls depends on
 OpenRouter's provider support for that model.
 
 **Q: Why does `FREE_ONLY` include models without a `:free` suffix?**
 
-A: Some models (e.g. `google/gemma-*`, `qwen/qwen3-*`) are genuinely free but are not suffixed
-with `:free`. The pipe checks both the suffix and the actual pricing (`0/0` prompt and completion
-cost) to catch these cases.
+A: Some models are listed as free on OpenRouter without carrying a `:free` suffix in their
+ID. The pipe uses a two-pass check: first it looks for the `:free` suffix, then it falls
+back to inspecting the `pricing.prompt` and `pricing.completion` fields returned by the
+OpenRouter `/models` endpoint — if both are `0`, the model is treated as free.
 
 **Q: Can I use multiple provider filters at once?**
 
