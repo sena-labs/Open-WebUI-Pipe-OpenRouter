@@ -156,6 +156,26 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     return f"\n\n---\n*{' · '.join(parts)}*"
 
 
+def _format_image_output(images: list) -> str:
+    """Format OpenRouter image output objects as markdown image tags.
+
+    Only http(s) and data:image/* URLs are rendered; others are dropped.
+    Closing parentheses in URLs are percent-encoded to avoid breaking markdown.
+    """
+    parts = []
+    for img in (images or []):
+        if not isinstance(img, dict):
+            continue
+        url = (img.get("image_url") or {}).get("url", "")
+        if not url:
+            continue
+        lower = url.lower()
+        if not (lower.startswith(("http://", "https://")) or lower.startswith("data:image/")):
+            continue
+        parts.append(f"![Generated image]({url.replace(')', '%29')})")
+    return "\n\n".join(parts)
+
+
 class Pipe:
     class Valves(BaseModel):
         OPENROUTER_API_KEY: str = Field(
@@ -859,14 +879,27 @@ class Pipe:
             citations = res.get("citations", [])
 
             reasoning = _insert_citations(message.get("reasoning", ""), citations)
-            content = _insert_citations(message.get("content", ""), citations)
+            content = _insert_citations(message.get("content") or "", citations)
             rendered_citations = _format_citation_list(citations)
+
+            # Audio output: show transcript when the model returns audio instead of text
+            audio_obj = message.get("audio") or {}
+            if audio_obj and not content:
+                transcript = audio_obj.get("transcript", "")
+                content = transcript or "*[Audio response — transcript not available.]*"
+
+            # Image output: render generated images as markdown
+            image_md = _format_image_output(message.get("images") or [])
 
             final_parts = []
             if reasoning:
                 final_parts.append(f"<think>\n{reasoning}\n</think>\n")
             if content:
                 final_parts.append(content)
+            if image_md:
+                # Ensure a blank line before the image when there is preceding text
+                prefix = "\n\n" if final_parts else ""
+                final_parts.append(prefix + image_md)
 
             # Show which fallback model actually responded
             actual_model = res.get("model", "")
@@ -951,7 +984,13 @@ class Pipe:
                 first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
                 delta = first_choice.get("delta", {})
                 reasoning = delta.get("reasoning", "")
-                content = delta.get("content", "")
+                content = delta.get("content") or ""
+
+                # Audio transcript fallback: stream the transcript when the model
+                # returns audio instead of text (e.g. openai/gpt-audio).
+                if not content:
+                    audio_delta = delta.get("audio") or {}
+                    content = audio_delta.get("transcript", "")
 
                 if reasoning:
                     if not in_think:

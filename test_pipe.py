@@ -2110,6 +2110,194 @@ _assert("USD" in _cc_values, "COST_CURRENCY options: USD present")
 _assert("EUR" in _cc_values, "COST_CURRENCY options: EUR present")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 34. Audio and image output model support
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("34. Audio / image output model support")
+
+# 34a. _format_image_output — empty list returns empty string
+from openrouter_pipe import _format_image_output
+_assert(_format_image_output([]) == "", "_format_image_output: empty list → empty string")
+_assert(_format_image_output(None) == "", "_format_image_output: None → empty string")
+
+# 34b. Single image with valid URL → markdown tag
+_img_single = [{"image_url": {"url": "data:image/png;base64,ABC=="}}]
+_result_img = _format_image_output(_img_single)
+_assert(_result_img == "![Generated image](data:image/png;base64,ABC==)", "_format_image_output: single image → markdown tag")
+
+# 34c. Multiple images → joined with double newline
+_img_multi = [
+    {"image_url": {"url": "data:image/png;base64,AAA=="}},
+    {"image_url": {"url": "data:image/png;base64,BBB=="}},
+]
+_result_multi = _format_image_output(_img_multi)
+_assert("![Generated image](data:image/png;base64,AAA==)" in _result_multi, "_format_image_output: multi — first image present")
+_assert("![Generated image](data:image/png;base64,BBB==)" in _result_multi, "_format_image_output: multi — second image present")
+_assert("\n\n" in _result_multi, "_format_image_output: multi — separated by double newline")
+
+# 34d. Non-dict items in list are skipped gracefully
+_img_mixed = ["not_a_dict", {"image_url": {"url": "https://example.com/img.png"}}, 42]
+_result_mixed = _format_image_output(_img_mixed)
+_assert("https://example.com/img.png" in _result_mixed, "_format_image_output: non-dict items skipped, valid item rendered")
+_assert("not_a_dict" not in _result_mixed, "_format_image_output: string item not in output")
+
+# 34e. Image dict missing 'url' key → skipped
+_img_no_url = [{"image_url": {}}, {"image_url": {"url": ""}}]
+_assert(_format_image_output(_img_no_url) == "", "_format_image_output: missing/empty url → empty string")
+
+# 34e2. Unsafe URL schemes are rejected
+_img_js = [{"image_url": {"url": "javascript:alert(1)"}}]
+_assert(_format_image_output(_img_js) == "", "_format_image_output: javascript: scheme → empty (rejected)")
+_img_file = [{"image_url": {"url": "file:///etc/passwd"}}]
+_assert(_format_image_output(_img_file) == "", "_format_image_output: file: scheme → empty (rejected)")
+
+# 34e3. Closing parenthesis in URL is percent-encoded
+_img_paren = [{"image_url": {"url": "https://example.com/img(1).png"}}]
+_result_paren = _format_image_output(_img_paren)
+_assert("%29" in _result_paren, "_format_image_output: ) in URL → percent-encoded as %29")
+_assert("(1)" not in _result_paren, "_format_image_output: raw ) not in output")
+
+# ── Non-streaming audio response ───────────────────────────────────────────
+
+_pipe34 = Pipe()
+_pipe34.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 34f. Audio model with transcript → transcript used as content
+_mock_audio = MagicMock()
+_mock_audio.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": None,
+            "audio": {"transcript": "Hello from audio", "data": "base64data...", "id": "audio_123"},
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio):
+    _audio_result = _pipe34._non_stream_response({}, {})
+_assert("Hello from audio" in _audio_result, "non-stream audio: transcript used as content")
+
+# 34g. Audio model without transcript → placeholder message returned
+_mock_audio_no_transcript = MagicMock()
+_mock_audio_no_transcript.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": None,
+            "audio": {"data": "base64audiodata...", "id": "audio_456"},
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_no_transcript):
+    _audio_no_tx_result = _pipe34._non_stream_response({}, {})
+_assert("transcript not available" in _audio_no_tx_result, "non-stream audio no transcript: placeholder shown")
+
+# 34h. Audio model with both content and audio → text content takes priority
+_mock_audio_with_content = MagicMock()
+_mock_audio_with_content.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": "Text response",
+            "audio": {"transcript": "Audio transcript", "data": "base64..."},
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_with_content):
+    _audio_content_result = _pipe34._non_stream_response({}, {})
+_assert("Text response" in _audio_content_result, "non-stream audio+content: text content preserved")
+_assert("Audio transcript" not in _audio_content_result, "non-stream audio+content: transcript not used when content present")
+
+# 34i. Image output model → markdown image tag in response
+_mock_image = MagicMock()
+_mock_image.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": None,
+            "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA=="}}],
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_image):
+    _image_result = _pipe34._non_stream_response({}, {})
+_assert("![Generated image]" in _image_result, "non-stream image: markdown image tag present")
+_assert("IMGDATA==" in _image_result, "non-stream image: URL data in output")
+
+# 34j. Image output with text content → both text and image in response, separated by blank line
+_mock_image_with_text = MagicMock()
+_mock_image_with_text.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": "Here is the image:",
+            "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA2=="}}],
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_with_text):
+    _image_text_result = _pipe34._non_stream_response({}, {})
+_assert("Here is the image:" in _image_text_result, "non-stream image+text: text preserved")
+_assert("![Generated image]" in _image_text_result, "non-stream image+text: image markdown present")
+_assert("\n\n![Generated image]" in _image_text_result, "non-stream image+text: blank line before image tag")
+
+# 34j2. Image-only (no text) → no leading blank lines before image tag
+_mock_image_only = MagicMock()
+_mock_image_only.json.return_value = {
+    "choices": [{
+        "message": {
+            "content": None,
+            "images": [{"image_url": {"url": "data:image/png;base64,ONLY=="}}],
+        }
+    }]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_only):
+    _image_only_result = _pipe34._non_stream_response({}, {})
+_assert(_image_only_result.startswith("![Generated image]"), "non-stream image-only: no leading blank lines")
+
+# 34k. message.content = None handled without crash (or "")
+_mock_content_null = MagicMock()
+_mock_content_null.json.return_value = {
+    "choices": [{"message": {"content": None}}]
+}
+with patch.object(_pipe34, "_retryable_request", return_value=_mock_content_null):
+    _null_result = _pipe34._non_stream_response({}, {})
+_assert(isinstance(_null_result, str), "non-stream content=None: returns string (no crash)")
+
+# ── Streaming audio response ────────────────────────────────────────────────
+
+_pipe34s = Pipe()
+_pipe34s.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 34l. Audio transcript in streaming delta → yielded as content
+_sse_audio_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": "Hello "}}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": "world"}}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_audio_chunks)):
+    _stream_audio_chunks = list(_pipe34s._stream_response({}, {}))
+_stream_audio_full = "".join(_stream_audio_chunks)
+_assert("Hello " in _stream_audio_full, "stream audio: first transcript chunk yielded")
+_assert("world" in _stream_audio_full, "stream audio: second transcript chunk yielded")
+
+# 34m. Mixed stream: normal content chunks + audio transcript fallback
+_sse_mixed_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Text first"}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": " then audio"}}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_mixed_chunks)):
+    _mixed_chunks = list(_pipe34s._stream_response({}, {}))
+_mixed_full = "".join(_mixed_chunks)
+_assert("Text first" in _mixed_full, "stream mixed: text content chunk present")
+_assert("then audio" in _mixed_full, "stream mixed: audio transcript chunk present")
+
+# 34n. Stream delta with content=None → handled as empty (no crash)
+_sse_null_content = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": None}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)):
+    _null_chunks = list(_pipe34s._stream_response({}, {}))
+_assert(isinstance("".join(_null_chunks), str), "stream content=None delta: no crash")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 
