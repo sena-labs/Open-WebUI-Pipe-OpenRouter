@@ -169,13 +169,13 @@ _assert(
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3. FREE_ONLY filter
+# 3. FREE_MODEL_FILTER='only'
 # ══════════════════════════════════════════════════════════════════════════════
 
-_section("3. FREE_ONLY filter")
+_section("3. FREE_MODEL_FILTER='only'")
 
 pipe_free = Pipe()
-pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY=API_KEY, FREE_ONLY=True)
+pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY=API_KEY, FREE_MODEL_FILTER="only")
 free_models = pipe_free.pipes()
 _assert(len(free_models) > 0, f"free models: {len(free_models)}")
 _assert(

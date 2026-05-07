@@ -3,13 +3,13 @@
   "name": "OpenRouter Pipe",
   "type": "manifold",
   "meta": {
-    "description": "Access 340+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 13 provider icons, and configurable retry logic.",
+    "description": "The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (auto/flex/priority/scale), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons.",
     "manifest": {
       "title": "OpenRouter Pipe",
       "author": "Sena Labs",
       "author_url": "https://github.com/sena-labs",
       "funding_url": "https://github.com/sponsors/sena-labs",
-      "version": "1.3.0",
+      "version": "1.6.0",
       "license": "MIT",
       "required_open_webui_version": "0.4.0",
       "requirements": ["requests>=2.20", "pydantic>=2.0"]

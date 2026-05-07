@@ -116,11 +116,12 @@ for k in [
     "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
     "OPENROUTER_REASONING_EFFORT", "OPENROUTER_INCLUDE_REASONING",
     "OPENROUTER_MODEL_PROVIDERS", "OPENROUTER_INVERT_PROVIDER_LIST",
-    "OPENROUTER_FREE_ONLY", "OPENROUTER_PROVIDER_SORT",
+    "OPENROUTER_FREE_MODEL_FILTER", "OPENROUTER_PROVIDER_SORT",
     "OPENROUTER_PROVIDER_ORDER", "OPENROUTER_PROVIDER_IGNORE",
     "OPENROUTER_REQUIRE_PARAMETERS", "OPENROUTER_DATA_COLLECTION",
     "OPENROUTER_FALLBACK_MODELS", "OPENROUTER_ENABLE_MIDDLE_OUT",
     "OPENROUTER_ENABLE_CACHE_CONTROL", "OPENROUTER_REQUEST_TIMEOUT",
+    "OPENROUTER_OUTPUT_MODALITIES",
 ]:
     _env_backup[k] = os.environ.pop(k, None)
 
@@ -134,7 +135,15 @@ _assert(v.REASONING_EFFORT == "", "reasoning effort empty")
 _assert(v.INCLUDE_REASONING is True, "include_reasoning True by default")
 _assert(v.MODEL_PREFIX is None, "prefix None by default")
 _assert(v.MODEL_PROVIDERS == "ALL", "MODEL_PROVIDERS default is ALL")
-_assert(v.FREE_ONLY is False, "FREE_ONLY false")
+_assert(v.FREE_MODEL_FILTER == "all", "FREE_MODEL_FILTER default is 'all'")
+_assert(v.TOOL_CALLING_FILTER == "all", "TOOL_CALLING_FILTER default is 'all'")
+_assert(v.MODEL_VARIANTS == "", "MODEL_VARIANTS default empty")
+_assert(v.ZDR_MODELS_ONLY is False, "ZDR_MODELS_ONLY default False")
+_assert(v.ZDR_ENFORCE is False, "ZDR_ENFORCE default False")
+_assert(v.REASONING_SUMMARY_MODE == "disabled", "REASONING_SUMMARY_MODE default 'disabled'")
+_assert(v.ENABLE_ANTHROPIC_INTERLEAVED_THINKING is True, "interleaved thinking default True")
+_assert(v.ANTHROPIC_PROMPT_CACHE_TTL == "5m", "ANTHROPIC_PROMPT_CACHE_TTL default '5m'")
+_assert(v.HTTP_REFERER_OVERRIDE == "", "HTTP_REFERER_OVERRIDE default empty")
 _assert(v.PROVIDER_SORT == "", "PROVIDER_SORT empty")
 _assert(v.PROVIDER_ORDER == "", "PROVIDER_ORDER empty")
 _assert(v.PROVIDER_IGNORE == "", "PROVIDER_IGNORE empty")
@@ -147,6 +156,7 @@ _assert(v.REQUEST_TIMEOUT == 90, "REQUEST_TIMEOUT 90")
 _assert(v.MAX_RETRIES == 2, "MAX_RETRIES 2")
 _assert(v.SHOW_COST_INFO is False, "SHOW_COST_INFO false by default")
 _assert(v.COST_CURRENCY == "USD", "COST_CURRENCY USD by default")
+_assert(v.OUTPUT_MODALITIES == "all", "OUTPUT_MODALITIES default 'all' (full catalog)")
 
 try:
     Pipe.Valves(REQUEST_TIMEOUT=-1)
@@ -260,6 +270,74 @@ body4 = {"model": "openai/gpt-4o", "messages": []}
 payload4 = pipe2._prepare_payload(body4)
 _assert(payload4["model"] == "openai/gpt-4o", "model without dot left unchanged")
 
+# ── 5d. Extended REASONING_EFFORT levels (minimal, xhigh) ──
+_pipe5d = Pipe()
+_pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="minimal")
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_assert(_p5d.get("reasoning") == {"effort": "minimal"}, "REASONING_EFFORT='minimal' sent verbatim")
+
+_pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="xhigh")
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_assert(_p5d.get("reasoning") == {"effort": "xhigh"}, "REASONING_EFFORT='xhigh' sent verbatim")
+
+# Empty/garbage effort drops the key
+_pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="")
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_assert("reasoning" not in _p5d, "empty REASONING_EFFORT: no reasoning field")
+_pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="bogus")
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_assert("reasoning" not in _p5d, "garbage REASONING_EFFORT: silently dropped")
+
+# ── 5e. REASONING_SUMMARY_MODE merged into reasoning object ──
+_pipe5e = Pipe()
+_pipe5e.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    REASONING_EFFORT="high",
+    REASONING_SUMMARY_MODE="detailed",
+)
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_assert(
+    _p5e.get("reasoning") == {"effort": "high", "summary": "detailed"},
+    "effort + summary merged into one reasoning object",
+)
+# Summary alone (no effort)
+_pipe5e.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k", REASONING_EFFORT="", REASONING_SUMMARY_MODE="auto"
+)
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_assert(_p5e.get("reasoning") == {"summary": "auto"}, "summary-only reasoning object")
+# disabled summary skipped
+_pipe5e.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k", REASONING_EFFORT="", REASONING_SUMMARY_MODE="disabled"
+)
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_assert("reasoning" not in _p5e, "summary='disabled' + no effort: reasoning key dropped")
+
+# ── 5f. ZDR_ENFORCE injects provider.zdr=true ──
+_pipe5f = Pipe()
+_pipe5f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ZDR_ENFORCE=True)
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert(_p5f.get("provider", {}).get("zdr") is True, "ZDR_ENFORCE=True: provider.zdr=true injected")
+
+_pipe5f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ZDR_ENFORCE=False)
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert(
+    "provider" not in _p5f or "zdr" not in _p5f.get("provider", {}),
+    "ZDR_ENFORCE=False: no provider.zdr field",
+)
+
+# ZDR_ENFORCE plays nice with other provider fields
+_pipe5f.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    ZDR_ENFORCE=True,
+    PROVIDER_SORT="price",
+    DATA_COLLECTION="deny",
+)
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert(_p5f["provider"]["zdr"] is True, "ZDR_ENFORCE coexists with sort")
+_assert(_p5f["provider"]["sort"] == "price", "ZDR_ENFORCE: sort preserved")
+_assert(_p5f["provider"]["data_collection"] == "deny", "ZDR_ENFORCE: data_collection preserved")
+
 # ── 6. _build_headers ────────────────────────────────────────────────────────
 
 _section("6. _build_headers()")
@@ -277,6 +355,56 @@ _assert("X-Title" in headers, "X-Title present")
 headers_no_ct = pipe._build_headers(include_content_type=False)
 _assert("Content-Type" not in headers_no_ct, "Content-Type omitted")
 _assert("Authorization" in headers_no_ct, "auth still present")
+
+# 6b. ENABLE_ANTHROPIC_INTERLEAVED_THINKING injects beta header for anthropic models only
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True)
+_h_anth = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet")
+_assert(
+    _h_anth.get("anthropic-beta") == "interleaved-thinking-2025-05-14",
+    "anthropic model: interleaved-thinking beta header injected",
+)
+_h_oai = pipe._build_headers(model_id="openai/gpt-4o")
+_assert(
+    "anthropic-beta" not in _h_oai,
+    "non-anthropic model: no interleaved-thinking header",
+)
+# Tilde latest-alias still picks up the header
+_h_alias = pipe._build_headers(model_id="~anthropic/claude-haiku-latest")
+_assert(
+    _h_alias.get("anthropic-beta") == "interleaved-thinking-2025-05-14",
+    "tilde anthropic alias: interleaved-thinking header injected",
+)
+# When the valve is off, no header even on Claude
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_ANTHROPIC_INTERLEAVED_THINKING=False)
+_h_off = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet")
+_assert(
+    "anthropic-beta" not in _h_off,
+    "valve off: no interleaved-thinking header even for Claude",
+)
+
+# 6c. HTTP_REFERER_OVERRIDE: explicit override > env fallback > default
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_default_ref = pipe._build_headers()["HTTP-Referer"]
+_assert(
+    _default_ref.startswith(("http://", "https://")),
+    "HTTP-Referer falls back to a valid scheme URL when no override set",
+)
+pipe.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    HTTP_REFERER_OVERRIDE="https://my-corp.example.com/owui",
+)
+_assert(
+    pipe._build_headers()["HTTP-Referer"] == "https://my-corp.example.com/owui",
+    "HTTP_REFERER_OVERRIDE: full URL respected",
+)
+# Bogus override (no scheme) → silently falls back
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="not-a-url")
+_assert(
+    pipe._build_headers()["HTTP-Referer"] != "not-a-url",
+    "HTTP_REFERER_OVERRIDE: schemeless value silently ignored",
+)
 
 # ── 7. _get_provider_icon ────────────────────────────────────────────────────
 
@@ -361,12 +489,35 @@ payload_cc = {
 }
 pipe._inject_cache_control(payload_cc)
 _assert(
-    payload_cc["messages"][0]["content"][1].get("cache_control") == {"type": "ephemeral"},
-    "cache_control applied to longest text chunk",
+    payload_cc["messages"][0]["content"][1].get("cache_control")
+    == {"type": "ephemeral", "ttl": "5m"},
+    "cache_control applied to longest text chunk (default 5m TTL)",
 )
 _assert(
     "cache_control" not in payload_cc["messages"][0]["content"][0],
     "cache_control NOT on shorter chunk",
+)
+
+# Cache TTL valve switches the breakpoint to 1h
+_pipe_ttl_1h = Pipe()
+_pipe_ttl_1h.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    ENABLE_CACHE_CONTROL=True,
+    ANTHROPIC_PROMPT_CACHE_TTL="1h",
+)
+payload_ttl = {
+    "messages": [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": "long system prompt"}],
+        }
+    ]
+}
+_pipe_ttl_1h._inject_cache_control(payload_ttl)
+_assert(
+    payload_ttl["messages"][0]["content"][0].get("cache_control")
+    == {"type": "ephemeral", "ttl": "1h"},
+    "ANTHROPIC_PROMPT_CACHE_TTL='1h' propagated into breakpoint",
 )
 
 # No list content → no crash
@@ -864,7 +1015,7 @@ _assert(models[0]["id"] == "openai/gpt-4o", "pipes: first model ID")
 _assert("info" not in models[0], "pipes: info key removed (dead code)")
 
 # 15b. FREE_ONLY filter
-pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only")
 
 # Mock data with pricing info: one :free suffix, one free-by-pricing, one paid
 mock_models_pricing = {
@@ -1045,7 +1196,7 @@ _assert(models[0]["id"] == "error", "pipes empty data: error id")
 _assert("No models found" in models[0]["name"], "pipes empty data: correct message")
 
 # 15m. FREE_ONLY + all paid models → "No free models available"
-pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only")
 pipe._models_cache = None
 _mock_all_paid = {
     "data": [
@@ -1118,15 +1269,20 @@ _assert(
     "API key: input type is password",
 )
 
-# 16b. REASONING_EFFORT uses select with 4 options
+# 16b. REASONING_EFFORT uses select with 6 options (disabled, minimal, low, medium, high, xhigh)
 re_field = Pipe.Valves.model_fields["REASONING_EFFORT"]
 _assert(
     re_field.json_schema_extra is not None,
     "REASONING_EFFORT: json_schema_extra present",
 )
 re_options = re_field.json_schema_extra.get("input", {}).get("options", [])
-_assert(len(re_options) == 4, "REASONING_EFFORT: 4 options (disabled, low, medium, high)")
+_assert(
+    len(re_options) == 6,
+    "REASONING_EFFORT: 6 options (disabled, minimal, low, medium, high, xhigh)",
+)
 re_values = [o["value"] for o in re_options]
+_assert("minimal" in re_values, "REASONING_EFFORT: minimal option present")
+_assert("xhigh" in re_values, "REASONING_EFFORT: xhigh option present")
 _assert("" in re_values and "high" in re_values, "REASONING_EFFORT: contains empty and high")
 
 # 16c. PROVIDER_SORT uses select with 4 options
@@ -1222,7 +1378,7 @@ with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
 _assert(_call_count == 1, "cache hit: API called only once for two pipes() calls")
 
 # 19b. Changing a valve invalidates cache
-_pipe_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+_pipe_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only")
 _call_count = 0
 with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
     _pipe_cache.pipes()  # should miss cache (valve changed)
@@ -1242,6 +1398,300 @@ _call_count = 0
 with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
     _pipe_cache.pipes()
 _assert(_call_count == 1, "cache expired: API called after TTL")
+
+# ── 19d. OUTPUT_MODALITIES query param ──────────────────────────────────────
+_section("19d. OUTPUT_MODALITIES query param on /models")
+
+_mock_modalities_resp = MagicMock()
+_mock_modalities_resp.status_code = 200
+_mock_modalities_resp.json.return_value = {"data": [
+    {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    {"id": "openai/gpt-4o-mini-tts-2025-12-15", "name": "GPT-4o Mini TTS"},
+]}
+_mock_modalities_resp.raise_for_status = MagicMock()
+
+_captured_kwargs = {}
+
+def _capture_get(*args, **kwargs):
+    _captured_kwargs.clear()
+    _captured_kwargs.update(kwargs)
+    return _mock_modalities_resp
+
+# Default valve → params should request 'all'
+_pipe_mod = Pipe()
+_pipe_mod.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_mod._models_cache = None
+with patch.object(_pipe_mod._session, "get", side_effect=_capture_get):
+    _models = _pipe_mod.pipes()
+_assert(
+    _captured_kwargs.get("params") == {"output_modalities": "all"},
+    "default OUTPUT_MODALITIES sends params={'output_modalities':'all'}",
+)
+_tts_ids = {m["id"] for m in _models}
+_assert(
+    "openai/gpt-4o-mini-tts-2025-12-15" in _tts_ids,
+    "TTS model surfaced in pipes() output when API returns it",
+)
+
+# Custom valve value → forwarded verbatim
+_pipe_mod = Pipe()
+_pipe_mod.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="text,audio")
+_pipe_mod._models_cache = None
+with patch.object(_pipe_mod._session, "get", side_effect=_capture_get):
+    _pipe_mod.pipes()
+_assert(
+    _captured_kwargs.get("params") == {"output_modalities": "text,audio"},
+    "custom OUTPUT_MODALITIES forwarded as params value",
+)
+
+# Empty/whitespace valve → falls back to 'all'
+_pipe_mod = Pipe()
+_pipe_mod.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="   ")
+_pipe_mod._models_cache = None
+with patch.object(_pipe_mod._session, "get", side_effect=_capture_get):
+    _pipe_mod.pipes()
+_assert(
+    _captured_kwargs.get("params") == {"output_modalities": "all"},
+    "blank OUTPUT_MODALITIES falls back to 'all'",
+)
+
+# 19e. Cache key includes OUTPUT_MODALITIES — toggling invalidates
+_pipe_mod_cache = Pipe()
+_pipe_mod_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="all")
+_key_all = _pipe_mod_cache._build_cache_key()
+_pipe_mod_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="text")
+_key_text = _pipe_mod_cache._build_cache_key()
+_assert(_key_all != _key_text, "_build_cache_key differs for different OUTPUT_MODALITIES")
+
+# Behavioral: pipes() refetches after OUTPUT_MODALITIES changes
+_pipe_mod_cache = Pipe()
+_pipe_mod_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="all")
+_pipe_mod_cache._models_cache = None
+
+_modalities_call_count = 0
+
+def _counting_modalities_get(*args, **kwargs):
+    global _modalities_call_count
+    _modalities_call_count += 1
+    return _mock_modalities_resp
+
+with patch.object(_pipe_mod_cache._session, "get", side_effect=_counting_modalities_get):
+    _pipe_mod_cache.pipes()  # populates cache
+    _pipe_mod_cache.pipes()  # cache hit
+_assert(_modalities_call_count == 1, "OUTPUT_MODALITIES cache hit: 1 API call across 2 pipes() invocations")
+
+_pipe_mod_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="text")
+_modalities_call_count = 0
+with patch.object(_pipe_mod_cache._session, "get", side_effect=_counting_modalities_get):
+    _pipe_mod_cache.pipes()
+_assert(
+    _modalities_call_count == 1,
+    "OUTPUT_MODALITIES change invalidates cache: API refetched",
+)
+
+# ── 19f. FREE_MODEL_FILTER trinary (all/only/exclude) ────────────────────────
+_section("19f. FREE_MODEL_FILTER trinary")
+
+_mock_pricing = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
+        {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (Free)", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "google/gemma-3-1b-it", "name": "Gemma 3 1B", "pricing": {"prompt": "0", "completion": "0"}},
+    ]
+}
+_mock_pricing_resp = MagicMock()
+_mock_pricing_resp.status_code = 200
+_mock_pricing_resp.json.return_value = _mock_pricing
+_mock_pricing_resp.raise_for_status = MagicMock()
+
+# 'all' = no filter
+_pipe_ff = Pipe()
+_pipe_ff.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="all")
+_pipe_ff._models_cache = None
+with patch.object(_pipe_ff._session, "get", return_value=_mock_pricing_resp):
+    _all_models = _pipe_ff.pipes()
+_assert(len(_all_models) == 3, "FREE_MODEL_FILTER='all': all 3 models pass through")
+
+# 'exclude' hides free models
+_pipe_ff = Pipe()
+_pipe_ff.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="exclude")
+_pipe_ff._models_cache = None
+with patch.object(_pipe_ff._session, "get", return_value=_mock_pricing_resp):
+    _paid = _pipe_ff.pipes()
+_paid_ids = {m["id"] for m in _paid}
+_assert("openai/gpt-4o" in _paid_ids, "FREE_MODEL_FILTER='exclude': paid model kept")
+_assert(":free" not in str(_paid_ids), "FREE_MODEL_FILTER='exclude': :free suffix excluded")
+_assert("google/gemma-3-1b-it" not in _paid_ids, "FREE_MODEL_FILTER='exclude': zero-pricing excluded")
+
+# ── 19g. TOOL_CALLING_FILTER ────────────────────────────────────────────────
+_section("19g. TOOL_CALLING_FILTER")
+
+_mock_tools = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "supported_parameters": ["tools", "tool_choice", "temperature"]},
+        {"id": "openai/o1-mini", "name": "o1-mini", "supported_parameters": ["temperature"]},
+        {"id": "openai/gpt-3.5-turbo", "name": "GPT-3.5", "supported_parameters": ["tool_choice"]},
+    ]
+}
+_mock_tools_resp = MagicMock()
+_mock_tools_resp.status_code = 200
+_mock_tools_resp.json.return_value = _mock_tools
+_mock_tools_resp.raise_for_status = MagicMock()
+
+_pipe_tc = Pipe()
+_pipe_tc.valves = Pipe.Valves(OPENROUTER_API_KEY="k", TOOL_CALLING_FILTER="only")
+_pipe_tc._models_cache = None
+with patch.object(_pipe_tc._session, "get", return_value=_mock_tools_resp):
+    _tc_models = _pipe_tc.pipes()
+_tc_ids = {m["id"] for m in _tc_models}
+_assert("openai/gpt-4o" in _tc_ids, "TOOL_CALLING_FILTER='only': model with 'tools' kept")
+_assert("openai/gpt-3.5-turbo" in _tc_ids, "TOOL_CALLING_FILTER='only': model with 'tool_choice' kept")
+_assert("openai/o1-mini" not in _tc_ids, "TOOL_CALLING_FILTER='only': non-tool model dropped")
+
+_pipe_tc = Pipe()
+_pipe_tc.valves = Pipe.Valves(OPENROUTER_API_KEY="k", TOOL_CALLING_FILTER="exclude")
+_pipe_tc._models_cache = None
+with patch.object(_pipe_tc._session, "get", return_value=_mock_tools_resp):
+    _tc_excl = _pipe_tc.pipes()
+_tc_excl_ids = {m["id"] for m in _tc_excl}
+_assert(_tc_excl_ids == {"openai/o1-mini"}, "TOOL_CALLING_FILTER='exclude': only non-tool model kept")
+
+# ── 19h. MODEL_VARIANTS expansion ───────────────────────────────────────────
+_section("19h. MODEL_VARIANTS expansion")
+
+_mock_var = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5 Sonnet"},
+    ]
+}
+_mock_var_resp = MagicMock()
+_mock_var_resp.status_code = 200
+_mock_var_resp.json.return_value = _mock_var
+_mock_var_resp.raise_for_status = MagicMock()
+
+_pipe_var = Pipe()
+_pipe_var.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    MODEL_VARIANTS="openai/gpt-4o:nitro,anthropic/claude-3.5-sonnet:thinking,openai/gpt-4o:exacto",
+)
+_pipe_var._models_cache = None
+with patch.object(_pipe_var._session, "get", return_value=_mock_var_resp):
+    _var_models = _pipe_var.pipes()
+_var_ids = {m["id"] for m in _var_models}
+_assert("openai/gpt-4o" in _var_ids, "MODEL_VARIANTS: base model preserved")
+_assert("openai/gpt-4o:nitro" in _var_ids, "MODEL_VARIANTS: :nitro variant added")
+_assert("openai/gpt-4o:exacto" in _var_ids, "MODEL_VARIANTS: :exacto variant added")
+_assert("anthropic/claude-3.5-sonnet:thinking" in _var_ids, "MODEL_VARIANTS: :thinking variant added")
+_nitro_entry = next(m for m in _var_models if m["id"] == "openai/gpt-4o:nitro")
+_assert("Nitro" in _nitro_entry["name"], "MODEL_VARIANTS: tag label appended to display name")
+_assert("GPT-4o" in _nitro_entry["name"], "MODEL_VARIANTS: base name retained")
+
+# Variant whose base isn't in the catalog → silently skipped
+_pipe_var = Pipe()
+_pipe_var.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    MODEL_VARIANTS="missing/provider-model:nitro,openai/gpt-4o:nitro",
+)
+_pipe_var._models_cache = None
+with patch.object(_pipe_var._session, "get", return_value=_mock_var_resp):
+    _var_models = _pipe_var.pipes()
+_var_ids = {m["id"] for m in _var_models}
+_assert("missing/provider-model:nitro" not in _var_ids, "MODEL_VARIANTS: missing base skipped")
+_assert("openai/gpt-4o:nitro" in _var_ids, "MODEL_VARIANTS: valid variant still added")
+
+# Unrecognised tag → skipped
+_pipe_var = Pipe()
+_pipe_var.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k", MODEL_VARIANTS="openai/gpt-4o:bogus"
+)
+_pipe_var._models_cache = None
+with patch.object(_pipe_var._session, "get", return_value=_mock_var_resp):
+    _var_models = _pipe_var.pipes()
+_assert(
+    not any(m["id"] == "openai/gpt-4o:bogus" for m in _var_models),
+    "MODEL_VARIANTS: unrecognised tag silently dropped",
+)
+
+# Empty MODEL_VARIANTS → no expansion
+_pipe_var = Pipe()
+_pipe_var.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_VARIANTS="")
+_pipe_var._models_cache = None
+with patch.object(_pipe_var._session, "get", return_value=_mock_var_resp):
+    _var_models = _pipe_var.pipes()
+_assert(len(_var_models) == 2, "MODEL_VARIANTS empty: no virtual entries added")
+
+# ── 19i. ZDR_MODELS_ONLY filter + _load_zdr_model_ids ───────────────────────
+_section("19i. ZDR_MODELS_ONLY filter")
+
+_mock_zdr_resp = MagicMock()
+_mock_zdr_resp.status_code = 200
+_mock_zdr_resp.json.return_value = {
+    "data": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]
+}
+_mock_zdr_resp.raise_for_status = MagicMock()
+
+_mock_models_zdr = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude"},
+        {"id": "google/gemini-2.0-flash-exp", "name": "Gemini"},
+    ]
+}
+_mock_models_zdr_resp = MagicMock()
+_mock_models_zdr_resp.status_code = 200
+_mock_models_zdr_resp.json.return_value = _mock_models_zdr
+_mock_models_zdr_resp.raise_for_status = MagicMock()
+
+
+def _zdr_router(url, *args, **kwargs):
+    if "/endpoints/zdr" in url:
+        return _mock_zdr_resp
+    return _mock_models_zdr_resp
+
+
+_pipe_zdr = Pipe()
+_pipe_zdr.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ZDR_MODELS_ONLY=True)
+_pipe_zdr._models_cache = None
+with patch.object(_pipe_zdr._session, "get", side_effect=_zdr_router):
+    _zdr_models = _pipe_zdr.pipes()
+_zdr_ids = {m["id"] for m in _zdr_models}
+_assert(_zdr_ids == {"openai/gpt-4o", "anthropic/claude-3.5-sonnet"},
+        "ZDR_MODELS_ONLY: catalog narrowed to ZDR-capable IDs")
+
+# Loader caches: no second HTTP call when called twice
+_pipe_zdr2 = Pipe()
+_pipe_zdr2.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_zdr_call_count = 0
+
+
+def _counting_zdr_router(url, *args, **kwargs):
+    global _zdr_call_count
+    if "/endpoints/zdr" in url:
+        _zdr_call_count += 1
+    return _mock_zdr_resp if "/endpoints/zdr" in url else _mock_models_zdr_resp
+
+
+with patch.object(_pipe_zdr2._session, "get", side_effect=_counting_zdr_router):
+    _ = _pipe_zdr2._load_zdr_model_ids()
+    _ = _pipe_zdr2._load_zdr_model_ids()
+_assert(_zdr_call_count == 1, "_load_zdr_model_ids: cached after first call")
+
+# ── 19j. _build_cache_key includes new filters ──────────────────────────────
+_section("19j. cache key includes FREE_MODEL_FILTER / TOOL_CALLING_FILTER / ZDR_MODELS_ONLY / MODEL_VARIANTS")
+
+_keys = []
+for v in [
+    {},
+    {"FREE_MODEL_FILTER": "only"},
+    {"TOOL_CALLING_FILTER": "exclude"},
+    {"ZDR_MODELS_ONLY": True},
+    {"MODEL_VARIANTS": "openai/gpt-4o:nitro"},
+]:
+    _p = Pipe()
+    _p.valves = Pipe.Valves(OPENROUTER_API_KEY="k", **v)
+    _keys.append(_p._build_cache_key())
+_assert(len(set(_keys)) == len(_keys), "cache key fingerprint differs per new-filter valve")
 
 # ── 20. Base URL validator ───────────────────────────────────────────────────
 
@@ -1381,7 +1831,7 @@ _assert(_skip_models[0]["id"] == "openai/gpt-4o", "pipes: only valid model kept"
 
 # 24b. FREE_ONLY with :free suffix
 _pipe_free = Pipe()
-_pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_ONLY=True)
+_pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="only")
 _pipe_free._models_cache = None
 _mock_free_resp = MagicMock()
 _mock_free_resp.status_code = 200
@@ -1598,6 +2048,133 @@ _assert(_is_owui("https://openrouter.ai/images/icons/OpenAI.svg"), "_is_owui_man
 _assert(_is_owui("https://openrouter.ai/images/icons/Anthropic.svg"), "_is_owui_managed_icon: icons path anthropic → True")
 _assert(not _is_owui("https://custom-icon.example.com/icon.png"), "_is_owui_managed_icon: external URL → False")
 _assert(not _is_owui("https://cdn.openai.com/logo.png"), "_is_owui_managed_icon: other https URL → False")
+_assert(
+    _is_owui("https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&url=https://x.ai/&size=256"),
+    "_is_owui_managed_icon: gstatic faviconV2 URL → True (registry-sourced, overwriteable)",
+)
+
+# ── 25j. _load_provider_registry + _get_provider_icon ────────────────────────
+_section("25j. provider registry auto-discovery")
+
+# Mock the OpenRouter frontend providers payload
+_registry_payload = {
+    "data": [
+        {"slug": "openai", "name": "OpenAI", "icon": {"url": "/images/icons/OpenAI.svg"}},
+        {"slug": "xai", "name": "xAI", "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"}},
+        {"slug": "arcee-ai", "name": "Arcee AI", "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://www.arcee.ai/&size=256"}},
+        {"slug": "broken", "name": "Broken", "icon": {"url": ""}},  # empty icon — must be skipped
+        {"slug": "unsafe", "name": "Unsafe", "icon": {"url": "javascript:alert(1)"}},  # unsafe — must be skipped
+        {"slug": "noicon", "name": "NoIcon"},  # no icon key at all
+    ]
+}
+_mock_reg_resp = MagicMock()
+_mock_reg_resp.status_code = 200
+_mock_reg_resp.json.return_value = _registry_payload
+
+_pipe_reg = Pipe()
+_pipe_reg.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+
+_reg_call_count = 0
+def _counting_reg_get(url, *args, **kwargs):
+    global _reg_call_count
+    if "all-providers" in url:
+        _reg_call_count += 1
+        return _mock_reg_resp
+    return _mock_reg_resp  # fall-through is fine for this test
+
+with patch.object(_pipe_reg._session, "get", side_effect=_counting_reg_get):
+    _r1 = _pipe_reg._load_provider_registry()
+    _r2 = _pipe_reg._load_provider_registry()  # cached, no second fetch
+
+_assert(_reg_call_count == 1, "registry: HTTP fetched exactly once (caching)")
+_assert(_r1 is _r2, "registry: cached object is the same instance on subsequent calls")
+_assert(
+    _r1.get("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+    "registry: relative /images/icons/ URL resolved against openrouter.ai",
+)
+_assert(
+    _r1.get("xai", "").startswith("https://t0.gstatic.com/faviconV2"),
+    "registry: gstatic favicon URL kept verbatim",
+)
+_assert(
+    _r1.get("arcee-ai") == _r1.get("arceeai"),
+    "registry: hyphen-stripped slug also indexed (arcee-ai → arceeai)",
+)
+_assert("broken" not in _r1, "registry: empty icon URL skipped")
+_assert("unsafe" not in _r1, "registry: unsafe (non-http) icon URL skipped")
+_assert("noicon" not in _r1, "registry: entry without icon key skipped")
+
+# 25k. _get_provider_icon layered lookup
+_pipe_lookup = Pipe()
+_pipe_lookup.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
+    # Hardcoded fast path — registry never consulted
+    _icon_openai = _pipe_lookup._get_provider_icon("openai")
+    _assert(
+        _icon_openai == "https://openrouter.ai/images/icons/OpenAI.svg",
+        "_get_provider_icon: hardcoded dict hit returns OpenAI icon",
+    )
+
+    # Slug not in dict but in registry (exact)
+    _icon_arcee = _pipe_lookup._get_provider_icon("arcee-ai")
+    _assert(
+        _icon_arcee and _icon_arcee.startswith("https://t0.gstatic.com/faviconV2"),
+        "_get_provider_icon: registry exact-slug hit (arcee-ai)",
+    )
+
+    # Hyphen-strip normalization: x-ai (model author) → xai (registry slug)
+    _icon_xai = _pipe_lookup._get_provider_icon("x-ai")
+    _assert(
+        _icon_xai and _icon_xai.startswith("https://t0.gstatic.com/faviconV2"),
+        "_get_provider_icon: hyphen-strip normalization (x-ai → xai)",
+    )
+
+    # Truly unknown provider returns None (registry has no entry)
+    _icon_missing = _pipe_lookup._get_provider_icon("totally-unknown-provider")
+    _assert(
+        _icon_missing is None,
+        "_get_provider_icon: unknown provider returns None",
+    )
+
+    # Empty/None provider key
+    _assert(_pipe_lookup._get_provider_icon("") is None, "_get_provider_icon: empty key → None")
+
+# 25l. Registry network failure → cached empty dict, no retry, dict still works
+_pipe_fail = Pipe()
+_pipe_fail.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+
+_fail_call_count = 0
+def _failing_reg_get(*args, **kwargs):
+    global _fail_call_count
+    _fail_call_count += 1
+    raise Exception("simulated network failure")
+
+with patch.object(_pipe_fail._session, "get", side_effect=_failing_reg_get):
+    _r_fail = _pipe_fail._load_provider_registry()
+    _r_fail_2 = _pipe_fail._load_provider_registry()
+_assert(_r_fail == {}, "registry: network failure → empty dict")
+_assert(_fail_call_count == 1, "registry: failure does not retry (cached empty)")
+
+# Hardcoded dict still works after registry failure
+_assert(
+    _pipe_fail._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+    "_get_provider_icon: hardcoded dict still resolves after registry failure",
+)
+_assert(
+    _pipe_fail._get_provider_icon("x-ai") is None,
+    "_get_provider_icon: x-ai falls back to None when registry failed",
+)
+
+# 25m. Registry HTTP non-200 → empty dict
+_mock_reg_403 = MagicMock()
+_mock_reg_403.status_code = 403
+_mock_reg_403.json.return_value = {"data": []}
+
+_pipe_403 = Pipe()
+_pipe_403.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+with patch.object(_pipe_403._session, "get", return_value=_mock_reg_403):
+    _r_403 = _pipe_403._load_provider_registry()
+_assert(_r_403 == {}, "registry: HTTP 403 → empty dict (no parse, no retry)")
 
 # ── 26. _stream_response() edge cases ────────────────────────────────────────
 
@@ -1716,7 +2293,7 @@ _mock_invalid_price.json.return_value = {
         {"id": "some/model", "name": "Model", "pricing": {"prompt": "not-a-number", "completion": "0"}},
     ]
 }
-pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_ONLY=True)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_mock_invalid_price):
     models = pipe.pipes()
@@ -1777,7 +2354,8 @@ _assert(
     "cache_control: image_url chunk skipped in mixed content",
 )
 _assert(
-    payload_mixed_img["messages"][0]["content"][1].get("cache_control") == {"type": "ephemeral"},
+    payload_mixed_img["messages"][0]["content"][1].get("cache_control")
+    == {"type": "ephemeral", "ttl": "5m"},
     "cache_control: text chunk in mixed content gets cache_control",
 )
 
@@ -1795,9 +2373,281 @@ payload_user_list = {
 }
 pipe._inject_cache_control(payload_user_list)
 _assert(
-    payload_user_list["messages"][0]["content"][1].get("cache_control") == {"type": "ephemeral"},
+    payload_user_list["messages"][0]["content"][1].get("cache_control")
+    == {"type": "ephemeral", "ttl": "5m"},
     "cache_control: user role list content gets cache_control when no system role",
 )
+
+# ── 28d. v1.6.0 — Web search plugin builder ─────────────────────────────────
+_section("28d. v1.6.0 web search plugin")
+
+_pipe_ws = Pipe()
+_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=False)
+_assert(_pipe_ws._build_web_search_plugin() is None, "web search disabled → None")
+
+_pipe_ws.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    ENABLE_WEB_SEARCH=True,
+    WEB_SEARCH_MAX_RESULTS=8,
+    WEB_SEARCH_PROMPT="Find authoritative sources",
+    WEB_SEARCH_INCLUDE_DOMAINS="*.gov, *.edu",
+    WEB_SEARCH_EXCLUDE_DOMAINS="reddit.com",
+)
+_plugin = _pipe_ws._build_web_search_plugin()
+_assert(_plugin and _plugin["id"] == "web", "web plugin id is 'web'")
+_assert(_plugin["max_results"] == 8, "max_results forwarded")
+_assert(_plugin["search_prompt"] == "Find authoritative sources", "custom search_prompt")
+_assert(_plugin["include_domains"] == ["*.gov", "*.edu"], "include_domains parsed")
+_assert(_plugin["exclude_domains"] == ["reddit.com"], "exclude_domains parsed")
+
+# Payload integration: appended to existing user plugins, never duplicated
+_pipe_ws = Pipe()
+_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True)
+_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert(any(p.get("id") == "web" for p in _p_ws.get("plugins", [])),
+        "ENABLE_WEB_SEARCH: plugins[] contains web entry")
+
+# User plugins preserved alongside web
+_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True)
+_p_ws = _pipe_ws._prepare_payload({
+    "model": "openai/gpt-4o",
+    "messages": [],
+    "plugins": [{"id": "file-parser"}],
+})
+_p_ids = [p.get("id") for p in _p_ws.get("plugins", [])]
+_assert("file-parser" in _p_ids and "web" in _p_ids, "user plugins coexist with auto web plugin")
+
+# Existing user-supplied web plugin wins
+_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True, WEB_SEARCH_MAX_RESULTS=20)
+_p_ws = _pipe_ws._prepare_payload({
+    "model": "openai/gpt-4o",
+    "messages": [],
+    "plugins": [{"id": "web", "max_results": 3}],
+})
+_assert(
+    sum(1 for p in _p_ws["plugins"] if p.get("id") == "web") == 1,
+    "user-supplied web plugin not duplicated by valve injection",
+)
+_assert(
+    _p_ws["plugins"][0].get("max_results") == 3,
+    "user-supplied web plugin keeps its own max_results",
+)
+
+# Web search disabled → no plugin emitted at all
+_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=False)
+_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert("plugins" not in _p_ws, "web search disabled: no plugins key added")
+
+# ── 28e. v1.6.0 — REASONING_MAX_TOKENS ──────────────────────────────────────
+_section("28e. v1.6.0 reasoning max_tokens")
+
+_pipe_rmt = Pipe()
+_pipe_rmt.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k", REASONING_EFFORT="high", REASONING_MAX_TOKENS=2048
+)
+_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []})
+_assert(
+    _p_rmt.get("reasoning") == {"effort": "high", "max_tokens": 2048},
+    "reasoning.max_tokens emitted alongside effort",
+)
+
+_pipe_rmt.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_MAX_TOKENS=0)
+_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []})
+_assert("reasoning" not in _p_rmt, "max_tokens=0 + no effort: reasoning key omitted")
+
+# ── 28f. v1.6.0 — Provider extras (only/quantizations/allow_fallbacks/max_price) ──
+_section("28f. v1.6.0 provider preferences extras")
+
+_pipe_pp = Pipe()
+_pipe_pp.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    PROVIDER_ONLY="anthropic, openai",
+    PROVIDER_QUANTIZATIONS="bf16, fp8",
+    PROVIDER_ALLOW_FALLBACKS=False,
+    PROVIDER_MAX_PRICE_PROMPT="3.0",
+    PROVIDER_MAX_PRICE_COMPLETION="15.0",
+)
+_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p_provider = _p_pp.get("provider", {})
+_assert(_p_provider.get("only") == ["anthropic", "openai"], "provider.only forwarded")
+_assert(_p_provider.get("quantizations") == ["bf16", "fp8"], "provider.quantizations lower-cased")
+_assert(_p_provider.get("allow_fallbacks") is False, "provider.allow_fallbacks=False emitted only when opted out")
+_assert(
+    _p_provider.get("max_price") == {"prompt": "3.0", "completion": "15.0"},
+    "provider.max_price merged",
+)
+
+# Defaults: allow_fallbacks=true is implicit (omit field)
+_pipe_pp.valves = Pipe.Valves(OPENROUTER_API_KEY="k", PROVIDER_ALLOW_FALLBACKS=True)
+_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert(
+    "provider" not in _p_pp or "allow_fallbacks" not in _p_pp.get("provider", {}),
+    "PROVIDER_ALLOW_FALLBACKS=True (default): field omitted",
+)
+
+# ── 28g. v1.6.0 — SERVICE_TIER ──────────────────────────────────────────────
+_section("28g. v1.6.0 service tier")
+
+for tier in ("auto", "default", "flex", "priority", "scale"):
+    _pipe_st = Pipe()
+    _pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER=tier)
+    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+    _assert(_p_st.get("service_tier") == tier, f"SERVICE_TIER='{tier}' forwarded")
+
+# Bogus value silently dropped
+_pipe_st = Pipe()
+_pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER="bogus")
+_p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_assert("service_tier" not in _p_st, "garbage SERVICE_TIER silently ignored")
+
+# ── 28h. v1.6.0 — Cached prompt-token cost breakdown ────────────────────────
+_section("28h. v1.6.0 cached prompt token reporting")
+
+_format_cost_info = mod._format_cost_info
+
+# OpenAI / Anthropic shape: prompt_tokens_details.cached_tokens
+_cost_with_cache = _format_cost_info({
+    "prompt_tokens": 1000,
+    "completion_tokens": 200,
+    "total_tokens": 1200,
+    "prompt_tokens_details": {"cached_tokens": 800},
+    "cost": 0.0030,
+}, "USD")
+_assert("800 cached" in _cost_with_cache, "cached tokens shown in token line")
+_assert("200 prompt" in _cost_with_cache, "non-cached prompt tokens shown (1000-800=200)")
+
+# Alternate shape: cache_read_input_tokens (some Anthropic surfaces)
+_cost_alt = _format_cost_info({
+    "prompt_tokens": 500,
+    "completion_tokens": 100,
+    "cache_read_input_tokens": 400,
+}, "USD")
+_assert("400 cached" in _cost_alt, "cache_read_input_tokens recognised")
+
+# No cache info → original format preserved
+_cost_plain = _format_cost_info({
+    "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150
+}, "USD")
+_assert("cached" not in _cost_plain, "no cache field: footer unchanged")
+
+# ── 28i. v1.6.0 — Generation ID footer ──────────────────────────────────────
+_section("28i. v1.6.0 generation id footer")
+
+_format_gen = mod._format_generation_id
+_assert(_format_gen(None) == "", "None → empty string")
+_assert(_format_gen("") == "", "empty → empty string")
+out = _format_gen("gen-abc123")
+_assert("gen-abc123" in out, "generation id appears in footer")
+_assert("`gen-abc123`" in out, "generation id wrapped in backticks for click-to-copy")
+
+# Non-stream response surfaces the id when SHOW_GENERATION_ID=True
+_pipe_gen = Pipe()
+_pipe_gen.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=True)
+_mock_gen_resp = MagicMock()
+_mock_gen_resp.json.return_value = {
+    "id": "gen-zzz111",
+    "model": "openai/gpt-4o",
+    "choices": [{"message": {"content": "hi", "role": "assistant"}}],
+}
+with patch.object(_pipe_gen, "_retryable_request", return_value=_mock_gen_resp):
+    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"})
+_assert("gen-zzz111" in _out, "non-stream: generation id rendered when SHOW_GENERATION_ID=True")
+
+# Toggled off → no footer
+_pipe_gen.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=False)
+_mock_gen_resp.json.return_value = {
+    "id": "gen-zzz111",
+    "model": "openai/gpt-4o",
+    "choices": [{"message": {"content": "hi", "role": "assistant"}}],
+}
+with patch.object(_pipe_gen, "_retryable_request", return_value=_mock_gen_resp):
+    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"})
+_assert("gen-zzz111" not in _out, "SHOW_GENERATION_ID=False: footer suppressed")
+
+# ── 28j. v1.6.0 — MODEL_CATEGORY query param ────────────────────────────────
+_section("28j. v1.6.0 MODEL_CATEGORY")
+
+_mock_cat_resp = MagicMock()
+_mock_cat_resp.status_code = 200
+_mock_cat_resp.json.return_value = {"data": [{"id": "openai/gpt-4o", "name": "GPT-4o"}]}
+_mock_cat_resp.raise_for_status = MagicMock()
+
+_captured_params = {}
+
+def _capture_cat(*args, **kwargs):
+    _captured_params.clear()
+    _captured_params.update(kwargs)
+    return _mock_cat_resp
+
+_pipe_cat = Pipe()
+_pipe_cat.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_CATEGORY="programming")
+_pipe_cat._models_cache = None
+with patch.object(_pipe_cat._session, "get", side_effect=_capture_cat):
+    _pipe_cat.pipes()
+_assert(
+    _captured_params.get("params", {}).get("category") == "programming",
+    "MODEL_CATEGORY: '?category=programming' forwarded to /models",
+)
+
+# Empty category → no category param sent
+_pipe_cat = Pipe()
+_pipe_cat.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_CATEGORY="")
+_pipe_cat._models_cache = None
+with patch.object(_pipe_cat._session, "get", side_effect=_capture_cat):
+    _pipe_cat.pipes()
+_assert(
+    "category" not in _captured_params.get("params", {}),
+    "empty MODEL_CATEGORY: no category param sent",
+)
+
+# ── 28k. v1.6.0 — Deprecated model tagging ──────────────────────────────────
+_section("28k. v1.6.0 deprecated model handling")
+
+_mock_deprec = {
+    "data": [
+        {"id": "openai/gpt-3.5-turbo", "name": "GPT-3.5", "expiration_date": "2026-09-01"},
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    ]
+}
+_mock_deprec_resp = MagicMock()
+_mock_deprec_resp.status_code = 200
+_mock_deprec_resp.json.return_value = _mock_deprec
+_mock_deprec_resp.raise_for_status = MagicMock()
+
+# Default: deprecated kept and tagged
+_pipe_dep = Pipe()
+_pipe_dep.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_pipe_dep._models_cache = None
+with patch.object(_pipe_dep._session, "get", return_value=_mock_deprec_resp):
+    _dep_models = _pipe_dep.pipes()
+_dep_by_id = {m["id"]: m["name"] for m in _dep_models}
+_assert("openai/gpt-3.5-turbo" in _dep_by_id, "deprecated model still listed by default")
+_assert("⚠" in _dep_by_id["openai/gpt-3.5-turbo"], "deprecated model tagged with ⚠ marker")
+_assert("(deprecated)" in _dep_by_id["openai/gpt-3.5-turbo"], "deprecated label appended to name")
+_assert("⚠" not in _dep_by_id["openai/gpt-4o"], "live model untouched")
+
+# HIDE_DEPRECATED_MODELS=True drops them
+_pipe_dep = Pipe()
+_pipe_dep.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HIDE_DEPRECATED_MODELS=True)
+_pipe_dep._models_cache = None
+with patch.object(_pipe_dep._session, "get", return_value=_mock_deprec_resp):
+    _dep_models = _pipe_dep.pipes()
+_dep_ids = {m["id"] for m in _dep_models}
+_assert(_dep_ids == {"openai/gpt-4o"}, "HIDE_DEPRECATED_MODELS=True: deprecated rows removed")
+
+# ── 28l. v1.6.0 — Cache-key invalidates on new filter valves ────────────────
+_section("28l. v1.6.0 cache key includes MODEL_CATEGORY / HIDE_DEPRECATED_MODELS")
+
+_keys_v16 = []
+for v in [
+    {},
+    {"MODEL_CATEGORY": "programming"},
+    {"HIDE_DEPRECATED_MODELS": True},
+]:
+    _p = Pipe()
+    _p.valves = Pipe.Valves(OPENROUTER_API_KEY="k", **v)
+    _keys_v16.append(_p._build_cache_key())
+_assert(len(set(_keys_v16)) == len(_keys_v16), "cache key differs per new v1.6 filter valve")
 
 # ── 29. _non_stream_response() edge cases ────────────────────────────────────
 
