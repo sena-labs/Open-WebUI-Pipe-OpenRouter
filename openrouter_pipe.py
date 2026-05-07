@@ -120,6 +120,47 @@ def _format_citation_list(citations: Optional[List[str]]) -> str:
         return ""
 
 
+_CURRENCY_SYMBOLS = {
+    "USD": "$",
+    "EUR": "€",
+    "GBP": "£",
+    "JPY": "¥",
+    "CAD": "CA$",
+    "AUD": "A$",
+}
+
+
+def _format_cost_info(usage: dict, currency: str = "USD") -> str:
+    """Format token usage and cost from an OpenRouter usage dict."""
+    if not usage:
+        return ""
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    total = usage.get("total_tokens", 0) or (prompt + completion)
+    cost = usage.get("cost")
+
+    token_str = f"{prompt:,} prompt + {completion:,} completion = {total:,} total"
+    parts = [f"**Tokens:** {token_str}"]
+
+    if cost is not None:
+        try:
+            cost_f = float(cost)
+            symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
+            if cost_f == 0:
+                cost_str = f"{symbol}0.00"
+            elif cost_f < 0.0001:
+                cost_str = f"{symbol}{cost_f:.6f}"
+            elif cost_f < 0.01:
+                cost_str = f"{symbol}{cost_f:.5f}"
+            else:
+                cost_str = f"{symbol}{cost_f:.4f}"
+            parts.append(f"**Cost:** {cost_str}")
+        except (ValueError, TypeError):
+            pass
+
+    return f"\n\n---\n*{' · '.join(parts)}*"
+
+
 class Pipe:
     class Valves(BaseModel):
         OPENROUTER_API_KEY: str = Field(
@@ -232,6 +273,27 @@ class Pipe:
         )
         MAX_RETRIES: int = Field(
             default=2, ge=0, description="Auto-retries on transient errors (with exponential backoff)"
+        )
+        SHOW_COST_INFO: bool = Field(
+            default=False,
+            description="Append token usage and cost to each response",
+        )
+        COST_CURRENCY: str = Field(
+            default=os.getenv("OPENROUTER_COST_CURRENCY", "USD"),
+            description="Currency label shown in cost display (display only; OpenRouter bills in USD)",
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "USD", "label": "USD ($)"},
+                        {"value": "EUR", "label": "EUR (€)"},
+                        {"value": "GBP", "label": "GBP (£)"},
+                        {"value": "JPY", "label": "JPY (¥)"},
+                        {"value": "CAD", "label": "CAD (CA$)"},
+                        {"value": "AUD", "label": "AUD (A$)"},
+                    ],
+                }
+            },
         )
 
         @field_validator("OPENROUTER_BASE_URL")
@@ -768,6 +830,12 @@ class Pipe:
 
             if rendered_citations:
                 final_parts.append(rendered_citations)
+
+            if self.valves.SHOW_COST_INFO:
+                cost_info = _format_cost_info(res.get("usage", {}), self.valves.COST_CURRENCY)
+                if cost_info:
+                    final_parts.append(cost_info)
+
             return "".join(final_parts)
         except requests.exceptions.Timeout:
             return f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
@@ -785,6 +853,7 @@ class Pipe:
         response = None
         in_think = False
         latest_citations: List[str] = []
+        latest_usage: dict = {}
 
         def _close_think_tag():
             nonlocal in_think
@@ -820,6 +889,10 @@ class Pipe:
                     yield f"\n\nOpenRouter Error: {msg}"
                     return
 
+                usage_data = chunk.get("usage")
+                if usage_data:
+                    latest_usage = usage_data
+
                 citations = chunk.get("citations")
                 if citations is not None:
                     latest_citations = citations
@@ -849,6 +922,11 @@ class Pipe:
             rendered_citations = _format_citation_list(latest_citations)
             if rendered_citations:
                 yield rendered_citations
+
+            if self.valves.SHOW_COST_INFO:
+                cost_info = _format_cost_info(latest_usage, self.valves.COST_CURRENCY)
+                if cost_info:
+                    yield cost_info
         except requests.exceptions.Timeout:
             close_tag = _close_think_tag()
             if close_tag:

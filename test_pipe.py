@@ -145,6 +145,8 @@ _assert(v.ENABLE_MIDDLE_OUT is False, "ENABLE_MIDDLE_OUT false")
 _assert(v.ENABLE_CACHE_CONTROL is False, "ENABLE_CACHE_CONTROL false")
 _assert(v.REQUEST_TIMEOUT == 90, "REQUEST_TIMEOUT 90")
 _assert(v.MAX_RETRIES == 2, "MAX_RETRIES 2")
+_assert(v.SHOW_COST_INFO is False, "SHOW_COST_INFO false by default")
+_assert(v.COST_CURRENCY == "USD", "COST_CURRENCY USD by default")
 
 try:
     Pipe.Valves(REQUEST_TIMEOUT=-1)
@@ -1853,6 +1855,184 @@ _assert(
     or _mock_post_ns.call_args[1].get("stream") is False,
     "retryable: stream=False forwarded to requests.Session.post",
 )
+
+# ── 33. _format_cost_info() and SHOW_COST_INFO ──────────────────────────────
+
+_section("33. _format_cost_info() and SHOW_COST_INFO")
+
+_format_cost_info = mod._format_cost_info
+_CURRENCY_SYMBOLS = mod._CURRENCY_SYMBOLS
+
+# 33a. Empty usage dict → empty string
+_assert(_format_cost_info({}) == "", "_format_cost_info: empty dict → empty")
+_assert(_format_cost_info({}, "EUR") == "", "_format_cost_info: empty dict with currency → empty")
+
+# 33b. Usage with tokens only (no cost) → tokens shown
+_result_tokens_only = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150})
+_assert("100" in _result_tokens_only, "_format_cost_info: prompt tokens present")
+_assert("50" in _result_tokens_only, "_format_cost_info: completion tokens present")
+_assert("150" in _result_tokens_only, "_format_cost_info: total tokens present")
+_assert("Tokens" in _result_tokens_only, "_format_cost_info: Tokens label present")
+_assert("Cost" not in _result_tokens_only, "_format_cost_info: no cost when field absent")
+
+# 33c. Zero cost → $0.00
+_result_free = _format_cost_info({"prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300, "cost": 0})
+_assert("$0.00" in _result_free, "_format_cost_info: zero cost → $0.00")
+_assert("Cost" in _result_free, "_format_cost_info: Cost label present for zero cost")
+
+# 33d. Micro cost < 0.0001 → 6 decimal places
+_result_micro = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.000005})
+_assert("$0.000005" in _result_micro, "_format_cost_info: micro cost 6 decimal places")
+
+# 33e. Small cost 0.0001–0.01 → 5 decimal places
+_result_small = _format_cost_info({"prompt_tokens": 50, "completion_tokens": 25, "total_tokens": 75, "cost": 0.001234})
+_assert("$0.00123" in _result_small, "_format_cost_info: small cost 5 decimal places")
+
+# 33f. Normal cost >= 0.01 → 4 decimal places
+_result_normal = _format_cost_info({"prompt_tokens": 500, "completion_tokens": 200, "total_tokens": 700, "cost": 0.05670})
+_assert("$0.0567" in _result_normal, "_format_cost_info: normal cost 4 decimal places")
+
+# 33g. EUR currency symbol
+_result_eur = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "EUR")
+_assert("€" in _result_eur, "_format_cost_info: EUR symbol shown")
+
+# 33h. GBP currency symbol
+_result_gbp = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "GBP")
+_assert("£" in _result_gbp, "_format_cost_info: GBP symbol shown")
+
+# 33i. Unknown currency → uses currency string as prefix
+_result_unknown = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.01}, "XYZ")
+_assert("XYZ " in _result_unknown, "_format_cost_info: unknown currency → code as prefix")
+
+# 33j. Invalid cost value (string) → tokens shown, cost silently skipped
+_result_bad_cost = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": "invalid"})
+_assert("Tokens" in _result_bad_cost, "_format_cost_info: invalid cost → tokens still shown")
+_assert("Cost" not in _result_bad_cost, "_format_cost_info: invalid cost → cost silently skipped")
+
+# 33k. total_tokens missing → computed as prompt + completion
+_result_no_total = _format_cost_info({"prompt_tokens": 80, "completion_tokens": 20, "cost": 0.005})
+_assert("100" in _result_no_total, "_format_cost_info: total computed from prompt+completion when missing")
+
+# 33l. Output format: starts with separator, italic, bold labels
+_result_fmt = _format_cost_info({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.001})
+_assert(_result_fmt.startswith("\n\n---\n"), "_format_cost_info: starts with separator")
+_assert("*" in _result_fmt, "_format_cost_info: uses italic (asterisks)")
+_assert("**Tokens:**" in _result_fmt, "_format_cost_info: bold Tokens label")
+_assert("**Cost:**" in _result_fmt, "_format_cost_info: bold Cost label")
+
+# 33m. Large numbers use comma separators
+_result_large = _format_cost_info({"prompt_tokens": 1250, "completion_tokens": 342, "total_tokens": 1592, "cost": 0.00234})
+_assert("1,250" in _result_large, "_format_cost_info: large prompt token count formatted with comma")
+_assert("1,592" in _result_large, "_format_cost_info: large total formatted with comma")
+
+# 33n. CURRENCY_SYMBOLS dict completeness
+for _sym_key in ("USD", "EUR", "GBP", "JPY", "CAD", "AUD"):
+    _assert(_sym_key in _CURRENCY_SYMBOLS, f"_CURRENCY_SYMBOLS: {_sym_key} present")
+
+# ── 33 (cont). Non-stream SHOW_COST_INFO integration ────────────────────────
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 33o. SHOW_COST_INFO=False (default) → no cost appended
+_mock_cost_off = MagicMock()
+_mock_cost_off.json.return_value = {
+    "choices": [{"message": {"content": "Hello"}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.001},
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_cost_off):
+    _result_off = pipe._non_stream_response({}, {})
+_assert("---" not in _result_off, "non-stream SHOW_COST_INFO=False: no separator appended")
+_assert("Tokens" not in _result_off, "non-stream SHOW_COST_INFO=False: no Tokens line")
+
+# 33p. SHOW_COST_INFO=True → cost appended after content
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True, COST_CURRENCY="USD")
+_mock_cost_on = MagicMock()
+_mock_cost_on.json.return_value = {
+    "choices": [{"message": {"content": "Hello"}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.00123},
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_cost_on):
+    _result_on = pipe._non_stream_response({}, {})
+_assert("Hello" in _result_on, "non-stream SHOW_COST_INFO=True: content preserved")
+_assert("Tokens" in _result_on, "non-stream SHOW_COST_INFO=True: Tokens label present")
+_assert("$" in _result_on, "non-stream SHOW_COST_INFO=True: cost shown in USD")
+_assert("10" in _result_on, "non-stream SHOW_COST_INFO=True: prompt token count present")
+
+# 33q. SHOW_COST_INFO=True with EUR currency
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True, COST_CURRENCY="EUR")
+_mock_cost_eur = MagicMock()
+_mock_cost_eur.json.return_value = {
+    "choices": [{"message": {"content": "Ciao"}}],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8, "cost": 0.05},
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_cost_eur):
+    _result_eur_resp = pipe._non_stream_response({}, {})
+_assert("€" in _result_eur_resp, "non-stream SHOW_COST_INFO=True EUR: euro symbol shown")
+
+# 33r. SHOW_COST_INFO=True but response has no usage → no cost appended (no crash)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
+_mock_no_usage = MagicMock()
+_mock_no_usage.json.return_value = {
+    "choices": [{"message": {"content": "No usage data"}}],
+}
+with patch.object(pipe, "_retryable_request", return_value=_mock_no_usage):
+    _result_no_usage = pipe._non_stream_response({}, {})
+_assert("No usage data" in _result_no_usage, "non-stream no usage: content preserved")
+_assert("Tokens" not in _result_no_usage, "non-stream no usage: no Tokens line (no crash)")
+
+# ── 33 (cont). Stream SHOW_COST_INFO integration ─────────────────────────────
+
+pipe = Pipe()
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True, COST_CURRENCY="USD")
+
+# 33s. Usage in final SSE chunk → cost appended after stream
+_usage_chunk = {"prompt_tokens": 150, "completion_tokens": 75, "total_tokens": 225, "cost": 0.00567}
+sse_with_usage = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Answer"}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {}}], "usage": _usage_chunk}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_with_usage)):
+    _stream_output = list(pipe._stream_response({}, {}))
+_stream_full = "".join(_stream_output)
+_assert("Answer" in _stream_full, "stream SHOW_COST_INFO=True: content preserved")
+_assert("Tokens" in _stream_full, "stream SHOW_COST_INFO=True: Tokens label in output")
+_assert("150" in _stream_full, "stream SHOW_COST_INFO=True: prompt token count present")
+_assert("$" in _stream_full, "stream SHOW_COST_INFO=True: cost in USD")
+
+# 33t. SHOW_COST_INFO=False → usage in chunk but no cost appended
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=False)
+sse_no_cost_display = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Reply"}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {}}], "usage": _usage_chunk}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_no_cost_display)):
+    _stream_off_output = list(pipe._stream_response({}, {}))
+_stream_off_full = "".join(_stream_off_output)
+_assert("Reply" in _stream_off_full, "stream SHOW_COST_INFO=False: content preserved")
+_assert("Tokens" not in _stream_off_full, "stream SHOW_COST_INFO=False: no Tokens line")
+
+# 33u. Stream with no usage chunk → no cost appended, no crash
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
+sse_no_usage_chunk = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Text"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_no_usage_chunk)):
+    _stream_nu_output = list(pipe._stream_response({}, {}))
+_stream_nu_full = "".join(_stream_nu_output)
+_assert("Text" in _stream_nu_full, "stream no usage chunk: content preserved")
+_assert("Tokens" not in _stream_nu_full, "stream no usage chunk: no cost line (no crash)")
+
+# 33v. COST_CURRENCY valve uses select with 6 options
+_cc_field = Pipe.Valves.model_fields["COST_CURRENCY"]
+_cc_options = _cc_field.json_schema_extra.get("input", {}).get("options", [])
+_assert(len(_cc_options) == 6, "COST_CURRENCY: 6 currency options")
+_cc_values = [o["value"] for o in _cc_options]
+_assert("USD" in _cc_values, "COST_CURRENCY options: USD present")
+_assert("EUR" in _cc_values, "COST_CURRENCY options: EUR present")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
