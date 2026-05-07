@@ -12,6 +12,7 @@ description: Access 300+ AI models through OpenRouter directly inside Open WebUI
 """
 
 import copy
+import hashlib
 import json
 import os
 import random
@@ -41,29 +42,21 @@ _MODELS_CACHE_TTL = 300.0  # 5 minutes
 # Provider icons — synced into the Open WebUI Models database by
 # _sync_model_icons() so the frontend can serve them via
 # /models/model/profile/image.  Disable with SYNC_PROVIDER_ICONS = False.
+# URLs verified against https://openrouter.ai/images/icons/ (May 2025).
 _PROVIDER_ICONS = {
-    "openai": "https://openrouter.ai/images/models/openai.svg",
-    "anthropic": "https://openrouter.ai/images/models/anthropic.svg",
-    "google": "https://openrouter.ai/images/models/google.svg",
-    "meta-llama": "https://openrouter.ai/images/models/meta.svg",
-    "mistralai": "https://openrouter.ai/images/models/mistralai.svg",
-    "amazon": "https://openrouter.ai/images/models/amazon.svg",
-    "deepseek": "https://openrouter.ai/images/models/deepseek.svg",
-    "x-ai": "https://openrouter.ai/images/models/xai.svg",
-    "cohere": "https://openrouter.ai/images/models/cohere.svg",
-    "perplexity": "https://openrouter.ai/images/models/perplexity.svg",
-    "allenai": "https://openrouter.ai/images/models/allenai.svg",
-    "qwen": "https://openrouter.ai/images/models/qwen.svg",
-    "nvidia": "https://openrouter.ai/images/models/nvidia.svg",
-    "databricks": "https://openrouter.ai/images/models/databricks.svg",
-    "microsoft": "https://openrouter.ai/images/models/microsoft.svg",
-    "together": "https://openrouter.ai/images/models/together.svg",
-    "fireworks": "https://openrouter.ai/images/models/fireworks.svg",
-    "sambanova": "https://openrouter.ai/images/models/sambanova.svg",
-    "cerebras": "https://openrouter.ai/images/models/cerebras.svg",
-    "groq": "https://openrouter.ai/images/models/groq.svg",
-    "inflection": "https://openrouter.ai/images/models/inflection.svg",
-    "01-ai": "https://openrouter.ai/images/models/01ai.svg",
+    "openai": "https://openrouter.ai/images/icons/OpenAI.svg",
+    "anthropic": "https://openrouter.ai/images/icons/Anthropic.svg",
+    "google": "https://openrouter.ai/images/icons/GoogleGemini.svg",
+    "meta-llama": "https://openrouter.ai/images/icons/Meta.png",
+    "mistralai": "https://openrouter.ai/images/icons/Mistral.png",
+    "amazon": "https://openrouter.ai/images/icons/Bedrock.svg",
+    "deepseek": "https://openrouter.ai/images/icons/DeepSeek.png",
+    "cohere": "https://openrouter.ai/images/icons/Cohere.png",
+    "perplexity": "https://openrouter.ai/images/icons/Perplexity.svg",
+    "qwen": "https://openrouter.ai/images/icons/Qwen.png",
+    "microsoft": "https://openrouter.ai/images/icons/Microsoft.svg",
+    "fireworks": "https://openrouter.ai/images/icons/Fireworks.png",
+    "moonshotai": "https://openrouter.ai/images/icons/MoonshotAI.png",
 }
 
 
@@ -76,14 +69,16 @@ def _is_owui_managed_icon(url: str) -> bool:
     """Return True if the icon URL was set by OWUI or our sync logic.
 
     data: URLs are the pipe's own SVG icon that OWUI assigns as default to all
-    manifold child models.  openrouter.ai/images/models/ URLs are the provider
-    icons we write.  Any other URL is assumed to be a user-set custom icon and
-    must not be overwritten.
+    manifold child models.  openrouter.ai/images/models/ and
+    openrouter.ai/images/icons/ are the provider icon paths we write (the
+    former was the old path, now superseded by the latter).  Any other URL is
+    assumed to be a user-set custom icon and must not be overwritten.
     """
     return (
         not url
         or url.startswith("data:")
         or url.startswith("https://openrouter.ai/images/models/")
+        or url.startswith("https://openrouter.ai/images/icons/")
     )
 
 
@@ -340,12 +335,28 @@ class Pipe:
         """Return the full URL for the chat completions endpoint."""
         return f"{self._base}{_API_PATH_CHAT}"
 
+    def _build_cache_key(self) -> str:
+        """Build a fingerprint of the valves that affect the model list.
+
+        The API key is hashed (not embedded raw) so it doesn't sit in plaintext
+        in long-lived strings that may end up in logs or memory dumps.
+        """
+        api_key_hash = (
+            hashlib.sha256(self.valves.OPENROUTER_API_KEY.encode("utf-8")).hexdigest()[:16]
+            if self.valves.OPENROUTER_API_KEY
+            else ""
+        )
+        return (
+            f"{api_key_hash}|{self.valves.FREE_ONLY}|"
+            f"{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|"
+            f"{self.valves.MODEL_PREFIX}"
+        )
+
     def _models_cache_valid(self) -> bool:
         """Check if the cached model list is still valid."""
         if not self._models_cache:
             return False
-        key = f"{self.valves.OPENROUTER_API_KEY}|{self.valves.FREE_ONLY}|{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|{self.valves.MODEL_PREFIX}"
-        if key != self._models_cache_key:
+        if self._build_cache_key() != self._models_cache_key:
             return False
         return (time.monotonic() - self._models_cache_ts) < _MODELS_CACHE_TTL
 
@@ -428,9 +439,11 @@ class Pipe:
                 if not is_free:
                     continue
 
-            # Split model_id once for provider extraction
+            # Split model_id once for provider extraction.
+            # Strip leading '~' (OpenRouter "latest" aliases like ~anthropic/claude-haiku-latest)
+            # so they match the same provider filter as their base provider.
             parts = model_id.split("/", 1)
-            provider_key = parts[0].lower() if len(parts) > 1 else "openrouter"
+            provider_key = parts[0].lstrip("~").lower() if len(parts) > 1 else "openrouter"
 
             if provider_filter:
                 keep = (provider_key in provider_filter) ^ self.valves.INVERT_PROVIDER_LIST
@@ -459,7 +472,7 @@ class Pipe:
         # Store in cache
         self._models_cache = models
         self._models_cache_ts = time.monotonic()
-        self._models_cache_key = f"{self.valves.OPENROUTER_API_KEY}|{self.valves.FREE_ONLY}|{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|{self.valves.MODEL_PREFIX}"
+        self._models_cache_key = self._build_cache_key()
 
         # Sync provider icons into Open WebUI's Models database
         if self.valves.SYNC_PROVIDER_ICONS:
@@ -469,10 +482,21 @@ class Pipe:
 
     @staticmethod
     def _clean_model_id(model_id: str) -> str:
-        """Strip the manifold prefix from a model ID."""
-        if "." in model_id:
-            return model_id.split(".", 1)[-1]
-        return model_id
+        """Strip the manifold prefix from a model ID.
+
+        OpenRouter model IDs use the format ``provider/model`` (e.g.
+        ``anthropic/claude-3.5-sonnet``). The manifold prefix added by Open
+        WebUI is a function id without ``/`` (e.g. ``openrouter_pipe``). We
+        only strip when the text before the first ``.`` contains no ``/`` —
+        otherwise the dot is part of the model version (e.g.
+        ``claude-3.5-sonnet``) and must be preserved.
+        """
+        if "." not in model_id:
+            return model_id
+        prefix, rest = model_id.split(".", 1)
+        if "/" in prefix:
+            return model_id
+        return rest
 
     async def pipe(
         self,
@@ -582,16 +606,43 @@ class Pipe:
             if model_id in self._icons_synced:
                 continue
 
-            # Determine provider icon
+            # Determine provider icon. Strip '~' so latest aliases (e.g.
+            # ~anthropic/claude-haiku-latest) resolve to the correct icon.
             parts = model_id.split("/", 1)
-            provider_key = parts[0].lower() if len(parts) > 1 else ""
+            provider_key = parts[0].lstrip("~").lower() if len(parts) > 1 else ""
             icon_url = _PROVIDER_ICONS.get(provider_key)
-            if not icon_url:
-                self._icons_synced.add(model_id)
-                continue
-
             # Build the prefixed ID that Open WebUI uses in the frontend
             db_model_id = f"{function_id}.{model_id}"
+
+            if not icon_url:
+                # No icon for this provider. If the DB holds one of our old
+                # broken /images/models/ URLs, clear it so OWUI shows its
+                # default icon rather than a broken image.
+                try:
+                    existing = Models.get_model_by_id(db_model_id)
+                    if existing and hasattr(existing, "meta") and existing.meta:
+                        stale = getattr(existing.meta, "profile_image_url", "") or ""
+                        if stale.startswith("https://openrouter.ai/images/models/"):
+                            existing_params = ModelParams()
+                            if hasattr(existing, "params") and existing.params:
+                                existing_params = existing.params
+                            Models.update_model_by_id(
+                                db_model_id,
+                                ModelForm(
+                                    id=db_model_id,
+                                    name=(
+                                        existing.name
+                                        if hasattr(existing, "name")
+                                        else model.get("name", model_id)
+                                    ),
+                                    meta=ModelMeta(profile_image_url=""),
+                                    params=existing_params,
+                                ),
+                            )
+                except Exception:
+                    pass
+                self._icons_synced.add(model_id)
+                continue
 
             try:
                 existing = Models.get_model_by_id(db_model_id)
@@ -685,8 +736,7 @@ class Pipe:
             payload.pop(key, None)
 
         # Open WebUI sends 'user' as dict; OpenRouter expects a string
-        user_field = payload.get("user")
-        if isinstance(user_field, dict):
+        if isinstance(payload.get("user"), dict):
             payload.pop("user", None)
 
         # Fix model ID (strip manifold prefix)
@@ -960,7 +1010,9 @@ class Pipe:
             if response is not None:
                 response.close()
 
-    def _retryable_request(self, headers: dict, payload: dict, stream: bool):
+    def _retryable_request(
+        self, headers: dict, payload: dict, stream: bool
+    ) -> requests.Response:
         """Send a POST request with automatic retry and exponential backoff."""
         last_exc: Optional[Exception] = None
         for attempt in range(self.valves.MAX_RETRIES + 1):
