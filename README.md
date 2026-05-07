@@ -3,6 +3,8 @@
 [![Build](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ivansena)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-003087?logo=paypal&logoColor=white)](https://paypal.me/SenaIvan)
 
 Access **300+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
 reasoning tokens, streaming, fallbacks, and cache control out of the box.
@@ -44,6 +46,7 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 - [Contributing](#contributing)
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
+- [Support](#support)
 - [License](#license)
 
 ---
@@ -319,6 +322,15 @@ A: `MODEL_PROVIDERS` accepts a comma-separated list (e.g. `openai,anthropic`). E
 A: `FALLBACK_MODELS` adds extra model IDs to the `models` array in the OpenRouter request. If the
 primary model fails, OpenRouter automatically tries the next one. Non-streaming responses include
 a "Responded by: model-id" attribution when a fallback handled the request.
+
+## Support
+
+If OpenRouter Pipe saves you time, consider buying me a coffee ☕
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Ivan-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ivansena)
+[![PayPal](https://img.shields.io/badge/PayPal-Donate-003087?logo=paypal&logoColor=white)](https://paypal.me/SenaIvan)
+
+Your support helps keep this project maintained and up to date with OpenRouter's latest features.
 
 ## License
 
