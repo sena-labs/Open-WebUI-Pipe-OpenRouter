@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-05-08
+
+### Added
+
+- **Web search plugin** — five new valves (`ENABLE_WEB_SEARCH`, `WEB_SEARCH_MAX_RESULTS`, `WEB_SEARCH_PROMPT`, `WEB_SEARCH_INCLUDE_DOMAINS`, `WEB_SEARCH_EXCLUDE_DOMAINS`) attach OpenRouter's `web` plugin to every request so any model can ground answers in fresh web results, with domain allow/deny lists and a custom search prompt
+- **`MODEL_CATEGORY` valve** — server-side `?category=...` filter on `/models` (e.g. `programming`, `roleplay`, `marketing`, `science`, `legal`, `finance`, `health`, `academia`)
+- **Deprecation handling** — models with a non-null `expiration_date` are tagged `⚠ {name} (deprecated)` in the selector. New `HIDE_DEPRECATED_MODELS` valve removes them entirely
+- **`REASONING_MAX_TOKENS` valve** — hard cap on reasoning tokens per response (sent as `reasoning.max_tokens`) for budget control on deep-thinking models
+- **Provider preferences extras** — `PROVIDER_ONLY` (allowlist), `PROVIDER_QUANTIZATIONS` (e.g. `bf16,fp8`), `PROVIDER_ALLOW_FALLBACKS`, `PROVIDER_MAX_PRICE_PROMPT`, `PROVIDER_MAX_PRICE_COMPLETION`. Translates to `provider.only/quantizations/allow_fallbacks/max_price` per the OpenRouter SDK schema
+- **`SERVICE_TIER` valve** — OpenAI-style tier hint (`auto`/`default`/`flex`/`priority`/`scale`) forwarded to compatible providers
+- **`SHOW_GENERATION_ID` valve** — captures the `id` field from chat-completion responses (works in both streaming and non-streaming modes) and appends `*Generation ID: gen-…*` so users can later call `GET /api/v1/generation?id={id}` for audit trails and per-request usage details
+- **Cached prompt-token cost breakdown** — when the provider reports `prompt_tokens_details.cached_tokens` (Anthropic prompt caching, OpenAI implicit caching, Gemini context caching), the `SHOW_COST_INFO` footer splits out cached vs. non-cached prompt tokens so users can see the savings (Anthropic caches save up to 90% on input cost)
+- **`_build_web_search_plugin()`**, **`_format_generation_id()`** — new helpers on `Pipe`
+
+### Changed
+
+- Model-list cache fingerprint now also includes `MODEL_CATEGORY` and `HIDE_DEPRECATED_MODELS` so toggling either invalidates the cached list
+- `pipes()` now sends `params={"output_modalities": ..., "category": ...}` when a category is set
+- `_prepare_payload()` now emits `service_tier`, `provider.only`, `provider.quantizations`, `provider.allow_fallbacks=false`, `provider.max_price.{prompt,completion}`, `reasoning.max_tokens`, and a `web` entry in `plugins` (without overwriting any user-supplied plugins)
+
+## [1.5.0] — 2026-05-07
+
+### Added
+
+- **Variant model routing** — new `MODEL_VARIANTS` valve (env: `OPENROUTER_MODEL_VARIANTS`). Comma-separated `base_id:variant` entries surface as virtual catalog rows that inherit the base model's display name and provider icon while OpenRouter routes the suffixed ID via its variant logic. Recognised tags: `free`, `thinking`, `online`, `nitro`, `exacto`, `extended`. Example: `MODEL_VARIANTS=openai/gpt-4o:nitro,anthropic/claude-3.5-sonnet:thinking`
+- **Reasoning effort: `minimal` and `xhigh`** — extends `REASONING_EFFORT` with two new levels for fastest/maximum-depth thinking on supporting models
+- **`REASONING_SUMMARY_MODE` valve** (env: `OPENROUTER_REASONING_SUMMARY_MODE`, default `disabled`) — requests a `reasoning.summary` block from supporting models. Options: `auto`, `concise`, `detailed`, `disabled`
+- **Anthropic interleaved thinking** — new `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` valve (default on, env: `OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING`). When the selected model is `anthropic/...`, automatically injects the `anthropic-beta: interleaved-thinking-2025-05-14` header so Claude interleaves reasoning with tool use
+- **`ANTHROPIC_PROMPT_CACHE_TTL` valve** (env: `OPENROUTER_ANTHROPIC_PROMPT_CACHE_TTL`, default `5m`) — extends `ENABLE_CACHE_CONTROL` so the ephemeral cache breakpoint can be set to either `5m` (default) or `1h` for longer cache lifetimes between turns
+- **`TOOL_CALLING_FILTER` valve** (env: `OPENROUTER_TOOL_CALLING_FILTER`, default `all`) — catalog filter for tool-capable models. Options: `all`, `only`, `exclude`. Reads `supported_parameters` from `/models` and matches on `tools`/`tool_choice`
+- **ZDR (Zero Data Retention) support** — two new valves: `ZDR_MODELS_ONLY` (catalog filter — fetches `/endpoints/zdr` and hides models without a ZDR-capable endpoint) and `ZDR_ENFORCE` (request-side — adds `provider.zdr=true` so OpenRouter rejects the call if no ZDR endpoint is available)
+- **`HTTP_REFERER_OVERRIDE` valve** (env: `OPENROUTER_HTTP_REFERER`) — explicit override for the `HTTP-Referer` app-attribution header. Empty falls back to `WEBUI_URL` env or `http://localhost:3000`
+- **`_load_zdr_model_ids()`**, **`_parse_variant_specs()`**, **`_expand_variant_models()`**, **`_resolve_referer()`**, **`_is_anthropic_model()`** — new instance methods on `Pipe`
+
+### Changed
+
+- **Breaking:** `FREE_ONLY` (boolean) replaced by **`FREE_MODEL_FILTER`** (env: `OPENROUTER_FREE_MODEL_FILTER`, default `all`). Options: `all`, `only`, `exclude`. Setups using `FREE_ONLY=true` should switch to `FREE_MODEL_FILTER=only`; setups using `FREE_ONLY=false` need no change
+- **Reasoning payload shape:** when both `REASONING_EFFORT` and `REASONING_SUMMARY_MODE` are set, both fields are merged into the same `reasoning` object instead of overwriting
+- Model-list cache fingerprint now also includes `FREE_MODEL_FILTER`, `TOOL_CALLING_FILTER`, `ZDR_MODELS_ONLY`, and `MODEL_VARIANTS` so toggling any of them invalidates the 5-minute cache
+- `_build_headers()` accepts an optional `model_id` kwarg so it can decide whether to inject Anthropic-specific beta headers
+
+## [1.4.0] — 2026-05-07
+
+### Added
+
+- **`OUTPUT_MODALITIES` valve** (env: `OPENROUTER_OUTPUT_MODALITIES`, default `all`) — controls which model output modalities are fetched from OpenRouter's `/models` endpoint. Accepts `text`, `image`, `audio`, `embeddings`, `all`, or a comma-separated combination
+- **Full-catalog model listing** — TTS (e.g. `openai/gpt-4o-mini-tts-*`), audio-output, image-generation, and embedding models now appear in the Open WebUI model selector by default
+- **Auto-discovered provider icons** — for providers not in the hardcoded fast-path dict, the pipe now lazy-loads OpenRouter's frontend provider registry (`/api/frontend/all-providers`) and resolves the icon from there. Adds icon coverage for ~20 additional model authors (xAI, Inflection, NVIDIA, Arcee, Morph, Cerebras, etc.) including gstatic favicons for providers without an OpenRouter-hosted logo. Slug normalization handles `x-ai` ↔ `xai` style mismatches
+- **`_load_provider_registry()`** and **`_get_provider_icon()`** methods on `Pipe` — layered icon resolution: hardcoded dict → registry exact slug → registry hyphen-stripped slug. Network failures are silent (best-effort fallback)
+
+### Changed
+
+- The `/models` request now passes `output_modalities=all` by default, so the catalog is no longer silently restricted to text-output models. Set `OUTPUT_MODALITIES = text` to restore the previous chat-only behaviour
+- Model-list cache fingerprint now includes `OUTPUT_MODALITIES`, so toggling the valve correctly invalidates the cached list
+- `_is_owui_managed_icon()` now also recognises `https://t0.gstatic.com/faviconV2` URLs as pipe-managed, so registry-sourced gstatic favicons remain overwriteable when OpenRouter updates its provider mapping
+
 ## [1.3.0] — 2026-05-07
 
 ### Added

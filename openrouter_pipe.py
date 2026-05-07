@@ -3,12 +3,12 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 1.3.0
+version: 1.6.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.20, pydantic>=2.0
-description: Access 340+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 13 provider icons, and configurable retry logic.
+description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (auto/flex/priority/scale), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons.
 """
 
 import copy
@@ -35,13 +35,31 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 # API path constants
 _API_PATH_MODELS = "/models"
 _API_PATH_CHAT = "/chat/completions"
+_API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
+
+# Beta header for Claude's interleaved-thinking + tool-use mode.
+# https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
+_ANTHROPIC_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+
+# OpenRouter variant suffixes that route to specialized providers/profiles.
+# https://openrouter.ai/docs/features/preset-routing
+_RECOGNISED_VARIANT_TAGS = frozenset(
+    {"free", "thinking", "online", "nitro", "exacto", "extended"}
+)
 
 # Cache TTL for model list (seconds)
 _MODELS_CACHE_TTL = 300.0  # 5 minutes
 
+# OpenRouter's frontend provider registry — gives us icon URLs for ~70 providers
+# (hosted SVG/PNG when available, gstatic favicons otherwise). Used as a
+# dynamic fallback when a model's author isn't in _PROVIDER_ICONS.
+_PROVIDER_REGISTRY_URL = "https://openrouter.ai/api/frontend/all-providers"
+
 # Provider icons — synced into the Open WebUI Models database by
 # _sync_model_icons() so the frontend can serve them via
 # /models/model/profile/image.  Disable with SYNC_PROVIDER_ICONS = False.
+# Hardcoded fast path for top model authors; everything else is auto-discovered
+# via _load_provider_registry().
 # URLs verified against https://openrouter.ai/images/icons/ (May 2025).
 _PROVIDER_ICONS = {
     "openai": "https://openrouter.ai/images/icons/OpenAI.svg",
@@ -70,8 +88,12 @@ def _is_owui_managed_icon(url: str) -> bool:
 
     data: URLs are the pipe's own SVG icon that OWUI assigns as default to all
     manifold child models.  openrouter.ai/images/models/ and
-    openrouter.ai/images/icons/ are the provider icon paths we write (the
-    former was the old path, now superseded by the latter).  Any other URL is
+    openrouter.ai/images/icons/ are the OpenRouter-hosted provider icons we
+    write (the former was the old path, superseded by the latter).
+    t0.gstatic.com/faviconV2 URLs are the gstatic favicons returned by
+    OpenRouter's provider registry for providers without a hosted icon — we
+    write those too as part of icon auto-discovery, so they must remain
+    overwriteable when OpenRouter updates its mapping.  Any other URL is
     assumed to be a user-set custom icon and must not be overwritten.
     """
     return (
@@ -79,6 +101,7 @@ def _is_owui_managed_icon(url: str) -> bool:
         or url.startswith("data:")
         or url.startswith("https://openrouter.ai/images/models/")
         or url.startswith("https://openrouter.ai/images/icons/")
+        or url.startswith("https://t0.gstatic.com/faviconV2")
     )
 
 
@@ -126,7 +149,11 @@ _CURRENCY_SYMBOLS = {
 
 
 def _format_cost_info(usage: dict, currency: str = "USD") -> str:
-    """Format token usage and cost from an OpenRouter usage dict."""
+    """Format token usage and cost from an OpenRouter usage dict.
+
+    When the provider reports cached prompt tokens (90%+ cheaper on most
+    providers), the breakdown is shown so users see the savings.
+    """
     if not usage:
         return ""
     prompt = usage.get("prompt_tokens", 0)
@@ -134,7 +161,23 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     total = usage.get("total_tokens", 0) or (prompt + completion)
     cost = usage.get("cost")
 
-    token_str = f"{prompt:,} prompt + {completion:,} completion = {total:,} total"
+    # Cached prompt tokens — emitted by Anthropic prompt caching, OpenAI
+    # implicit caching, and Gemini context caching. Shape varies per provider.
+    cached_tokens = 0
+    details = usage.get("prompt_tokens_details") or {}
+    if isinstance(details, dict):
+        cached_tokens = details.get("cached_tokens") or 0
+    if not cached_tokens:
+        cached_tokens = usage.get("cache_read_input_tokens") or 0
+
+    if cached_tokens:
+        non_cached = max(prompt - int(cached_tokens), 0)
+        token_str = (
+            f"{non_cached:,} prompt + {int(cached_tokens):,} cached + "
+            f"{completion:,} completion = {total:,} total"
+        )
+    else:
+        token_str = f"{prompt:,} prompt + {completion:,} completion = {total:,} total"
     parts = [f"**Tokens:** {token_str}"]
 
     if cost is not None:
@@ -154,6 +197,17 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
             pass
 
     return f"\n\n---\n*{' · '.join(parts)}*"
+
+
+def _format_generation_id(generation_id: Optional[str]) -> str:
+    """Format the OpenRouter generation ID footer.
+
+    Users can pass the ID to ``GET /api/v1/generation?id={id}`` to retrieve
+    detailed usage and routing info for any past request.
+    """
+    if not generation_id:
+        return ""
+    return f"\n\n---\n*Generation ID: `{generation_id}`*"
 
 
 def _format_image_output(images: list) -> str:
@@ -189,22 +243,68 @@ class Pipe:
         )
         REASONING_EFFORT: str = Field(
             default=os.getenv("OPENROUTER_REASONING_EFFORT", ""),
-            description="Controls reasoning depth. Works independently of Include Reasoning",
+            description=(
+                "Controls reasoning depth. Works independently of Include Reasoning. "
+                "'minimal' favors fastest output, 'xhigh' requests maximum depth on "
+                "supporting models."
+            ),
             json_schema_extra={
                 "input": {
                     "type": "select",
                     "options": [
                         {"value": "", "label": "Disabled"},
+                        {"value": "minimal", "label": "Minimal"},
                         {"value": "low", "label": "Low"},
                         {"value": "medium", "label": "Medium"},
                         {"value": "high", "label": "High"},
+                        {"value": "xhigh", "label": "Extra High"},
                     ],
                 }
             },
         )
+        REASONING_SUMMARY_MODE: str = Field(
+            default=os.getenv("OPENROUTER_REASONING_SUMMARY_MODE", "disabled"),
+            description=(
+                "Reasoning summary verbosity sent as `reasoning.summary` in the "
+                "request payload. 'disabled' (default) skips the field entirely; "
+                "supporting models emit a concise/detailed summary block alongside "
+                "their reasoning trace."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "disabled", "label": "Disabled"},
+                        {"value": "auto", "label": "Auto"},
+                        {"value": "concise", "label": "Concise"},
+                        {"value": "detailed", "label": "Detailed"},
+                    ],
+                }
+            },
+        )
+        REASONING_MAX_TOKENS: int = Field(
+            default=int(os.getenv("OPENROUTER_REASONING_MAX_TOKENS", "0")),
+            ge=0,
+            description=(
+                "Hard cap on reasoning tokens per response (sent as "
+                "`reasoning.max_tokens`). 0 (default) leaves the cap to the "
+                "provider. Useful for budget control on deep-thinking models."
+            ),
+        )
         INCLUDE_REASONING: bool = Field(
             default=os.getenv("OPENROUTER_INCLUDE_REASONING", "true").lower() == "true",
             description="Show model reasoning in <think> blocks. Can be used with or without Reasoning Effort",
+        )
+        ENABLE_ANTHROPIC_INTERLEAVED_THINKING: bool = Field(
+            default=os.getenv(
+                "OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING", "true"
+            ).lower()
+            == "true",
+            description=(
+                "When True and the selected model is `anthropic/...`, send the "
+                "`anthropic-beta: interleaved-thinking-2025-05-14` header so Claude "
+                "interleaves reasoning with tool use. No effect on other providers."
+            ),
         )
         MODEL_PREFIX: Optional[str] = Field(
             default=None, description="Prefix shown before model names (include trailing space if needed, e.g. 'OR: ')"
@@ -218,9 +318,80 @@ class Pipe:
             == "true",
             description="When true the provider list becomes an exclusion list",
         )
-        FREE_ONLY: bool = Field(
-            default=os.getenv("OPENROUTER_FREE_ONLY", "false").lower() == "true",
-            description="Show only free-tier models (by suffix :free or zero pricing)",
+        FREE_MODEL_FILTER: str = Field(
+            default=os.getenv("OPENROUTER_FREE_MODEL_FILTER", "all"),
+            description=(
+                "Filter the catalog by free-tier status (':free' suffix or zero "
+                "prompt+completion pricing). 'all' = no filter (default), "
+                "'only' = keep just free models, 'exclude' = hide free models."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "all", "label": "All"},
+                        {"value": "only", "label": "Only free"},
+                        {"value": "exclude", "label": "Exclude free"},
+                    ],
+                }
+            },
+        )
+        TOOL_CALLING_FILTER: str = Field(
+            default=os.getenv("OPENROUTER_TOOL_CALLING_FILTER", "all"),
+            description=(
+                "Filter the catalog by tool-calling capability "
+                "(`supported_parameters` containing `tools` or `tool_choice`). "
+                "'all' (default) keeps everything, 'only' restricts to tool-capable "
+                "models, 'exclude' hides them."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "all", "label": "All"},
+                        {"value": "only", "label": "Only tool-capable"},
+                        {"value": "exclude", "label": "Exclude tool-capable"},
+                    ],
+                }
+            },
+        )
+        MODEL_VARIANTS: str = Field(
+            default=os.getenv("OPENROUTER_MODEL_VARIANTS", ""),
+            description=(
+                "Comma-separated `base_id:variant` entries to expose as virtual "
+                "models that inherit the base model's metadata (name, icon). "
+                "Example: 'openai/gpt-4o:nitro, anthropic/claude-3.5-sonnet:thinking'. "
+                "Recognised tags: free, thinking, online, nitro, exacto, extended. "
+                "OpenRouter routes the suffixed ID specially "
+                "(see https://openrouter.ai/docs/features/preset-routing)."
+            ),
+        )
+        MODEL_CATEGORY: str = Field(
+            default=os.getenv("OPENROUTER_MODEL_CATEGORY", ""),
+            description=(
+                "Server-side category filter for `/models` (passed as "
+                "`?category=...`). Empty disables. Common values: "
+                "programming, roleplay, marketing, marketing/seo, technology, "
+                "science, translation, legal, finance, health, trivia, academia."
+            ),
+        )
+        HIDE_DEPRECATED_MODELS: bool = Field(
+            default=os.getenv("OPENROUTER_HIDE_DEPRECATED_MODELS", "false").lower()
+            == "true",
+            description=(
+                "Hide models with a non-null `expiration_date`. When False "
+                "(default), deprecated models stay visible but are tagged with "
+                "a ⚠ prefix in the display name."
+            ),
+        )
+        OUTPUT_MODALITIES: str = Field(
+            default=os.getenv("OPENROUTER_OUTPUT_MODALITIES", "all"),
+            description=(
+                "Output modalities to fetch from OpenRouter's /models endpoint. "
+                "'all' (default) lists every model — chat, TTS, audio, image, and embeddings. "
+                "Use 'text' for chat-only, or a comma list e.g. 'text,audio'. "
+                "Valid tokens: text, image, audio, embeddings, all."
+            ),
         )
         PROVIDER_SORT: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_SORT", ""),
@@ -244,6 +415,67 @@ class Pipe:
         PROVIDER_IGNORE: str = Field(
             default=os.getenv("OPENROUTER_PROVIDER_IGNORE", ""),
             description="Excluded providers, comma-separated",
+        )
+        PROVIDER_ONLY: str = Field(
+            default=os.getenv("OPENROUTER_PROVIDER_ONLY", ""),
+            description=(
+                "Allowlist of provider slugs to use (comma-separated). When "
+                "set, OpenRouter routes only to these providers. Merged with "
+                "your account-wide allowlist."
+            ),
+        )
+        PROVIDER_QUANTIZATIONS: str = Field(
+            default=os.getenv("OPENROUTER_PROVIDER_QUANTIZATIONS", ""),
+            description=(
+                "Comma-separated quantization filters (e.g. 'bf16,fp8'). Only "
+                "endpoints serving the model at one of these precisions will "
+                "be used. Common values: bf16, fp16, fp8, int8, int4."
+            ),
+        )
+        PROVIDER_ALLOW_FALLBACKS: bool = Field(
+            default=os.getenv("OPENROUTER_PROVIDER_ALLOW_FALLBACKS", "true").lower()
+            == "true",
+            description=(
+                "When True (default), OpenRouter falls back to alternate "
+                "providers if the primary one (or those in PROVIDER_ORDER) is "
+                "unavailable. Set False to fail fast on the primary provider."
+            ),
+        )
+        PROVIDER_MAX_PRICE_PROMPT: str = Field(
+            default=os.getenv("OPENROUTER_PROVIDER_MAX_PRICE_PROMPT", ""),
+            description=(
+                "Maximum prompt price (USD per 1M tokens) you accept for this "
+                "request, e.g. '3.0'. Empty disables. Sent as "
+                "`provider.max_price.prompt`."
+            ),
+        )
+        PROVIDER_MAX_PRICE_COMPLETION: str = Field(
+            default=os.getenv("OPENROUTER_PROVIDER_MAX_PRICE_COMPLETION", ""),
+            description=(
+                "Maximum completion price (USD per 1M tokens) you accept for "
+                "this request, e.g. '15.0'. Empty disables. Sent as "
+                "`provider.max_price.completion`."
+            ),
+        )
+        SERVICE_TIER: str = Field(
+            default=os.getenv("OPENROUTER_SERVICE_TIER", ""),
+            description=(
+                "OpenAI-style service tier hint forwarded to compatible "
+                "providers. Empty (default) leaves the choice to the provider."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "", "label": "Default"},
+                        {"value": "auto", "label": "Auto"},
+                        {"value": "default", "label": "Default tier"},
+                        {"value": "flex", "label": "Flex (cheaper, slower)"},
+                        {"value": "priority", "label": "Priority (faster)"},
+                        {"value": "scale", "label": "Scale"},
+                    ],
+                }
+            },
         )
         REQUIRE_PARAMETERS: bool = Field(
             default=os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "false").lower()
@@ -272,10 +504,88 @@ class Pipe:
             == "true",
             description="Automatically compress long conversations that exceed the model's context window by summarizing middle messages",
         )
+        ENABLE_WEB_SEARCH: bool = Field(
+            default=os.getenv("OPENROUTER_ENABLE_WEB_SEARCH", "false").lower()
+            == "true",
+            description=(
+                "Attach OpenRouter's `web` plugin to every request so the "
+                "model can ground answers in fresh web results. Stacks with "
+                "the `:online` variant tag (provider-side) — pick one. "
+                "OpenRouter charges per search call separately from tokens."
+            ),
+        )
+        WEB_SEARCH_MAX_RESULTS: int = Field(
+            default=int(os.getenv("OPENROUTER_WEB_SEARCH_MAX_RESULTS", "5")),
+            ge=1,
+            le=20,
+            description="Maximum number of search results returned to the model when ENABLE_WEB_SEARCH is on.",
+        )
+        WEB_SEARCH_PROMPT: str = Field(
+            default=os.getenv("OPENROUTER_WEB_SEARCH_PROMPT", ""),
+            description=(
+                "Optional custom search prompt forwarded to the search engine "
+                "(`plugins[].search_prompt`). Empty uses OpenRouter's default."
+            ),
+        )
+        WEB_SEARCH_INCLUDE_DOMAINS: str = Field(
+            default=os.getenv("OPENROUTER_WEB_SEARCH_INCLUDE_DOMAINS", ""),
+            description=(
+                "Comma-separated domain allowlist for web search. Wildcards "
+                "and path filters supported (e.g. '*.substack.com, "
+                "openai.com/blog')."
+            ),
+        )
+        WEB_SEARCH_EXCLUDE_DOMAINS: str = Field(
+            default=os.getenv("OPENROUTER_WEB_SEARCH_EXCLUDE_DOMAINS", ""),
+            description="Comma-separated domain denylist for web search (same format as include list).",
+        )
         ENABLE_CACHE_CONTROL: bool = Field(
             default=os.getenv("OPENROUTER_ENABLE_CACHE_CONTROL", "false").lower()
             == "true",
             description="Enable prompt caching for Anthropic models (reduces cost on repeated long prompts). No effect on other providers",
+        )
+        ANTHROPIC_PROMPT_CACHE_TTL: str = Field(
+            default=os.getenv("OPENROUTER_ANTHROPIC_PROMPT_CACHE_TTL", "5m"),
+            description=(
+                "TTL for the Anthropic ephemeral cache breakpoint when "
+                "ENABLE_CACHE_CONTROL is on. '5m' (default) keeps the standard "
+                "short-lived cache; '1h' costs more on cache writes but persists "
+                "longer between turns."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "5m", "label": "5 minutes"},
+                        {"value": "1h", "label": "1 hour"},
+                    ],
+                }
+            },
+        )
+        ZDR_ENFORCE: bool = Field(
+            default=os.getenv("OPENROUTER_ZDR_ENFORCE", "false").lower() == "true",
+            description=(
+                "When True, every chat request includes `provider.zdr=true` so "
+                "OpenRouter rejects the call unless a Zero Data Retention "
+                "endpoint is available for the chosen model."
+            ),
+        )
+        ZDR_MODELS_ONLY: bool = Field(
+            default=os.getenv("OPENROUTER_ZDR_MODELS_ONLY", "false").lower() == "true",
+            description=(
+                "Catalog-side filter: when True, fetch OpenRouter's "
+                "`/endpoints/zdr` list and hide models without any ZDR-capable "
+                "endpoint. Pairs well with ZDR_ENFORCE for end-to-end privacy "
+                "guarantees."
+            ),
+        )
+        HTTP_REFERER_OVERRIDE: str = Field(
+            default=os.getenv("OPENROUTER_HTTP_REFERER", ""),
+            description=(
+                "Override the `HTTP-Referer` header sent to OpenRouter for app "
+                "attribution (must be a full URL with scheme). Empty falls back "
+                "to WEBUI_URL or http://localhost:3000."
+            ),
         )
         SYNC_PROVIDER_ICONS: bool = Field(
             default=os.getenv("OPENROUTER_SYNC_ICONS", "true").lower() == "true",
@@ -292,6 +602,15 @@ class Pipe:
         SHOW_COST_INFO: bool = Field(
             default=False,
             description="Append token usage and cost to each response",
+        )
+        SHOW_GENERATION_ID: bool = Field(
+            default=os.getenv("OPENROUTER_SHOW_GENERATION_ID", "false").lower()
+            == "true",
+            description=(
+                "Append the OpenRouter generation ID to each response so it "
+                "can be looked up later via `GET /generation?id=...` for "
+                "audit trails and per-request usage details."
+            ),
         )
         COST_CURRENCY: str = Field(
             default=os.getenv("OPENROUTER_COST_CURRENCY", "USD"),
@@ -332,6 +651,12 @@ class Pipe:
         self._models_cache_key: str = ""
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
+        # Lazy-loaded mirror of OpenRouter's provider registry (slug → icon URL).
+        # None = not attempted; {} = attempted but failed/empty (do not retry).
+        self._provider_registry: Optional[dict] = None
+        # Lazy-loaded set of model IDs that have at least one ZDR endpoint.
+        # None = not attempted; frozenset() = attempted but failed/empty.
+        self._zdr_model_ids: Optional[frozenset] = None
         # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
@@ -367,9 +692,12 @@ class Pipe:
             else ""
         )
         return (
-            f"{api_key_hash}|{self.valves.FREE_ONLY}|"
+            f"{api_key_hash}|{self.valves.FREE_MODEL_FILTER}|"
             f"{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|"
-            f"{self.valves.MODEL_PREFIX}"
+            f"{self.valves.MODEL_PREFIX}|{self.valves.OUTPUT_MODALITIES}|"
+            f"{self.valves.TOOL_CALLING_FILTER}|{self.valves.ZDR_MODELS_ONLY}|"
+            f"{self.valves.MODEL_VARIANTS}|{self.valves.MODEL_CATEGORY}|"
+            f"{self.valves.HIDE_DEPRECATED_MODELS}"
         )
 
     def _models_cache_valid(self) -> bool:
@@ -395,10 +723,18 @@ class Pipe:
             return self._models_cache
 
         headers = self._build_headers(include_content_type=False)
+        modalities = (self.valves.OUTPUT_MODALITIES or "all").strip() or "all"
+        params: dict = {"output_modalities": modalities}
+        category = (self.valves.MODEL_CATEGORY or "").strip()
+        if category:
+            params["category"] = category
         response = None
         try:
             response = self._session.get(
-                self.models_url, headers=headers, timeout=self.valves.REQUEST_TIMEOUT
+                self.models_url,
+                headers=headers,
+                params=params,
+                timeout=self.valves.REQUEST_TIMEOUT,
             )
             # Detect auth errors from the models endpoint itself
             # 502 from Clerk usually means the key format is invalid
@@ -438,6 +774,12 @@ class Pipe:
 
         provider_filter = self._parse_provider_filter()
         prefix = self.valves.MODEL_PREFIX or ""
+        free_filter = (self.valves.FREE_MODEL_FILTER or "all").strip().lower()
+        tool_filter = (self.valves.TOOL_CALLING_FILTER or "all").strip().lower()
+        zdr_only = self.valves.ZDR_MODELS_ONLY
+        zdr_capable_ids: Optional[frozenset] = (
+            self._load_zdr_model_ids() if zdr_only else None
+        )
         models: List[dict] = []
 
         for model in data:
@@ -445,7 +787,7 @@ class Pipe:
             if not model_id:
                 continue
 
-            if self.valves.FREE_ONLY:
+            if free_filter in ("only", "exclude"):
                 is_free = ":free" in model_id.lower()
                 if not is_free:
                     pricing = model.get("pricing") or {}
@@ -456,8 +798,36 @@ class Pipe:
                         )
                     except (ValueError, TypeError):
                         is_free = False
-                if not is_free:
+                if free_filter == "only" and not is_free:
                     continue
+                if free_filter == "exclude" and is_free:
+                    continue
+
+            if tool_filter in ("only", "exclude"):
+                supported = model.get("supported_parameters") or []
+                tool_capable = any(
+                    p in supported for p in ("tools", "tool_choice")
+                )
+                if tool_filter == "only" and not tool_capable:
+                    continue
+                if tool_filter == "exclude" and tool_capable:
+                    continue
+
+            if zdr_only and zdr_capable_ids is not None:
+                # OpenRouter's /endpoints/zdr returns base IDs (no '~' alias prefix
+                # and no ':variant' suffix). Strip both before comparing.
+                base_id = model_id.lstrip("~").split(":", 1)[0]
+                if base_id not in zdr_capable_ids:
+                    continue
+
+            # Deprecation handling: a non-null `expiration_date` means
+            # OpenRouter has scheduled the model for removal. Hide the entry
+            # entirely when the operator opts in; otherwise keep it but tag
+            # the display name so users notice before relying on it.
+            expiration = model.get("expiration_date")
+            is_deprecated = expiration is not None and str(expiration).strip() != ""
+            if is_deprecated and self.valves.HIDE_DEPRECATED_MODELS:
+                continue
 
             # Split model_id once for provider extraction.
             # Strip leading '~' (OpenRouter "latest" aliases like ~anthropic/claude-haiku-latest)
@@ -471,6 +841,8 @@ class Pipe:
                     continue
 
             model_name = model.get("name", model_id)
+            if is_deprecated:
+                model_name = f"⚠ {model_name} (deprecated)"
 
             model_dict = {
                 "id": model_id,
@@ -479,9 +851,18 @@ class Pipe:
 
             models.append(model_dict)
 
+        # Append virtual variant entries (e.g. openai/gpt-4o:nitro). Variants
+        # inherit the base model's display name; only the suffix and a tag
+        # label change — the icon-sync step writes the same provider icon.
+        models = self._expand_variant_models(models, prefix)
+
         if not models:
-            if self.valves.FREE_ONLY:
-                error_text = "No free models available. Disable FREE_ONLY to see paid models."
+            if free_filter == "only":
+                error_text = "No free models available. Set FREE_MODEL_FILTER to 'all' to see paid models."
+            elif tool_filter == "only":
+                error_text = "No tool-capable models available. Set TOOL_CALLING_FILTER to 'all' to broaden the catalog."
+            elif zdr_only:
+                error_text = "No ZDR-capable models available. Disable ZDR_MODELS_ONLY or check your OpenRouter privacy settings."
             elif provider_filter:
                 providers_str = ", ".join(sorted(provider_filter))
                 error_text = f"No models match providers: {providers_str}. Check MODEL_PROVIDERS setting."
@@ -554,7 +935,7 @@ class Pipe:
             )
 
         payload = self._prepare_payload(body)
-        headers = self._build_headers()
+        headers = self._build_headers(model_id=payload.get("model"))
         stream = body.get("stream", False)
 
         if stream:
@@ -630,7 +1011,7 @@ class Pipe:
             # ~anthropic/claude-haiku-latest) resolve to the correct icon.
             parts = model_id.split("/", 1)
             provider_key = parts[0].lstrip("~").lower() if len(parts) > 1 else ""
-            icon_url = _PROVIDER_ICONS.get(provider_key)
+            icon_url = self._get_provider_icon(provider_key)
             # Build the prefixed ID that Open WebUI uses in the frontend
             db_model_id = f"{function_id}.{model_id}"
 
@@ -730,8 +1111,70 @@ class Pipe:
 
     @staticmethod
     def get_provider_icon(provider: str) -> Optional[str]:
-        """Return icon URL for the given provider."""
+        """Return hardcoded icon URL for the given provider (fast path only).
+
+        Does not consult the dynamic OpenRouter provider registry — for that,
+        use ``_get_provider_icon`` on a Pipe instance.
+        """
         return _PROVIDER_ICONS.get(provider.lower())
+
+    def _load_provider_registry(self) -> dict:
+        """Lazy-load OpenRouter's provider registry, cache for the pipe lifetime.
+
+        Returns ``{slug: icon_url}`` (with each slug also indexed under its
+        hyphen-stripped variant so e.g. ``x-ai`` resolves to the registry's
+        ``xai`` entry). Network failures are silent — a single empty dict is
+        cached and the pipe falls back to the hardcoded ``_PROVIDER_ICONS``.
+        """
+        if self._provider_registry is not None:
+            return self._provider_registry
+
+        registry: dict = {}
+        try:
+            resp = self._session.get(
+                _PROVIDER_REGISTRY_URL,
+                timeout=min(self.valves.REQUEST_TIMEOUT, 15),
+            )
+            try:
+                if resp.status_code == 200:
+                    data = resp.json().get("data") or []
+                    for entry in data:
+                        slug = (entry or {}).get("slug") or ""
+                        icon = ((entry or {}).get("icon") or {}).get("url") or ""
+                        if not slug or not icon:
+                            continue
+                        if icon.startswith("/"):
+                            icon = f"https://openrouter.ai{icon}"
+                        if not _is_safe_url(icon):
+                            continue
+                        registry[slug] = icon
+                        # Also index by hyphen-stripped slug — model-author IDs
+                        # like ``x-ai`` map to provider slug ``xai``.
+                        compact = slug.replace("-", "")
+                        if compact and compact != slug:
+                            registry.setdefault(compact, icon)
+            finally:
+                resp.close()
+        except Exception as exc:  # pragma: no cover
+            print(f"[OpenRouter Pipe] Provider registry fetch failed: {exc}")
+
+        self._provider_registry = registry
+        return registry
+
+    def _get_provider_icon(self, provider_key: str) -> Optional[str]:
+        """Resolve a provider icon URL using the layered fallback chain.
+
+        Order: hardcoded ``_PROVIDER_ICONS`` → registry exact match →
+        registry hyphen-stripped match. Returns ``None`` if no source has it.
+        """
+        if not provider_key:
+            return None
+        key = provider_key.lower()
+        icon = _PROVIDER_ICONS.get(key)
+        if icon:
+            return icon
+        registry = self._load_provider_registry()
+        return registry.get(key) or registry.get(key.replace("-", "")) or None
 
     def _parse_provider_filter(self) -> Optional[set]:
         """Parse MODEL_PROVIDERS valve into a set of lowercase provider names."""
@@ -746,6 +1189,142 @@ class Pipe:
         if not value:
             return []
         return [item.strip() for item in value.split(",") if item.strip()]
+
+    def _load_zdr_model_ids(self) -> frozenset:
+        """Lazy-load OpenRouter's ZDR-capable model IDs and cache for the pipe lifetime.
+
+        Returns the cached set on subsequent calls (including the empty-set
+        sentinel returned on network failure, so we don't retry on every
+        ``pipes()`` call). The endpoint returns a list of model IDs that have
+        at least one Zero Data Retention provider endpoint.
+        """
+        if self._zdr_model_ids is not None:
+            return self._zdr_model_ids
+
+        ids: set = set()
+        try:
+            resp = self._session.get(
+                f"{self._base}{_API_PATH_ZDR_ENDPOINTS}",
+                headers=self._build_headers(include_content_type=False),
+                timeout=min(self.valves.REQUEST_TIMEOUT, 30),
+            )
+            try:
+                if resp.status_code == 200:
+                    payload = resp.json() or {}
+                    raw = payload.get("data") or payload.get("models") or []
+                    for entry in raw:
+                        if isinstance(entry, str):
+                            ids.add(entry)
+                        elif isinstance(entry, dict):
+                            mid = entry.get("id") or entry.get("model")
+                            if isinstance(mid, str) and mid:
+                                ids.add(mid)
+            finally:
+                resp.close()
+        except Exception as exc:  # pragma: no cover
+            print(f"[OpenRouter Pipe] ZDR endpoint fetch failed: {exc}")
+
+        self._zdr_model_ids = frozenset(ids)
+        return self._zdr_model_ids
+
+    def _parse_variant_specs(self) -> List[tuple]:
+        """Parse MODEL_VARIANTS into ``(base_id, variant_tag)`` pairs.
+
+        Recognised tags are listed in ``_RECOGNISED_VARIANT_TAGS`` and ensure
+        we don't accidentally fabricate IDs OpenRouter wouldn't honour.
+        Unknown tags are skipped with a console note.
+        """
+        raw = self.valves.MODEL_VARIANTS or ""
+        out: List[tuple] = []
+        for spec in self._parse_csv(raw):
+            if ":" not in spec:
+                print(f"[OpenRouter Pipe] Skipping malformed variant spec '{spec}' (expected base_id:variant_tag)")
+                continue
+            base_id, _, tag = spec.rpartition(":")
+            base_id = base_id.strip()
+            tag = tag.strip().lower()
+            if not base_id or not tag:
+                continue
+            if tag not in _RECOGNISED_VARIANT_TAGS:
+                print(
+                    f"[OpenRouter Pipe] Skipping unknown variant tag ':{tag}' "
+                    f"(supported: {', '.join(sorted(_RECOGNISED_VARIANT_TAGS))})"
+                )
+                continue
+            out.append((base_id, tag))
+        return out
+
+    def _build_web_search_plugin(self) -> Optional[dict]:
+        """Assemble the OpenRouter `web` plugin spec from valve settings.
+
+        Returns ``None`` when the feature is disabled. Output mirrors the
+        WebSearchPlugin schema from the official SDK
+        (id/enabled/max_results/search_prompt/include_domains/exclude_domains).
+        """
+        if not self.valves.ENABLE_WEB_SEARCH:
+            return None
+        plugin: dict = {"id": "web"}
+        max_results = self.valves.WEB_SEARCH_MAX_RESULTS
+        if max_results:
+            plugin["max_results"] = int(max_results)
+        prompt = (self.valves.WEB_SEARCH_PROMPT or "").strip()
+        if prompt:
+            plugin["search_prompt"] = prompt
+        include = self._parse_csv(self.valves.WEB_SEARCH_INCLUDE_DOMAINS)
+        if include:
+            plugin["include_domains"] = include
+        exclude = self._parse_csv(self.valves.WEB_SEARCH_EXCLUDE_DOMAINS)
+        if exclude:
+            plugin["exclude_domains"] = exclude
+        return plugin
+
+    def _expand_variant_models(self, models: List[dict], prefix: str) -> List[dict]:
+        """Append virtual variant entries to the catalog.
+
+        Each ``base_id:variant`` entry inherits the base model's display name
+        (with the tag appended) and reuses the same provider icon — only the
+        ID changes so OpenRouter routes the request via the variant suffix.
+        Variants whose base model isn't in the catalog (filtered out, or
+        unknown to OpenRouter) are silently skipped.
+        """
+        specs = self._parse_variant_specs()
+        if not specs:
+            return models
+
+        prefix_str = prefix or ""
+        # Strip the user-set prefix so we can reuse base names verbatim.
+        by_id: dict = {}
+        for entry in models:
+            mid = entry.get("id")
+            if isinstance(mid, str):
+                by_id[mid] = entry
+
+        seen_variant_ids = {entry.get("id") for entry in models}
+        appended: List[dict] = []
+        for base_id, tag in specs:
+            base_entry = by_id.get(base_id)
+            if base_entry is None:
+                print(
+                    f"[OpenRouter Pipe] Variant base not in catalog: "
+                    f"{base_id} (skipping :{tag})"
+                )
+                continue
+            variant_id = f"{base_id}:{tag}"
+            if variant_id in seen_variant_ids:
+                continue
+            base_name = base_entry.get("name", base_id)
+            # If the user set a prefix it's already in base_name; we only need
+            # to suffix the tag label.
+            tag_label = tag.capitalize()
+            appended.append(
+                {
+                    "id": variant_id,
+                    "name": f"{base_name} {tag_label}",
+                }
+            )
+            seen_variant_ids.add(variant_id)
+
+        return models + appended
 
     def _prepare_payload(self, body: dict) -> dict:
         """Sanitize OWUI internals and inject provider routing, reasoning, and fallbacks."""
@@ -769,8 +1348,21 @@ class Pipe:
             payload["include_reasoning"] = True
 
         effort = self.valves.REASONING_EFFORT.strip().lower()
-        if effort in ("low", "medium", "high"):
-            payload["reasoning"] = {"effort": effort}
+        summary = self.valves.REASONING_SUMMARY_MODE.strip().lower()
+        reasoning_cfg: dict = {}
+        if effort in ("minimal", "low", "medium", "high", "xhigh"):
+            reasoning_cfg["effort"] = effort
+        if summary in ("auto", "concise", "detailed"):
+            reasoning_cfg["summary"] = summary
+        if self.valves.REASONING_MAX_TOKENS > 0:
+            reasoning_cfg["max_tokens"] = int(self.valves.REASONING_MAX_TOKENS)
+        if reasoning_cfg:
+            payload["reasoning"] = reasoning_cfg
+
+        # --- Service tier ---
+        tier = (self.valves.SERVICE_TIER or "").strip().lower()
+        if tier in ("auto", "default", "flex", "priority", "scale"):
+            payload["service_tier"] = tier
 
         # --- Provider routing ---
         provider: dict = {}
@@ -787,12 +1379,41 @@ class Pipe:
         if ignore:
             provider["ignore"] = ignore
 
+        only = self._parse_csv(self.valves.PROVIDER_ONLY)
+        if only:
+            provider["only"] = only
+
+        quantizations = self._parse_csv(self.valves.PROVIDER_QUANTIZATIONS)
+        if quantizations:
+            provider["quantizations"] = [q.lower() for q in quantizations]
+
+        # `allow_fallbacks` defaults to true on OpenRouter, so only emit the
+        # field when the operator opted out.
+        if not self.valves.PROVIDER_ALLOW_FALLBACKS:
+            provider["allow_fallbacks"] = False
+
+        max_price: dict = {}
+        prompt_cap = (self.valves.PROVIDER_MAX_PRICE_PROMPT or "").strip()
+        if prompt_cap:
+            max_price["prompt"] = prompt_cap
+        completion_cap = (self.valves.PROVIDER_MAX_PRICE_COMPLETION or "").strip()
+        if completion_cap:
+            max_price["completion"] = completion_cap
+        if max_price:
+            provider["max_price"] = max_price
+
         if self.valves.REQUIRE_PARAMETERS:
             provider["require_parameters"] = True
 
         dc = self.valves.DATA_COLLECTION.strip().lower()
         if dc == "deny":
             provider["data_collection"] = "deny"
+
+        # ZDR enforcement: forces OpenRouter to route only to Zero Data
+        # Retention endpoints; the call fails fast if none exist for the
+        # selected model.
+        if self.valves.ZDR_ENFORCE:
+            provider["zdr"] = True
 
         if provider:
             payload["provider"] = provider
@@ -813,6 +1434,23 @@ class Pipe:
         if self.valves.ENABLE_MIDDLE_OUT:
             payload["transforms"] = ["middle-out"]
 
+        # --- Web search plugin ---
+        # Append (don't overwrite) so the user can stack additional plugins
+        # via the request body. Skip silently if a `web` plugin is already
+        # present — first-match wins.
+        web_plugin = self._build_web_search_plugin()
+        if web_plugin is not None:
+            existing_plugins = payload.get("plugins")
+            if not isinstance(existing_plugins, list):
+                existing_plugins = []
+            already_has_web = any(
+                isinstance(p, dict) and p.get("id") == "web"
+                for p in existing_plugins
+            )
+            if not already_has_web:
+                existing_plugins.append(web_plugin)
+                payload["plugins"] = existing_plugins
+
         # --- Cache control (Anthropic) ---
         if self.valves.ENABLE_CACHE_CONTROL:
             self._inject_cache_control(payload)
@@ -824,8 +1462,13 @@ class Pipe:
 
         Applies to the first matching role (system, then user) with list-type
         content. Only one chunk is tagged ('first match wins') to avoid
-        excessive cache entries.
+        excessive cache entries. The TTL valve (5m/1h) is propagated into the
+        breakpoint so longer-lived caches are honoured by Anthropic.
         """
+        ttl = (self.valves.ANTHROPIC_PROMPT_CACHE_TTL or "").strip().lower()
+        cache_payload: dict = {"type": "ephemeral"}
+        if ttl in ("5m", "1h"):
+            cache_payload["ttl"] = ttl
         try:
             messages = payload.get("messages", [])
             for role in ("system", "user"):
@@ -841,20 +1484,62 @@ class Pipe:
                         if length > longest_len:
                             longest_idx, longest_len = idx, length
                     if longest_idx >= 0:
-                        content[longest_idx]["cache_control"] = {"type": "ephemeral"}
+                        content[longest_idx]["cache_control"] = dict(cache_payload)
                         return
         except Exception as exc:  # pragma: no cover
             print(f"[OpenRouter Pipe] cache_control not applied: {exc}")
 
-    def _build_headers(self, include_content_type: bool = True) -> dict:
-        """Build HTTP headers for OpenRouter API requests."""
+    @staticmethod
+    def _is_anthropic_model(model_id: str) -> bool:
+        """Return True if the (possibly variant-suffixed) model ID is Claude."""
+        if not isinstance(model_id, str):
+            return False
+        # Strip leading '~' (latest aliases) before the prefix check.
+        return model_id.lstrip("~").lower().startswith("anthropic/")
+
+    def _resolve_referer(self) -> str:
+        """Pick the HTTP-Referer header sent to OpenRouter.
+
+        Order: explicit valve override → cached WEBUI_URL env → default.
+        Validates that an override is a full URL with scheme; falls back
+        silently otherwise so a misconfigured valve never breaks requests.
+        """
+        override = (self.valves.HTTP_REFERER_OVERRIDE or "").strip()
+        if override.startswith(("http://", "https://")):
+            return override
+        return self._referer
+
+    def _build_headers(
+        self,
+        include_content_type: bool = True,
+        *,
+        model_id: Optional[str] = None,
+    ) -> dict:
+        """Build HTTP headers for OpenRouter API requests.
+
+        ``model_id`` is the (post-clean) ID about to be invoked; passing it
+        lets us inject provider-specific beta headers (e.g. Anthropic's
+        interleaved-thinking) only when relevant.
+        """
         headers = {
             "Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}",
-            "HTTP-Referer": self._referer,
+            "HTTP-Referer": self._resolve_referer(),
             "X-Title": self._title,
         }
         if include_content_type:
             headers["Content-Type"] = "application/json"
+
+        if (
+            model_id
+            and self.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING
+            and self._is_anthropic_model(model_id)
+        ):
+            existing = headers.get("anthropic-beta", "")
+            features = [p.strip() for p in existing.split(",") if p.strip()]
+            if _ANTHROPIC_INTERLEAVED_THINKING_BETA not in features:
+                features.append(_ANTHROPIC_INTERLEAVED_THINKING_BETA)
+            headers["anthropic-beta"] = ",".join(features)
+
         return headers
 
     def _non_stream_response(self, headers: dict, payload: dict) -> str:
@@ -919,6 +1604,11 @@ class Pipe:
                 if cost_info:
                     final_parts.append(cost_info)
 
+            if self.valves.SHOW_GENERATION_ID:
+                gen_footer = _format_generation_id(res.get("id"))
+                if gen_footer:
+                    final_parts.append(gen_footer)
+
             return "".join(final_parts)
         except requests.exceptions.Timeout:
             return f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
@@ -937,6 +1627,7 @@ class Pipe:
         in_think = False
         latest_citations: List[str] = []
         latest_usage: dict = {}
+        latest_generation_id: Optional[str] = None
 
         def _close_think_tag():
             nonlocal in_think
@@ -971,6 +1662,11 @@ class Pipe:
                         yield close_tag
                     yield f"\n\nOpenRouter Error: {msg}"
                     return
+
+                # Generation ID arrives on the first chunk and stays stable.
+                gen_id = chunk.get("id")
+                if gen_id and not latest_generation_id:
+                    latest_generation_id = gen_id
 
                 usage_data = chunk.get("usage")
                 if usage_data:
@@ -1016,6 +1712,11 @@ class Pipe:
                 cost_info = _format_cost_info(latest_usage, self.valves.COST_CURRENCY)
                 if cost_info:
                     yield cost_info
+
+            if self.valves.SHOW_GENERATION_ID:
+                gen_footer = _format_generation_id(latest_generation_id)
+                if gen_footer:
+                    yield gen_footer
         except requests.exceptions.Timeout:
             close_tag = _close_think_tag()
             if close_tag:

@@ -4,8 +4,9 @@
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Access **340+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
-reasoning tokens, streaming, fallbacks, and cache control out of the box.
+Access the **full OpenRouter catalog** — chat, TTS, audio, image-generation, and embedding models —
+directly inside Open WebUI, with provider routing, reasoning tokens, streaming, fallbacks, and
+cache control out of the box.
 
 ## Feature gallery
 
@@ -50,7 +51,13 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 
 ## Features
 
-- **Manifold pipe** — exposes all OpenRouter models as native Open WebUI models in the model selector.
+- **Manifold pipe** — exposes the full OpenRouter catalog (chat, TTS, audio, image, embeddings) as native Open WebUI models in the model selector. Configurable via `OUTPUT_MODALITIES` and `MODEL_CATEGORY`.
+- **Web search plugin** — attach OpenRouter's `web` plugin to any model with domain allow/deny lists, custom search prompt, and result-count limits.
+- **Variant routing** — surface virtual `:nitro`/`:exacto`/`:thinking`/`:online`/`:free`/`:extended` model entries that route to OpenRouter's specialized profiles.
+- **Service tier hint** — forward OpenAI-style `flex`/`priority`/`scale` tiers to compatible providers.
+- **Generation auditability** — optional generation ID footer maps each response to OpenRouter's `/generation?id=` activity API.
+- **Cached-input savings** — surface cached vs. non-cached prompt tokens in the cost footer (Anthropic prompt caching, OpenAI implicit caching, Gemini context caching).
+- **Deprecation visibility** — models with an `expiration_date` are tagged with ⚠ in the selector (or hidden via `HIDE_DEPRECATED_MODELS`).
 - **Provider routing** — sort by `price`, `throughput`, or `latency`; prefer or exclude specific providers; enforce `require_parameters`.
 - **Reasoning tokens** — `<think>` blocks streamed in real time with configurable effort (`low`, `medium`, `high`).
 - **Streaming** — full SSE streaming with mid-stream error handling and automatic `<think>` closure on error.
@@ -58,7 +65,7 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — 13 provider logos synced directly into Open WebUI's model database.
+- **Provider icons** — 13 hardcoded fast-path logos plus auto-discovered icons for ~20 more providers (xAI, Inflection, NVIDIA, Arcee, Morph, Cerebras, …) lazy-loaded from OpenRouter's provider registry, all synced directly into Open WebUI's model database.
 - **Retry logic** — exponential backoff with jitter on timeout and connection errors.
 - **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).
 - **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
@@ -145,7 +152,10 @@ Every valve accepts an environment variable fallback. The table below lists both
 | Valve | Env Var | Default | Description |
 | --- | --- | --- | --- |
 | `INCLUDE_REASONING` | `OPENROUTER_INCLUDE_REASONING` | `true` | Request reasoning tokens (`<think>` blocks) |
-| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Effort level: `low`, `medium`, `high`, or empty |
+| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Effort level: `minimal`, `low`, `medium`, `high`, `xhigh`, or empty |
+| `REASONING_SUMMARY_MODE` | `OPENROUTER_REASONING_SUMMARY_MODE` | `disabled` | Reasoning-summary verbosity: `auto`, `concise`, `detailed`, `disabled` |
+| `REASONING_MAX_TOKENS` | `OPENROUTER_REASONING_MAX_TOKENS` | `0` | Hard cap on reasoning tokens per response (0 disables the cap) |
+| `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING` | `true` | Auto-inject `anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/*` models |
 
 ### Display & Filtering
 
@@ -154,7 +164,13 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `MODEL_PREFIX` | — | `None` | Custom prefix for model names (e.g. `🔥 `) |
 | `MODEL_PROVIDERS` | `OPENROUTER_MODEL_PROVIDERS` | `ALL` | Provider filter (e.g. `openai,anthropic`). `ALL` means no filter |
 | `INVERT_PROVIDER_LIST` | `OPENROUTER_INVERT_PROVIDER_LIST` | `false` | Treat `MODEL_PROVIDERS` as an exclusion list |
-| `FREE_ONLY` | `OPENROUTER_FREE_ONLY` | `false` | Show only free-tier models |
+| `FREE_MODEL_FILTER` | `OPENROUTER_FREE_MODEL_FILTER` | `all` | Free-tier filter: `all` / `only` / `exclude` |
+| `TOOL_CALLING_FILTER` | `OPENROUTER_TOOL_CALLING_FILTER` | `all` | Tool-capable filter (reads `supported_parameters`): `all` / `only` / `exclude` |
+| `OUTPUT_MODALITIES` | `OPENROUTER_OUTPUT_MODALITIES` | `all` | Output modalities to fetch from `/models`. `all` (default) lists every model. Restrict with `text`, `image`, `audio`, `embeddings`, or a comma list (e.g. `text,audio`) |
+| `MODEL_VARIANTS` | `OPENROUTER_MODEL_VARIANTS` | `""` | Comma-separated `base_id:tag` entries that surface virtual variant models (e.g. `openai/gpt-4o:nitro`). Tags: `free`, `thinking`, `online`, `nitro`, `exacto`, `extended` |
+| `MODEL_CATEGORY` | `OPENROUTER_MODEL_CATEGORY` | `""` | Server-side category filter (`?category=`). Common values: `programming`, `roleplay`, `marketing`, `science`, `legal`, `finance`, `health`, `academia` |
+| `HIDE_DEPRECATED_MODELS` | `OPENROUTER_HIDE_DEPRECATED_MODELS` | `false` | Hide models with a non-null `expiration_date`. When False, deprecated models are tagged `⚠ {name} (deprecated)` |
+| `ZDR_MODELS_ONLY` | `OPENROUTER_ZDR_MODELS_ONLY` | `false` | Catalog-side: hide models without a ZDR endpoint (reads `/endpoints/zdr`) |
 
 ### Provider Routing
 
@@ -163,8 +179,15 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `PROVIDER_SORT` | `OPENROUTER_PROVIDER_SORT` | `""` | Sort: `price`, `throughput`, `latency` |
 | `PROVIDER_ORDER` | `OPENROUTER_PROVIDER_ORDER` | `""` | Preferred providers (comma-separated) |
 | `PROVIDER_IGNORE` | `OPENROUTER_PROVIDER_IGNORE` | `""` | Excluded providers (comma-separated) |
+| `PROVIDER_ONLY` | `OPENROUTER_PROVIDER_ONLY` | `""` | Provider allowlist (comma-separated). Merged with account-wide settings |
+| `PROVIDER_QUANTIZATIONS` | `OPENROUTER_PROVIDER_QUANTIZATIONS` | `""` | Allowed quantizations (comma-separated, e.g. `bf16,fp8`) |
+| `PROVIDER_ALLOW_FALLBACKS` | `OPENROUTER_PROVIDER_ALLOW_FALLBACKS` | `true` | When False, OpenRouter fails fast on the primary/ordered provider instead of falling back |
+| `PROVIDER_MAX_PRICE_PROMPT` | `OPENROUTER_PROVIDER_MAX_PRICE_PROMPT` | `""` | Maximum prompt price (USD per 1M tokens) |
+| `PROVIDER_MAX_PRICE_COMPLETION` | `OPENROUTER_PROVIDER_MAX_PRICE_COMPLETION` | `""` | Maximum completion price (USD per 1M tokens) |
+| `SERVICE_TIER` | `OPENROUTER_SERVICE_TIER` | `""` | OpenAI-style service tier: `auto`, `default`, `flex`, `priority`, `scale` |
 | `REQUIRE_PARAMETERS` | `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Only use providers that support all request parameters |
 | `DATA_COLLECTION` | `OPENROUTER_DATA_COLLECTION` | `allow` | Data policy: `allow` or `deny` |
+| `ZDR_ENFORCE` | `OPENROUTER_ZDR_ENFORCE` | `false` | Send `provider.zdr=true` so OpenRouter routes only to ZDR endpoints (request fails if none available) |
 
 ### Advanced
 
@@ -172,7 +195,14 @@ Every valve accepts an environment variable fallback. The table below lists both
 | --- | --- | --- | --- |
 | `FALLBACK_MODELS` | `OPENROUTER_FALLBACK_MODELS` | `""` | Fallback model IDs (comma-separated) |
 | `ENABLE_MIDDLE_OUT` | `OPENROUTER_ENABLE_MIDDLE_OUT` | `false` | Middle-out compression for long prompts |
+| `ENABLE_WEB_SEARCH` | `OPENROUTER_ENABLE_WEB_SEARCH` | `false` | Attach OpenRouter's `web` plugin so any model can ground answers in fresh web results |
+| `WEB_SEARCH_MAX_RESULTS` | `OPENROUTER_WEB_SEARCH_MAX_RESULTS` | `5` | Max search results passed to the model (1-20) |
+| `WEB_SEARCH_PROMPT` | `OPENROUTER_WEB_SEARCH_PROMPT` | `""` | Optional custom search prompt forwarded to the search engine |
+| `WEB_SEARCH_INCLUDE_DOMAINS` | `OPENROUTER_WEB_SEARCH_INCLUDE_DOMAINS` | `""` | Domain allowlist (supports wildcards & paths) |
+| `WEB_SEARCH_EXCLUDE_DOMAINS` | `OPENROUTER_WEB_SEARCH_EXCLUDE_DOMAINS` | `""` | Domain denylist |
 | `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Inject Anthropic `cache_control` on the longest message |
+| `ANTHROPIC_PROMPT_CACHE_TTL` | `OPENROUTER_ANTHROPIC_PROMPT_CACHE_TTL` | `5m` | TTL for the Anthropic ephemeral cache breakpoint: `5m` or `1h` |
+| `SHOW_GENERATION_ID` | `OPENROUTER_SHOW_GENERATION_ID` | `false` | Append the OpenRouter generation ID to each response (for `GET /generation?id=` lookups) |
 | `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
 
 ### Network
@@ -181,6 +211,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | --- | --- | --- | --- |
 | `REQUEST_TIMEOUT` | `OPENROUTER_REQUEST_TIMEOUT` | `90` | HTTP timeout in seconds |
 | `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors |
+| `HTTP_REFERER_OVERRIDE` | `OPENROUTER_HTTP_REFERER` | `""` | Override the `HTTP-Referer` header sent to OpenRouter (must include scheme). Empty falls back to `WEBUI_URL` |
 
 ## Architecture
 
@@ -319,6 +350,15 @@ A: `MODEL_PROVIDERS` accepts a comma-separated list (e.g. `openai,anthropic`). E
 A: `FALLBACK_MODELS` adds extra model IDs to the `models` array in the OpenRouter request. If the
 primary model fails, OpenRouter automatically tries the next one. Non-streaming responses include
 a "Responded by: model-id" attribution when a fallback handled the request.
+
+**Q: I selected a TTS / embeddings / image-generation model and got an error — why?**
+
+A: The pipe routes every request through OpenRouter's `/chat/completions` endpoint. Models that
+only expose a non-chat endpoint (e.g. pure TTS models served via `/audio/speech`) return an
+"endpoint not supported" error from OpenRouter. The pipe surfaces that error verbatim. Chat
+completion models that *output* audio or images (e.g. `openai/gpt-audio`) work normally — their
+audio transcript and generated images are rendered inline. To hide non-chat models from the
+selector entirely, set `OUTPUT_MODALITIES = text`.
 
 ## License
 
