@@ -10,10 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Automatic provider-icon sync** — new `_sync_model_icons()` method writes provider icons directly into Open WebUI's Models database so they appear in the UI; controlled by the `SYNC_PROVIDER_ICONS` valve (default: enabled). Models with a manually-set icon are never overwritten
+- **`_is_owui_managed_icon()` helper** — distinguishes OWUI-default icons (`data:` URLs) and our own provider icons from user-set custom icons, enabling safe icon updates without clobbering user customisations
 
 ### Fixed
 
 - **Icon sync: correct prefixed model IDs** — `_sync_model_icons()` now discovers the pipe's `function_id` via `type(self).__module__` and writes DB records with the full prefixed ID (e.g. `openrouter_pipe.openai/gpt-4o`) matching what Open WebUI's frontend requests at `/models/model/profile/image`
+- **Icon sync: icons now actually appear in the UI** — five bugs prevented provider icons from ever showing after the first pipe load:
+  - *Wrong skip condition* — `if existing_icon:` skipped any model with *any* icon (including the generic `data:` SVG that OWUI assigns by default), so provider icons were never applied; fixed to skip only user-set custom URLs
+  - *Race condition* — `_sync_model_icons()` was called before `pipes()` returned, i.e. before OWUI registered the models; OWUI then overwrote the early insert with its own default icon; fixed by also calling `_sync_model_icons()` on cache-hit paths (until all models are confirmed synced)
+  - *Exception swallowed retry* — DB errors added the model to `_icons_synced` anyway, permanently preventing retry; removed the erroneous add
+  - *Insert marked as synced prematurely* — after `insert_new_model` the model was marked synced even though OWUI could overwrite it; the insert path no longer updates `_icons_synced`
+  - *User params clobbered* — `update_model_by_id` used an empty `ModelParams()`, erasing user-configured temperature/system-prompt/etc.; now preserves `existing.params`
+- **Icon sync: `function_id` cached at init** — `type(self).__module__` is evaluated once in `__init__` instead of on every `_sync_model_icons()` call
 - **Streaming status event** — the "done" status event is now correctly emitted at the end of streaming responses (async generator wrapper replaces sync generator that could not `await`)
 - **Dead provider-icon code removed** — `info.meta.profile_image_url` was included in model dicts returned by `pipes()` but Open WebUI ignores all fields except `id` and `name`; the field has been removed in favour of the new DB-sync approach
 - **`pipes()` response always closed** — added `finally: response.close()` to guarantee HTTP connections are returned to the session pool in all code paths (auth errors, JSON decode failures, unexpected exceptions)
