@@ -2217,8 +2217,10 @@ with patch.object(_pipe_sync_clear._session, "get", return_value=_mock_models_re
 _pipe_sync_clear._icons_synced.add("openai/gpt-4o")
 _assert(len(_pipe_sync_clear._icons_synced) == 1, "_icons_synced: populated before cache expire")
 
-# Expire cache and call pipes() again — _icons_synced must be cleared
-_pipe_sync_clear._models_cache_ts = 0.0
+# Expire cache and call pipes() again — _icons_synced must be cleared.
+# Subtract more than the TTL from the stored timestamp so the cache is
+# expired regardless of how small time.monotonic() is on a fresh CI runner.
+_pipe_sync_clear._models_cache_ts -= mod._MODELS_CACHE_TTL + 1
 with patch.object(_pipe_sync_clear._session, "get", return_value=_mock_models_resp_sc):
     _pipe_sync_clear.pipes()
 
