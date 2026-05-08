@@ -55,6 +55,11 @@ _MODELS_CACHE_TTL = 300.0  # 5 minutes
 # are recovered automatically without restarting the pipe.
 _PROVIDER_REGISTRY_TTL = 3600.0  # 1 hour
 
+# Back-off TTL used when the registry fetch fails or returns non-200.
+# Shorter than the success TTL so transient failures are retried sooner
+# without hammering the OpenRouter API.
+_PROVIDER_REGISTRY_FAIL_TTL = 300.0  # 5 minutes
+
 # OpenRouter's frontend provider registry — gives us icon URLs for ~70 providers
 # (hosted SVG/PNG when available, gstatic favicons otherwise). Used as a
 # dynamic fallback when a model's author isn't in _PROVIDER_ICONS.
@@ -1134,11 +1139,15 @@ class Pipe:
 
         Returns ``{slug: icon_url}`` (with each slug also indexed under its
         hyphen-stripped variant so e.g. ``x-ai`` resolves to the registry's
-        ``xai`` entry). Network failures are logged and an empty dict is
-        returned; the pipe falls back to ``_PROVIDER_ICONS`` in that case.
-        The cache is automatically refreshed after ``_PROVIDER_REGISTRY_TTL``
-        seconds so transient failures and CDN path changes are recovered
-        without restarting the pipe.
+        ``xai`` entry).
+
+        On a successful 200 response the full ``_PROVIDER_REGISTRY_TTL``
+        applies.  On failure (non-200 or network error) the *existing* cached
+        registry is preserved so previously-known icons are not lost; a
+        shorter ``_PROVIDER_REGISTRY_FAIL_TTL`` back-off is applied so we
+        retry sooner without hammering the API.  If no registry has ever been
+        fetched successfully an empty dict is returned and the caller falls
+        back to ``_PROVIDER_ICONS``.
         """
         now = time.monotonic()
         if (
@@ -1148,6 +1157,7 @@ class Pipe:
             return self._provider_registry
 
         registry: dict = {}
+        success = False
         try:
             resp = self._session.get(
                 _PROVIDER_REGISTRY_URL,
@@ -1171,6 +1181,7 @@ class Pipe:
                         compact = slug.replace("-", "")
                         if compact and compact != slug:
                             registry.setdefault(compact, icon)
+                    success = True
                 else:
                     print(
                         f"[OpenRouter Pipe] Provider registry returned HTTP "
@@ -1181,9 +1192,21 @@ class Pipe:
         except Exception as exc:  # pragma: no cover
             print(f"[OpenRouter Pipe] Provider registry fetch failed: {exc}")
 
-        self._provider_registry = registry
-        self._provider_registry_ts = now
-        return registry
+        if success:
+            # Successful fetch — update the cached registry and start the full TTL.
+            self._provider_registry = registry
+            self._provider_registry_ts = now
+        else:
+            # Failed fetch (non-200 or network error): preserve any previously-good
+            # registry so icons that were already known are not lost.  Apply a short
+            # back-off so we retry in _PROVIDER_REGISTRY_FAIL_TTL seconds instead of
+            # waiting the full hour.
+            if self._provider_registry is None:
+                self._provider_registry = {}
+            self._provider_registry_ts = (
+                now - _PROVIDER_REGISTRY_TTL + _PROVIDER_REGISTRY_FAIL_TTL
+            )
+        return self._provider_registry
 
     def _get_provider_icon(self, provider_key: str) -> Optional[str]:
         """Resolve a provider icon URL using the layered fallback chain.

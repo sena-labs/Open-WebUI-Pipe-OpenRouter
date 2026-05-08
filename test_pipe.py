@@ -45,6 +45,7 @@ _format_citation_list = mod._format_citation_list
 _OWUI_INTERNAL_KEYS = mod._OWUI_INTERNAL_KEYS
 _is_owui_managed_icon = mod._is_owui_managed_icon
 _PROVIDER_REGISTRY_TTL = mod._PROVIDER_REGISTRY_TTL
+_PROVIDER_REGISTRY_FAIL_TTL = mod._PROVIDER_REGISTRY_FAIL_TTL
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _PASS = 0
@@ -2153,9 +2154,9 @@ def _failing_reg_get(*args, **kwargs):
 
 with patch.object(_pipe_fail._session, "get", side_effect=_failing_reg_get):
     _r_fail = _pipe_fail._load_provider_registry()
-    _r_fail_2 = _pipe_fail._load_provider_registry()  # within TTL — no second fetch
-_assert(_r_fail == {}, "registry: network failure → empty dict")
-_assert(_fail_call_count == 1, "registry: no retry within TTL window after failure")
+    _r_fail_2 = _pipe_fail._load_provider_registry()  # within back-off — no second fetch
+_assert(_r_fail == {}, "registry: network failure → empty dict (no prior registry)")
+_assert(_fail_call_count == 1, "registry: no retry within FAIL_TTL back-off window after failure")
 
 # Hardcoded dict still works after registry failure
 _assert(
@@ -2167,22 +2168,56 @@ _assert(
     "_get_provider_icon: x-ai falls back to None when registry failed",
 )
 
-# 25m. Registry HTTP non-200 → empty dict + log message
+# 25m. Registry HTTP non-200 → log message; empty dict on first-ever fetch;
+#       existing registry preserved if one was already loaded.
 _mock_reg_403 = MagicMock()
 _mock_reg_403.status_code = 403
 _mock_reg_403.json.return_value = {"data": []}
 
+# 25m-a: first fetch fails → empty dict + warning logged
 _pipe_403 = Pipe()
 _pipe_403.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 _log_403_msgs = []
 with patch("builtins.print", side_effect=lambda *a, **kw: _log_403_msgs.append(" ".join(str(x) for x in a))):
     with patch.object(_pipe_403._session, "get", return_value=_mock_reg_403):
         _r_403 = _pipe_403._load_provider_registry()
-_assert(_r_403 == {}, "registry: HTTP 403 → empty dict")
+_assert(_r_403 == {}, "registry: HTTP 403 on first fetch → empty dict")
 _assert(
     any("403" in m for m in _log_403_msgs),
     "registry: HTTP 403 logs a warning message",
 )
+
+# 25m-b: subsequent non-200 with an existing registry → old registry preserved
+_pipe_403_preserve = Pipe()
+_pipe_403_preserve.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_403_preserve._provider_registry = {"openai": "https://example.com/openai.svg"}
+_pipe_403_preserve._provider_registry_ts = _time_mod.monotonic() - _PROVIDER_REGISTRY_TTL - 1
+with patch.object(_pipe_403_preserve._session, "get", return_value=_mock_reg_403):
+    _r_403_preserve = _pipe_403_preserve._load_provider_registry()
+_assert(
+    _r_403_preserve == {"openai": "https://example.com/openai.svg"},
+    "registry: HTTP 403 preserves existing non-empty registry",
+)
+
+# 25m-c: after FAIL_TTL back-off expires a new fetch is attempted
+_pipe_fail_backoff = Pipe()
+_pipe_fail_backoff.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_fail_backoff._provider_registry = {"openai": "https://example.com/openai.svg"}
+_pipe_fail_backoff._provider_registry_ts = _time_mod.monotonic() - _PROVIDER_REGISTRY_TTL - 1
+
+_backoff_call_count = 0
+def _backoff_403_get(url, *args, **kwargs):
+    global _backoff_call_count
+    if "all-providers" in url:
+        _backoff_call_count += 1
+    return _mock_reg_403
+
+with patch.object(_pipe_fail_backoff._session, "get", side_effect=_backoff_403_get):
+    _pipe_fail_backoff._load_provider_registry()           # fetch 1 → fail, set backoff ts
+    # expire the back-off window
+    _pipe_fail_backoff._provider_registry_ts -= _PROVIDER_REGISTRY_FAIL_TTL + 1
+    _pipe_fail_backoff._load_provider_registry()           # fetch 2 → retried after backoff
+_assert(_backoff_call_count == 2, "registry: re-fetches after FAIL_TTL back-off expires")
 
 # 25n. Registry TTL expiry forces re-fetch
 _pipe_ttl = Pipe()
