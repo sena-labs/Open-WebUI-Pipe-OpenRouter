@@ -44,6 +44,8 @@ _insert_citations = mod._insert_citations
 _format_citation_list = mod._format_citation_list
 _OWUI_INTERNAL_KEYS = mod._OWUI_INTERNAL_KEYS
 _is_owui_managed_icon = mod._is_owui_managed_icon
+_PROVIDER_REGISTRY_TTL = mod._PROVIDER_REGISTRY_TTL
+_PROVIDER_REGISTRY_FAIL_TTL = mod._PROVIDER_REGISTRY_FAIL_TTL
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _PASS = 0
@@ -2108,11 +2110,12 @@ _assert("noicon" not in _r1, "registry: entry without icon key skipped")
 _pipe_lookup = Pipe()
 _pipe_lookup.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
-    # Hardcoded fast path — registry never consulted
+    # Registry is consulted first; openai is in both registry and hardcoded dict —
+    # the registry URL wins and matches the hardcoded one.
     _icon_openai = _pipe_lookup._get_provider_icon("openai")
     _assert(
         _icon_openai == "https://openrouter.ai/images/icons/OpenAI.svg",
-        "_get_provider_icon: hardcoded dict hit returns OpenAI icon",
+        "_get_provider_icon: registry-first hit returns OpenAI icon",
     )
 
     # Slug not in dict but in registry (exact)
@@ -2139,7 +2142,7 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
     # Empty/None provider key
     _assert(_pipe_lookup._get_provider_icon("") is None, "_get_provider_icon: empty key → None")
 
-# 25l. Registry network failure → cached empty dict, no retry, dict still works
+# 25l. Registry network failure → cached empty dict, no retry within TTL window
 _pipe_fail = Pipe()
 _pipe_fail.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 
@@ -2151,9 +2154,9 @@ def _failing_reg_get(*args, **kwargs):
 
 with patch.object(_pipe_fail._session, "get", side_effect=_failing_reg_get):
     _r_fail = _pipe_fail._load_provider_registry()
-    _r_fail_2 = _pipe_fail._load_provider_registry()
-_assert(_r_fail == {}, "registry: network failure → empty dict")
-_assert(_fail_call_count == 1, "registry: failure does not retry (cached empty)")
+    _r_fail_2 = _pipe_fail._load_provider_registry()  # within back-off — no second fetch
+_assert(_r_fail == {}, "registry: network failure → empty dict (no prior registry)")
+_assert(_fail_call_count == 1, "registry: no retry within FAIL_TTL back-off window after failure")
 
 # Hardcoded dict still works after registry failure
 _assert(
@@ -2165,16 +2168,101 @@ _assert(
     "_get_provider_icon: x-ai falls back to None when registry failed",
 )
 
-# 25m. Registry HTTP non-200 → empty dict
+# 25m. Registry HTTP non-200 → log message; empty dict on first-ever fetch;
+#       existing registry preserved if one was already loaded.
 _mock_reg_403 = MagicMock()
 _mock_reg_403.status_code = 403
 _mock_reg_403.json.return_value = {"data": []}
 
+# 25m-a: first fetch fails → empty dict + warning logged
 _pipe_403 = Pipe()
 _pipe_403.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
-with patch.object(_pipe_403._session, "get", return_value=_mock_reg_403):
-    _r_403 = _pipe_403._load_provider_registry()
-_assert(_r_403 == {}, "registry: HTTP 403 → empty dict (no parse, no retry)")
+_log_403_msgs = []
+with patch("builtins.print", side_effect=lambda *a, **kw: _log_403_msgs.append(" ".join(str(x) for x in a))):
+    with patch.object(_pipe_403._session, "get", return_value=_mock_reg_403):
+        _r_403 = _pipe_403._load_provider_registry()
+_assert(_r_403 == {}, "registry: HTTP 403 on first fetch → empty dict")
+_assert(
+    any("403" in m for m in _log_403_msgs),
+    "registry: HTTP 403 logs a warning message",
+)
+
+# 25m-b: subsequent non-200 with an existing registry → old registry preserved
+_pipe_403_preserve = Pipe()
+_pipe_403_preserve.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_403_preserve._provider_registry = {"openai": "https://example.com/openai.svg"}
+_pipe_403_preserve._provider_registry_ts = _time_mod.monotonic() - _PROVIDER_REGISTRY_TTL - 1
+with patch.object(_pipe_403_preserve._session, "get", return_value=_mock_reg_403):
+    _r_403_preserve = _pipe_403_preserve._load_provider_registry()
+_assert(
+    _r_403_preserve == {"openai": "https://example.com/openai.svg"},
+    "registry: HTTP 403 preserves existing non-empty registry",
+)
+
+# 25m-c: after FAIL_TTL back-off expires a new fetch is attempted
+_pipe_fail_backoff = Pipe()
+_pipe_fail_backoff.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_fail_backoff._provider_registry = {"openai": "https://example.com/openai.svg"}
+_pipe_fail_backoff._provider_registry_ts = _time_mod.monotonic() - _PROVIDER_REGISTRY_TTL - 1
+
+_backoff_call_count = 0
+def _backoff_403_get(url, *args, **kwargs):
+    global _backoff_call_count
+    if "all-providers" in url:
+        _backoff_call_count += 1
+    return _mock_reg_403
+
+with patch.object(_pipe_fail_backoff._session, "get", side_effect=_backoff_403_get):
+    _pipe_fail_backoff._load_provider_registry()           # fetch 1 → fail, set backoff ts
+    # expire the back-off window
+    _pipe_fail_backoff._provider_registry_ts -= _PROVIDER_REGISTRY_FAIL_TTL + 1
+    _pipe_fail_backoff._load_provider_registry()           # fetch 2 → retried after backoff
+_assert(_backoff_call_count == 2, "registry: re-fetches after FAIL_TTL back-off expires")
+
+# 25n. Registry TTL expiry forces re-fetch
+_pipe_ttl = Pipe()
+_pipe_ttl.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+
+_ttl_call_count = 0
+def _ttl_reg_get(url, *args, **kwargs):
+    global _ttl_call_count
+    if "all-providers" in url:
+        _ttl_call_count += 1
+    return _mock_reg_resp  # reuse payload mock
+
+with patch.object(_pipe_ttl._session, "get", side_effect=_ttl_reg_get):
+    _pipe_ttl._load_provider_registry()               # first fetch
+    _pipe_ttl._provider_registry_ts -= _PROVIDER_REGISTRY_TTL + 1  # expire TTL
+    _pipe_ttl._load_provider_registry()               # should re-fetch
+_assert(_ttl_call_count == 2, "registry: re-fetches after TTL expiry")
+
+# 25o. _icons_synced cleared on model cache refresh
+_pipe_sync_clear = Pipe()
+_pipe_sync_clear.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", SYNC_PROVIDER_ICONS=False)
+_pipe_sync_clear._models_cache = None
+
+_mock_models_resp_sc = MagicMock()
+_mock_models_resp_sc.status_code = 200
+_mock_models_resp_sc.json.return_value = {"data": [{"id": "openai/gpt-4o", "name": "GPT-4o"}]}
+
+with patch.object(_pipe_sync_clear._session, "get", return_value=_mock_models_resp_sc):
+    _pipe_sync_clear.pipes()
+
+# Populate _icons_synced to simulate prior sync
+_pipe_sync_clear._icons_synced.add("openai/gpt-4o")
+_assert(len(_pipe_sync_clear._icons_synced) == 1, "_icons_synced: populated before cache expire")
+
+# Expire cache and call pipes() again — _icons_synced must be cleared.
+# Subtract more than the TTL from the stored timestamp so the cache is
+# expired regardless of how small time.monotonic() is on a fresh CI runner.
+_pipe_sync_clear._models_cache_ts -= mod._MODELS_CACHE_TTL + 1
+with patch.object(_pipe_sync_clear._session, "get", return_value=_mock_models_resp_sc):
+    _pipe_sync_clear.pipes()
+
+_assert(
+    len(_pipe_sync_clear._icons_synced) == 0,
+    "_icons_synced: cleared on model cache refresh (allows re-sync after OWUI upsert)",
+)
 
 # ── 26. _stream_response() edge cases ────────────────────────────────────────
 
