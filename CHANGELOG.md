@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-05-08
+
+### Fixed
+
+- **Provider icon lookup order** — `_get_provider_icon` now consults the dynamic OpenRouter registry first and falls back to the hardcoded `_PROVIDER_ICONS` dict only when the registry is unavailable. Previously the hardcoded dict always took priority, meaning any CDN path change on OpenRouter's side would silently serve 404 URLs for the 13 built-in providers while the registry (which always has correct current URLs) was ignored for them.
+- **Provider registry now refreshes hourly** — `_load_provider_registry` previously cached the result for the entire lifetime of the `Pipe` instance. A transient network failure at startup (API down, rate-limited, not yet reachable) would permanently leave the registry empty until the pipe was restarted. Now the cache expires after `_PROVIDER_REGISTRY_TTL` (1 hour) and a fresh fetch is attempted automatically.
+- **Non-200 registry responses now logged** — HTTP 4xx/5xx responses from `GET /api/frontend/all-providers` were previously swallowed silently, making it impossible to diagnose why icons were missing. A `[OpenRouter Pipe] Provider registry returned HTTP {status}` message is now printed.
+- **`_icons_synced` cleared on model cache refresh** — the set of "already synced" model IDs was never reset between 5-minute model-cache cycles. OWUI upserts models (resetting their `profile_image_url` to the default `data:` icon) after every `pipes()` call; the permanent `_icons_synced` state meant the corrective re-sync was never retried. The set is now cleared whenever the model cache is refreshed, so any OWUI-overwritten icon is restored on the next sync pass.
+
 ## [1.6.0] — 2026-05-08
 
 ### Added

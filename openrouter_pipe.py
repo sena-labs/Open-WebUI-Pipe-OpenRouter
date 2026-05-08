@@ -3,7 +3,7 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 1.6.0
+version: 1.6.1
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
@@ -49,6 +49,11 @@ _RECOGNISED_VARIANT_TAGS = frozenset(
 
 # Cache TTL for model list (seconds)
 _MODELS_CACHE_TTL = 300.0  # 5 minutes
+
+# Cache TTL for the OpenRouter provider registry (seconds).
+# Refreshed periodically so transient fetch failures and CDN path changes
+# are recovered automatically without restarting the pipe.
+_PROVIDER_REGISTRY_TTL = 3600.0  # 1 hour
 
 # OpenRouter's frontend provider registry — gives us icon URLs for ~70 providers
 # (hosted SVG/PNG when available, gstatic favicons otherwise). Used as a
@@ -652,8 +657,9 @@ class Pipe:
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
         # Lazy-loaded mirror of OpenRouter's provider registry (slug → icon URL).
-        # None = not attempted; {} = attempted but failed/empty (do not retry).
+        # Refreshed every _PROVIDER_REGISTRY_TTL seconds; None = not yet fetched.
         self._provider_registry: Optional[dict] = None
+        self._provider_registry_ts: float = 0.0
         # Lazy-loaded set of model IDs that have at least one ZDR endpoint.
         # None = not attempted; frozenset() = attempted but failed/empty.
         self._zdr_model_ids: Optional[frozenset] = None
@@ -874,6 +880,11 @@ class Pipe:
         self._models_cache = models
         self._models_cache_ts = time.monotonic()
         self._models_cache_key = self._build_cache_key()
+        # Reset synced-set on every model cache refresh so _sync_model_icons
+        # re-checks all models. OWUI upserts models with the default data: icon
+        # after every pipes() call; clearing here ensures any overwritten icon
+        # is restored on the next sync pass.
+        self._icons_synced.clear()
 
         # Sync provider icons into Open WebUI's Models database
         if self.valves.SYNC_PROVIDER_ICONS:
@@ -1119,14 +1130,21 @@ class Pipe:
         return _PROVIDER_ICONS.get(provider.lower())
 
     def _load_provider_registry(self) -> dict:
-        """Lazy-load OpenRouter's provider registry, cache for the pipe lifetime.
+        """Load OpenRouter's provider registry, refreshing every hour.
 
         Returns ``{slug: icon_url}`` (with each slug also indexed under its
         hyphen-stripped variant so e.g. ``x-ai`` resolves to the registry's
-        ``xai`` entry). Network failures are silent — a single empty dict is
-        cached and the pipe falls back to the hardcoded ``_PROVIDER_ICONS``.
+        ``xai`` entry). Network failures are logged and an empty dict is
+        returned; the pipe falls back to ``_PROVIDER_ICONS`` in that case.
+        The cache is automatically refreshed after ``_PROVIDER_REGISTRY_TTL``
+        seconds so transient failures and CDN path changes are recovered
+        without restarting the pipe.
         """
-        if self._provider_registry is not None:
+        now = time.monotonic()
+        if (
+            self._provider_registry is not None
+            and (now - self._provider_registry_ts) < _PROVIDER_REGISTRY_TTL
+        ):
             return self._provider_registry
 
         registry: dict = {}
@@ -1153,28 +1171,37 @@ class Pipe:
                         compact = slug.replace("-", "")
                         if compact and compact != slug:
                             registry.setdefault(compact, icon)
+                else:
+                    print(
+                        f"[OpenRouter Pipe] Provider registry returned HTTP "
+                        f"{resp.status_code} — provider icons may be incomplete"
+                    )
             finally:
                 resp.close()
         except Exception as exc:  # pragma: no cover
             print(f"[OpenRouter Pipe] Provider registry fetch failed: {exc}")
 
         self._provider_registry = registry
+        self._provider_registry_ts = now
         return registry
 
     def _get_provider_icon(self, provider_key: str) -> Optional[str]:
         """Resolve a provider icon URL using the layered fallback chain.
 
-        Order: hardcoded ``_PROVIDER_ICONS`` → registry exact match →
-        registry hyphen-stripped match. Returns ``None`` if no source has it.
+        Order: registry exact match → registry hyphen-stripped →
+        hardcoded ``_PROVIDER_ICONS``. The registry is authoritative because
+        it always reflects OpenRouter's current CDN paths; the hardcoded dict
+        is a reliable offline fallback when the registry is unavailable.
+        Returns ``None`` if no source has it.
         """
         if not provider_key:
             return None
         key = provider_key.lower()
-        icon = _PROVIDER_ICONS.get(key)
+        registry = self._load_provider_registry()
+        icon = registry.get(key) or registry.get(key.replace("-", ""))
         if icon:
             return icon
-        registry = self._load_provider_registry()
-        return registry.get(key) or registry.get(key.replace("-", "")) or None
+        return _PROVIDER_ICONS.get(key)
 
     def _parse_provider_filter(self) -> Optional[set]:
         """Parse MODEL_PROVIDERS valve into a set of lowercase provider names."""
