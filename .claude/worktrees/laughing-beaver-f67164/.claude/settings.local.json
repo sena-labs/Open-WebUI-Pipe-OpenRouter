@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem \"C:\\\\WorkSpace\\\\Project\\\\github.com\\\\sena-labs\\\\OpenRouter-Pipe\\\\.claude\\\\worktrees\\\\laughing-beaver-f67164\" -Force)",
+      "Bash(git -C \"C:\\\\WorkSpace\\\\Project\\\\github.com\\\\sena-labs\\\\OpenRouter-Pipe\\\\.claude\\\\worktrees\\\\laughing-beaver-f67164\" status)",
+      "Bash(git -C \"C:\\\\WorkSpace\\\\Project\\\\github.com\\\\sena-labs\\\\OpenRouter-Pipe\\\\.claude\\\\worktrees\\\\laughing-beaver-f67164\" ls-files)",
+      "Bash(git -C \"C:\\\\WorkSpace\\\\Project\\\\github.com\\\\sena-labs\\\\OpenRouter-Pipe\" log --oneline -5)",
+      "Bash(git -C \"C:\\\\WorkSpace\\\\Project\\\\github.com\\\\sena-labs\\\\OpenRouter-Pipe\" branch -a)"
+    ]
+  }
+}
