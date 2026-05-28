@@ -52,3 +52,12 @@ nul
 .worktrees/
 .security-key
 logs/security/
+
+# Claude Flow / swarm / vector store artifacts
+.claude/
+.claude-flow/
+.swarm/
+.remember/
+.mypy_cache/
+ruvector.db
+ruvector.db-*
