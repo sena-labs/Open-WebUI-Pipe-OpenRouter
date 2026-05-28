@@ -25,7 +25,7 @@
 
 ## Testing
 
-- [ ] All unit tests pass (`python test_pipe.py` — 576/576 ✓)
+- [ ] All unit tests pass (`python test_pipe.py` — 595/595 ✓)
 - [ ] New tests added for the changes
 - [ ] Integration tests pass (`python integration_test.py`) — if applicable
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`

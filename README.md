@@ -91,7 +91,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 576 tests — verify everything is green
+python test_pipe.py        # 595 tests — verify everything is green
 ```
 
 ## Usage
@@ -211,6 +211,21 @@ Every valve accepts an environment variable fallback. The table below lists both
 
 > **Migration (v1.5.0):** the old boolean `FREE_ONLY` valve was replaced by `FREE_MODEL_FILTER` (`all` / `only` / `exclude`). Set `FREE_MODEL_FILTER = only` to preserve the old `FREE_ONLY = true` behaviour. For backward compatibility, the legacy `OPENROUTER_FREE_ONLY=true` environment variable is still honoured when `FREE_MODEL_FILTER` is unset.
 
+### Per-user settings (UserValves)
+
+On a shared Open WebUI instance, each user can override the admin defaults with their own values under **Valves → User Valves**:
+
+- **`OPENROUTER_API_KEY`** — use a personal OpenRouter key instead of the admin key (leave blank to inherit the admin key).
+- **Chat-path preferences** — reasoning, provider routing, web search, fallbacks, service tier, cache control, referer, timeout, retries, and cost display. Any field left unset inherits the admin default.
+
+Catalog and display settings (model filters, `MODEL_PREFIX`, provider-icon sync, `OPENROUTER_BASE_URL`) are **admin-global** — the model list is built once without a user context, so per-user overrides of those would have no effect and are intentionally not exposed.
+
+The merge is concurrency-safe: each request works on a copy of the admin valves, so users never affect each other's settings or keys.
+
+### API key encryption at rest
+
+The `OPENROUTER_API_KEY` (admin and per-user) is stored **encrypted** in Open WebUI's database when `WEBUI_SECRET_KEY` is set (Fernet, derived from that secret) and decrypted only at the moment a request is sent. If `WEBUI_SECRET_KEY` or the `cryptography` package is unavailable, the key falls back to plaintext storage with a one-time warning. Existing plaintext keys keep working and are re-encrypted on the next save.
+
 ## Architecture
 
 The pipe implements the **Manifold** pattern: one pipe entry point that surfaces multiple models.
@@ -228,7 +243,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (576 tests)
+├── test_pipe.py            # Unit test suite (595 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -258,7 +273,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (576 tests)
+python test_pipe.py                       # Unit tests (595 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

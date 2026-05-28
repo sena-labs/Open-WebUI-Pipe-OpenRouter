@@ -265,9 +265,22 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ---
 
+## 24. Per-user valves & key encryption (v1.7)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 24.1 | With `WEBUI_SECRET_KEY` set, save an API key in admin Valves, then inspect the stored function valves in OWUI's DB | Stored `OPENROUTER_API_KEY` is ciphertext prefixed `encrypted:` (not the raw `sk-or-...` key) |
+| 24.2 | Chat with the encrypted key | Request succeeds — the key is decrypted only for the `Authorization` header |
+| 24.3 | As a non-admin user, set a personal key under Valves → User Valves, then chat | Request uses the user's own key (verify via that key's OpenRouter usage/credits) |
+| 24.4 | As a user, leave the User Valves key blank but set `REASONING_EFFORT = high` | Request inherits the admin key but uses the user's reasoning effort |
+| 24.5 | Two users with different User Valves chat concurrently | Each request uses that user's own settings; neither leaks into the other (admin valves unchanged) |
+| 24.6 | Unset `WEBUI_SECRET_KEY` (or remove `cryptography`) and load the pipe | Key stored/used as plaintext; one-time `[OpenRouter Pipe] API key stored in plaintext (...)` warning; pipe still works |
+
+---
+
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 576 passed, 0 failed
+- [ ] `python test_pipe.py` → 595 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 400+ models with provider icons
@@ -284,3 +297,5 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 - [ ] Errors formatted correctly (no raw tracebacks)
 - [ ] No secrets in logs or error messages
 - [ ] Open WebUI internal fields removed from payload
+- [ ] API key stored encrypted at rest (`encrypted:` prefix) when `WEBUI_SECRET_KEY` is set
+- [ ] Per-user UserValves override admin defaults; admin key inherited when the user key is blank
