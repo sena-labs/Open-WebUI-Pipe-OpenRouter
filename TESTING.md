@@ -191,12 +191,83 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 |---|--------|-----------------|
 | 17.1 | Open the model selector | Models from OpenAI, Anthropic, Google, Meta, etc. show their own icon |
 | 17.2 | Check an unknown provider (e.g. `aion-labs`) | No icon (empty field), no error |
+| 17.3 | Leave `USE_GSTATIC_FAVICONS = false` (default) | Providers only resolvable via gstatic show OWUI's default icon (no `t0.gstatic.com` requests) |
+| 17.4 | Set `USE_GSTATIC_FAVICONS = true` | Registry-discovered gstatic favicons appear for extra providers |
+
+---
+
+## 18. Output modalities & catalog filters (v1.4–v1.6)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 18.1 | Default `OUTPUT_MODALITIES = all` | TTS / audio / image / embedding models appear alongside chat models |
+| 18.2 | Set `OUTPUT_MODALITIES = text` | Only text-output models listed; `/models` request carries `output_modalities=text` |
+| 18.3 | Set `MODEL_CATEGORY = programming` | `/models` request carries `category=programming`; catalog narrows |
+| 18.4 | Set `HIDE_DEPRECATED_MODELS = false` | Deprecated models appear tagged `⚠ … (deprecated)` |
+| 18.5 | Set `HIDE_DEPRECATED_MODELS = true` | Deprecated models removed from the selector |
+| 18.6 | Set `TOOL_CALLING_FILTER = only` | Only tool-capable models listed |
+| 18.7 | Set `ZDR_MODELS_ONLY = true` | Catalog narrows to ZDR-capable models (`/endpoints/zdr` consulted) |
+
+---
+
+## 19. Reasoning extensions (v1.5)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 19.1 | `REASONING_EFFORT = minimal` / `xhigh` | Payload `reasoning.effort` carries the value |
+| 19.2 | `REASONING_MAX_TOKENS = 2000` | Payload `reasoning.max_tokens = 2000` |
+| 19.3 | `REASONING_SUMMARY_MODE = concise` | Payload `reasoning.summary = "concise"` |
+| 19.4 | Anthropic model + `ENABLE_ANTHROPIC_INTERLEAVED_THINKING = true` | Request carries header `anthropic-beta: interleaved-thinking-2025-05-14` |
+| 19.5 | `ANTHROPIC_PROMPT_CACHE_TTL = 1h` | Anthropic cache breakpoint uses the `1h` TTL |
+
+---
+
+## 20. Provider preferences, service tier, ZDR enforce (v1.5–v1.6)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 20.1 | `PROVIDER_ONLY = openai` | Payload `provider.only = ["openai"]` |
+| 20.2 | `PROVIDER_QUANTIZATIONS = bf16,fp8` | Payload `provider.quantizations = ["bf16","fp8"]` |
+| 20.3 | `PROVIDER_MAX_PRICE_PROMPT = 5` | Payload `provider.max_price.prompt = 5` |
+| 20.4 | `SERVICE_TIER = flex` | Payload top-level `service_tier = "flex"` |
+| 20.5 | `ZDR_ENFORCE = true` | Payload `provider.zdr = true` |
+
+---
+
+## 21. Web search, generation ID, cost (v1.6)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 21.1 | `ENABLE_WEB_SEARCH = true` | Payload `plugins` contains a `web` entry with `max_results` / domain filters |
+| 21.2 | `WEB_SEARCH_INCLUDE_DOMAINS = example.com` | Web plugin carries the allowlist |
+| 21.3 | `SHOW_GENERATION_ID = true`, non-stream | Response ends with `*Generation ID: gen-…*` |
+| 21.4 | `SHOW_GENERATION_ID = true`, streaming | Footer still appears at end of the stream |
+| 21.5 | `SHOW_COST_INFO = true`, streaming | Cost line appears (payload sends `usage.include=true`); cached-token split shown when reported |
+
+---
+
+## 22. Variant routing (v1.5)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 22.1 | `MODEL_VARIANTS = openai/gpt-4o:nitro` | A virtual `GPT-4o Nitro` row appears in the selector with the OpenAI icon |
+| 22.2 | `MODEL_VARIANTS = unknown/model:nitro` | Silently skipped (base not in catalog), no error |
+| 22.3 | `MODEL_VARIANTS = openai/gpt-4o:bogus` | Unknown tag dropped |
+
+---
+
+## 23. Referer override (v1.5)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 23.1 | `HTTP_REFERER_OVERRIDE = https://my.app` | `HTTP-Referer` header = `https://my.app` |
+| 23.2 | `HTTP_REFERER_OVERRIDE` with CR/LF or non-http value | Ignored; falls back to `WEBUI_URL`/default (no header injection) |
 
 ---
 
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 557 passed, 0 failed
+- [ ] `python test_pipe.py` → 576 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 340+ models with provider icons

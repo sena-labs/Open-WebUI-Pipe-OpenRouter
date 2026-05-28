@@ -111,7 +111,9 @@ def _is_owui_managed_icon(url: str) -> bool:
         or url.startswith("data:")
         or url.startswith("https://openrouter.ai/images/models/")
         or url.startswith("https://openrouter.ai/images/icons/")
-        or url.startswith("https://t0.gstatic.com/faviconV2")
+        # Require the query string ("?") so a user-set bare gstatic URL isn't
+        # misclassified — real faviconV2 icons always carry query params.
+        or url.startswith("https://t0.gstatic.com/faviconV2?")
     )
 
 
@@ -217,7 +219,12 @@ def _format_generation_id(generation_id: Optional[str]) -> str:
     """
     if not generation_id:
         return ""
-    return f"\n\n---\n*Generation ID: `{generation_id}`*"
+    # Strip backticks/newlines so a malicious upstream ID can't break out of
+    # the code span and inject markdown into the rendered response.
+    safe = re.sub(r"[`\r\n]", "", str(generation_id))
+    if not safe:
+        return ""
+    return f"\n\n---\n*Generation ID: `{safe}`*"
 
 
 def _format_image_output(images: list) -> str:
@@ -607,6 +614,10 @@ class Pipe:
         SYNC_PROVIDER_ICONS: bool = Field(
             default=os.getenv("OPENROUTER_SYNC_ICONS", "true").lower() == "true",
             description="Automatically sync provider icons into Open WebUI's model database so they appear in the UI",
+        )
+        USE_GSTATIC_FAVICONS: bool = Field(
+            default=os.getenv("OPENROUTER_USE_GSTATIC_FAVICONS", "false").lower() == "true",
+            description="Allow registry-discovered Google gstatic favicons for providers without an OpenRouter-hosted icon. Off by default: when enabled, the browser fetches these from t0.gstatic.com on every model render, leaking the provider domain to Google",
         )
         REQUEST_TIMEOUT: int = Field(
             default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
@@ -1235,6 +1246,12 @@ class Pipe:
         registry = self._load_provider_registry()
         icon = registry.get(key) or registry.get(key.replace("-", ""))
         if icon:
+            # gstatic favicons are fetched by the browser on every model render,
+            # leaking the provider's domain to Google.  Privacy-conscious
+            # deployments can disable them (default off) — fall back to the
+            # hardcoded OpenRouter-hosted icon, else no icon (OWUI default).
+            if icon.startswith("https://t0.gstatic.com/") and not self.valves.USE_GSTATIC_FAVICONS:
+                return _PROVIDER_ICONS.get(key)
             return icon
         return _PROVIDER_ICONS.get(key)
 
@@ -1567,8 +1584,11 @@ class Pipe:
         silently otherwise so a misconfigured valve never breaks requests.
         """
         override = (self.valves.HTTP_REFERER_OVERRIDE or "").strip()
-        if override.startswith(("http://", "https://")):
-            return override
+        # Reject control characters (CR/LF/NUL) that could split the header,
+        # then require a full http(s) URL.  Fall back silently otherwise.
+        if override and not any(c in override for c in "\r\n\x00"):
+            if override.startswith(("http://", "https://")):
+                return override
         return self._referer
 
     def _build_headers(

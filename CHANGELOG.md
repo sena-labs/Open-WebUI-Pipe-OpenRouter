@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **No redirect following on any OpenRouter call** — `allow_redirects=False` is now passed to all four HTTP requests (`/models`, `/chat/completions`, the provider-registry fetch, and the ZDR `/endpoints/zdr` fetch). Combined with the `requests>=2.32.4` floor, this prevents the `Authorization: Bearer` header from being forwarded to a redirect target (CVE-2024-35195 family) if the base URL is misconfigured
+- **`HTTP_REFERER_OVERRIDE` header-injection guard** — the referer override is rejected if it contains CR/LF/NUL control characters, so a misconfigured valve cannot split the request headers
+- **Generation-ID markdown sanitization** — `_format_generation_id` strips backticks/newlines from the upstream generation ID before wrapping it in a code span, so a malicious upstream value cannot break out and inject markdown into the rendered response
+
+### Added
+
+- **`USE_GSTATIC_FAVICONS` valve (default off)** — registry-discovered Google `t0.gstatic.com` favicons are now opt-in. When off, providers only resolvable via gstatic fall back to OWUI's default icon, so the browser never leaks the provider domain to Google on every model render. The gstatic icon classifier was also tightened to require a query string, so a user-set bare gstatic URL is no longer misclassified as pipe-managed
 
 ### Changed
 

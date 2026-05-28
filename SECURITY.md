@@ -7,10 +7,9 @@ critical-only fixes on the previous one.
 
 | Version | Status              | Security fixes |
 | ------- | ------------------- | -------------- |
-| 1.3.x   | :white_check_mark:  | active         |
-| 1.2.x   | :white_check_mark:  | critical only  |
-| 1.1.x   | :x:                 | end-of-life    |
-| < 1.1   | :x:                 | end-of-life    |
+| 1.6.x   | :white_check_mark:  | active         |
+| 1.5.x   | :white_check_mark:  | critical only  |
+| < 1.5   | :x:                 | end-of-life    |
 
 ## Reporting a Vulnerability
 
@@ -70,7 +69,7 @@ The pipe implements the following security practices:
 
 Every push to `main` and every pull request runs:
 
-- **Unit tests** (`.github/workflows/tests.yml`) — 557 tests across Python 3.10–3.13. Failures block merge.
+- **Unit tests** (`.github/workflows/tests.yml`) — 576 tests across Python 3.10–3.13. Failures block merge.
 
 ## Disclosure Policy
 

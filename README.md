@@ -8,22 +8,6 @@ Access the **full OpenRouter catalog** — chat, TTS, audio, image-generation, a
 directly inside Open WebUI, with provider routing, reasoning tokens, streaming, fallbacks, and
 cache control out of the box.
 
-## Feature gallery
-
-### Model selector
-
-*Models from OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek and more — each with its provider icon.*
-
-### Reasoning tokens
-
-*`<think>` blocks streamed in real time with configurable effort levels.*
-
-### Provider routing in action
-
-*Sort, prefer, exclude and require parameters across providers per request.*
-
----
-
 ## Table of Contents
 
 - [Features](#features)
@@ -107,7 +91,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 557 tests — verify everything is green
+python test_pipe.py        # 576 tests — verify everything is green
 ```
 
 ## Usage
@@ -243,7 +227,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (557 tests)
+├── test_pipe.py            # Unit test suite (576 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -273,7 +257,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (557 tests)
+python test_pipe.py                       # Unit tests (576 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

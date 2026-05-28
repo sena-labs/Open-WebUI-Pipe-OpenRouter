@@ -2105,9 +2105,9 @@ _assert("broken" not in _r1, "registry: empty icon URL skipped")
 _assert("unsafe" not in _r1, "registry: unsafe (non-http) icon URL skipped")
 _assert("noicon" not in _r1, "registry: entry without icon key skipped")
 
-# 25k. _get_provider_icon layered lookup
+# 25k. _get_provider_icon layered lookup (gstatic favicons enabled)
 _pipe_lookup = Pipe()
-_pipe_lookup.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+_pipe_lookup.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", USE_GSTATIC_FAVICONS=True)
 with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
     # Registry is consulted first; openai is in both registry and hardcoded dict —
     # the registry URL wins and matches the hardcoded one.
@@ -2140,6 +2140,21 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
 
     # Empty/None provider key
     _assert(_pipe_lookup._get_provider_icon("") is None, "_get_provider_icon: empty key → None")
+
+# 25k2. USE_GSTATIC_FAVICONS default OFF → gstatic registry icons suppressed
+_pipe_nogstatic = Pipe()
+_pipe_nogstatic.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_GSTATIC_FAVICONS defaults False
+with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get):
+    # arcee-ai only resolvable via gstatic → suppressed → None (not in hardcoded dict)
+    _assert(
+        _pipe_nogstatic._get_provider_icon("arcee-ai") is None,
+        "_get_provider_icon: gstatic suppressed when USE_GSTATIC_FAVICONS off",
+    )
+    # openai is in the hardcoded dict → still resolves even with gstatic off
+    _assert(
+        _pipe_nogstatic._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+        "_get_provider_icon: hardcoded icon still returned with gstatic off",
+    )
 
 # 25l. Registry network failure → cached empty dict, no retry within TTL window
 _pipe_fail = Pipe()
@@ -3233,6 +3248,108 @@ _sse_null_content = [
 with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)):
     _null_chunks = list(_pipe34s._stream_response({}, {}))
 _assert(isinstance("".join(_null_chunks), str), "stream content=None delta: no crash")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §35  Post-release-audit hardening (SEC LOW + coverage gaps)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("35. SEC: _resolve_referer CRLF guard")
+
+_pipe35 = Pipe()
+# Valid override respected
+_pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://my.app")
+_assert(_pipe35._resolve_referer() == "https://my.app", "35a valid referer override respected")
+# CRLF-injection override rejected → falls back
+_pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://x\r\nX-Evil: 1")
+_assert("\r" not in _pipe35._resolve_referer() and "\n" not in _pipe35._resolve_referer(), "35b CRLF override rejected (no control chars in referer)")
+_assert(_pipe35._resolve_referer() == _pipe35._referer, "35c CRLF override falls back to default referer")
+# Non-http scheme rejected
+_pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="ftp://x")
+_assert(_pipe35._resolve_referer() == _pipe35._referer, "35d non-http override falls back")
+
+_section("35. SEC: generation ID markdown-breakout sanitization")
+
+_format_generation_id = mod._format_generation_id
+# Backticks/newlines stripped so the code span can't be broken out of
+_dirty = _format_generation_id("gen-`</think><script>")
+_assert("`</think>" not in _dirty, "35e generation ID: backtick-breakout neutralized")
+_assert("script" in _dirty, "35f generation ID: remaining text preserved")
+_assert(_format_generation_id("gen-abc123") == "\n\n---\n*Generation ID: `gen-abc123`*", "35g clean ID formatted normally")
+_assert(_format_generation_id("") == "", "35h empty ID → empty string")
+_assert(_format_generation_id("`\r\n`") == "", "35i all-unsafe ID → empty (no stray footer)")
+
+_section("35. Coverage: stream SHOW_GENERATION_ID")
+
+_pipe35s = Pipe()
+_pipe35s.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=True)
+_sse_genid = [
+    b"data: " + json.dumps({"id": "gen-stream-xyz", "choices": [{"delta": {"content": "hi"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_genid)):
+    _genid_stream = "".join(_pipe35s._stream_response({}, {}))
+_assert("gen-stream-xyz" in _genid_stream, "35j streaming SHOW_GENERATION_ID: footer present")
+_assert("Generation ID" in _genid_stream, "35k streaming gen-id label present")
+# Off → no footer
+_pipe35s.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=False)
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_genid)):
+    _nogenid = "".join(_pipe35s._stream_response({}, {}))
+_assert("Generation ID" not in _nogenid, "35l streaming gen-id off: no footer")
+
+_section("35. Coverage: FREE_MODEL_FILTER=only + legacy FREE_ONLY shim")
+
+# FREE_MODEL_FILTER='only' keeps just free models
+_pipe35f = Pipe()
+_pipe35f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="only")
+_free_models = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "0.01", "completion": "0.03"}},
+        {"id": "meta/free-model:free", "name": "Free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "x/zerocost", "name": "Zero", "pricing": {"prompt": "0", "completion": "0"}},
+    ]
+}
+_mock_free = MagicMock(); _mock_free.status_code = 200; _mock_free.json.return_value = _free_models; _mock_free.raise_for_status = MagicMock()
+with patch.object(_pipe35f._session, "get", return_value=_mock_free):
+    _free_result = _pipe35f.pipes()
+_free_ids = [m["id"] for m in _free_result]
+_assert("openai/gpt-4o" not in _free_ids, "35m FREE_MODEL_FILTER=only: paid model excluded")
+_assert("meta/free-model:free" in _free_ids and "x/zerocost" in _free_ids, "35n FREE_MODEL_FILTER=only: free models kept (:free + 0/0)")
+
+# Legacy OPENROUTER_FREE_ONLY=true env maps to 'only' when FREE_MODEL_FILTER
+# unset. The valve default is frozen at module-import time, so test it by
+# loading a fresh copy of the module under the legacy env var.
+import os as _os35
+import importlib.util as _ilu35
+import importlib.machinery as _ilm35
+_prev_free_only = _os35.environ.get("OPENROUTER_FREE_ONLY")
+_prev_filter = _os35.environ.get("OPENROUTER_FREE_MODEL_FILTER")
+_os35.environ.pop("OPENROUTER_FREE_MODEL_FILTER", None)
+_os35.environ["OPENROUTER_FREE_ONLY"] = "true"
+try:
+    _loader35 = _ilm35.SourceFileLoader("openrouter_pipe_shimtest", _PIPE_PATH)
+    _spec35 = _ilu35.spec_from_loader("openrouter_pipe_shimtest", _loader35, origin=_PIPE_PATH)
+    _mod35 = _ilu35.module_from_spec(_spec35)
+    _spec35.loader.exec_module(_mod35)
+    _shim_default = _mod35.Pipe.Valves(OPENROUTER_API_KEY="k").FREE_MODEL_FILTER
+    _assert(_shim_default == "only", "35o legacy OPENROUTER_FREE_ONLY=true → FREE_MODEL_FILTER 'only'")
+finally:
+    if _prev_free_only is None:
+        _os35.environ.pop("OPENROUTER_FREE_ONLY", None)
+    else:
+        _os35.environ["OPENROUTER_FREE_ONLY"] = _prev_free_only
+    if _prev_filter is not None:
+        _os35.environ["OPENROUTER_FREE_MODEL_FILTER"] = _prev_filter
+
+_section("35. Coverage: REASONING_SUMMARY_MODE=concise")
+
+_pipe35r = Pipe()
+_pipe35r.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_SUMMARY_MODE="concise")
+_payload35r = _pipe35r._prepare_payload({"model": "openai/o1", "messages": [{"role": "user", "content": "hi"}]})
+_assert(_payload35r.get("reasoning", {}).get("summary") == "concise", "35p REASONING_SUMMARY_MODE=concise → reasoning.summary='concise'")
+
+_section("35. USE_GSTATIC_FAVICONS valve default")
+
+_assert(Pipe.Valves(OPENROUTER_API_KEY="k").USE_GSTATIC_FAVICONS is False, "35q USE_GSTATIC_FAVICONS defaults False")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
