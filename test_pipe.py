@@ -3415,6 +3415,46 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
         "Valves constructor encrypts the key via field_validator",
     )
 
+# ── UserValves + effective-valves merge ────────────────────────────────────────
+
+_section("UserValves merge + per-user key")
+
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
+    _p = Pipe()
+    _p.valves.REASONING_EFFORT = "low"
+    _p.valves.ENABLE_MIDDLE_OUT = True
+
+    # No __user__ → effective == admin
+    _eff0 = _p._effective_valves(None)
+    _assert(_eff0.REASONING_EFFORT == "low", "no user → admin value preserved")
+
+    # None field inherits admin; set field overrides; False overrides True
+    _uv = Pipe.UserValves(REASONING_EFFORT="high", ENABLE_MIDDLE_OUT=False)
+    _eff = _p._effective_valves({"valves": _uv})
+    _assert(_eff.REASONING_EFFORT == "high", "user value overrides admin")
+    _assert(_eff.ENABLE_MIDDLE_OUT is False, "user False overrides admin True")
+    _assert(
+        _eff.SERVICE_TIER == _p.valves.SERVICE_TIER,
+        "unset (None) user field inherits admin default",
+    )
+    _assert(
+        _p.valves.REASONING_EFFORT == "low",
+        "merge does not mutate shared self.valves",
+    )
+
+    # Per-user API key flows into the Authorization header
+    _uvk = Pipe.UserValves(OPENROUTER_API_KEY="sk-or-v1-userkey")
+    _effk = _p._effective_valves({"valves": _uvk})
+    _hdrs = _p._build_headers(valves=_effk)
+    _assert(
+        _hdrs["Authorization"] == "Bearer sk-or-v1-userkey",
+        "per-user key decrypted into Authorization header",
+    )
+
+    # Dict-form user valves also supported
+    _effd = _p._effective_valves({"valves": {"REASONING_EFFORT": "medium"}})
+    _assert(_effd.REASONING_EFFORT == "medium", "dict-form user valves merge")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

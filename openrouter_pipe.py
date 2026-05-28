@@ -728,6 +728,55 @@ class Pipe:
         def _encrypt_api_key(cls, v: str) -> str:
             return EncryptedStr.encrypt(v or "")
 
+    class UserValves(BaseModel):
+        """Per-user overrides. Each field defaults to None = inherit the admin
+        Valves value. Only chat-path settings are exposed; catalog/display
+        settings are admin-global because the model list has no user context.
+        """
+
+        OPENROUTER_API_KEY: Optional[str] = Field(
+            default=None,
+            description="Your personal OpenRouter API key. Leave blank to use the admin key.",
+            json_schema_extra={"input": {"type": "password"}},
+        )
+        INCLUDE_REASONING: Optional[bool] = None
+        REASONING_EFFORT: Optional[str] = None
+        REASONING_SUMMARY_MODE: Optional[str] = None
+        REASONING_MAX_TOKENS: Optional[int] = Field(default=None, ge=0)
+        ENABLE_ANTHROPIC_INTERLEAVED_THINKING: Optional[bool] = None
+        SERVICE_TIER: Optional[str] = None
+        PROVIDER_SORT: Optional[str] = None
+        PROVIDER_ORDER: Optional[str] = None
+        PROVIDER_IGNORE: Optional[str] = None
+        PROVIDER_ONLY: Optional[str] = None
+        PROVIDER_QUANTIZATIONS: Optional[str] = None
+        PROVIDER_ALLOW_FALLBACKS: Optional[bool] = None
+        PROVIDER_MAX_PRICE_PROMPT: Optional[str] = None
+        PROVIDER_MAX_PRICE_COMPLETION: Optional[str] = None
+        REQUIRE_PARAMETERS: Optional[bool] = None
+        DATA_COLLECTION: Optional[str] = None
+        ZDR_ENFORCE: Optional[bool] = None
+        FALLBACK_MODELS: Optional[str] = None
+        ENABLE_MIDDLE_OUT: Optional[bool] = None
+        ENABLE_WEB_SEARCH: Optional[bool] = None
+        WEB_SEARCH_MAX_RESULTS: Optional[int] = Field(default=None, ge=1, le=20)
+        WEB_SEARCH_PROMPT: Optional[str] = None
+        WEB_SEARCH_INCLUDE_DOMAINS: Optional[str] = None
+        WEB_SEARCH_EXCLUDE_DOMAINS: Optional[str] = None
+        ENABLE_CACHE_CONTROL: Optional[bool] = None
+        ANTHROPIC_PROMPT_CACHE_TTL: Optional[str] = None
+        HTTP_REFERER_OVERRIDE: Optional[str] = None
+        REQUEST_TIMEOUT: Optional[int] = Field(default=None, gt=0)
+        MAX_RETRIES: Optional[int] = Field(default=None, ge=0)
+        SHOW_COST_INFO: Optional[bool] = None
+        SHOW_GENERATION_ID: Optional[bool] = None
+        COST_CURRENCY: Optional[str] = None
+
+        @field_validator("OPENROUTER_API_KEY")
+        @classmethod
+        def _encrypt_user_api_key(cls, v):
+            return EncryptedStr.encrypt(v) if v else v
+
     def __init__(self) -> None:
         self.type = "manifold"
         self.valves = self.Valves()
@@ -1000,6 +1049,23 @@ class Pipe:
             return model_id
         return rest
 
+    def _effective_valves(self, __user__):
+        """Return a per-request copy of admin valves with user overrides applied.
+
+        Never mutates self.valves (shared across users/requests). A user field
+        of None means "inherit the admin value".
+        """
+        eff = self.valves.model_copy()
+        user = __user__ or {}
+        uv = user.get("valves") if isinstance(user, dict) else None
+        if uv is None:
+            return eff
+        data = uv.model_dump() if hasattr(uv, "model_dump") else dict(uv)
+        for key, val in data.items():
+            if val is not None and hasattr(eff, key):
+                setattr(eff, key, val)
+        return eff
+
     async def pipe(
         self,
         body: dict,
@@ -1011,7 +1077,8 @@ class Pipe:
         Returns an async generator for streaming (allows proper status cleanup),
         or a plain string for non-streaming responses.
         """
-        if not self.valves.OPENROUTER_API_KEY:
+        eff = self._effective_valves(__user__)
+        if not eff.OPENROUTER_API_KEY:
             return "OpenRouter Error: OPENROUTER_API_KEY not configured. Set it in Settings → Connections."
 
         model_id = self._clean_model_id(body.get("model", ""))
@@ -1035,12 +1102,12 @@ class Pipe:
                 }
             )
 
-        payload = self._prepare_payload(body, self.valves)
-        headers = self._build_headers(model_id=payload.get("model"), valves=self.valves)
+        payload = self._prepare_payload(body, eff)
+        headers = self._build_headers(model_id=payload.get("model"), valves=eff)
         stream = body.get("stream", False)
 
         if stream:
-            gen = self._stream_response(headers, payload, self.valves)
+            gen = self._stream_response(headers, payload, eff)
 
             # Wrap in an async generator so we can await the done event
             if __event_emitter__:
@@ -1056,7 +1123,7 @@ class Pipe:
 
             return gen
 
-        result = self._non_stream_response(headers, payload, self.valves)
+        result = self._non_stream_response(headers, payload, eff)
 
         if __event_emitter__:
             await __event_emitter__(
