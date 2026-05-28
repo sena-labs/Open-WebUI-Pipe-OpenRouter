@@ -3,7 +3,7 @@
   "name": "OpenRouter Pipe",
   "type": "manifold",
   "meta": {
-    "description": "Access 300+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 14 provider icons, and configurable retry logic.",
+    "description": "Access 350+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 14 provider icons, and configurable retry logic.",
     "manifest": {
       "title": "OpenRouter Pipe",
       "author": "Sena Labs",

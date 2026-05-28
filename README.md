@@ -6,7 +6,7 @@
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/ivansena)
 [![PayPal](https://img.shields.io/badge/PayPal-Donate-003087?logo=paypal&logoColor=white)](https://paypal.me/SenaIvan)
 
-Access **300+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
+Access **350+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
 reasoning tokens, streaming, fallbacks, and cache control out of the box.
 
 ## Feature gallery
