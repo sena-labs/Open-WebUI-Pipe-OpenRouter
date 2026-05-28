@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`FREE_MODEL_FILTER` honours the legacy `OPENROUTER_FREE_ONLY` env var** — when `OPENROUTER_FREE_MODEL_FILTER` is unset, `OPENROUTER_FREE_ONLY=true` now maps to `only`, so installs upgrading from the pre-1.5 `FREE_ONLY` era don't silently start returning paid models
+- **`SERVICE_TIER` restricted to OpenRouter's documented values** — only `flex` and `priority` are forwarded now (verified against OpenRouter's API docs). The previously-offered OpenAI-direct tiers `auto`/`default`/`scale` are not valid on OpenRouter and are no longer sent or shown in the valve dropdown
 
 ### Fixed
 

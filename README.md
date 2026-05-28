@@ -38,7 +38,7 @@ cache control out of the box.
 - **Manifold pipe** — exposes the full OpenRouter catalog (chat, TTS, audio, image, embeddings) as native Open WebUI models in the model selector. Configurable via `OUTPUT_MODALITIES` and `MODEL_CATEGORY`.
 - **Web search plugin** — attach OpenRouter's `web` plugin to any model with domain allow/deny lists, custom search prompt, and result-count limits.
 - **Variant routing** — surface virtual `:nitro`/`:exacto`/`:thinking`/`:online`/`:free`/`:extended` model entries that route to OpenRouter's specialized profiles.
-- **Service tier hint** — forward OpenAI-style `flex`/`priority`/`scale` tiers to compatible providers.
+- **Service tier hint** — forward `flex` (cheaper/slower) or `priority` (faster) tiers to compatible providers.
 - **Generation auditability** — optional generation ID footer maps each response to OpenRouter's `/generation?id=` activity API.
 - **Cached-input savings** — surface cached vs. non-cached prompt tokens in the cost footer (Anthropic prompt caching, OpenAI implicit caching, Gemini context caching).
 - **Deprecation visibility** — models with an `expiration_date` are tagged with ⚠ in the selector (or hidden via `HIDE_DEPRECATED_MODELS`).
@@ -172,7 +172,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `PROVIDER_ALLOW_FALLBACKS` | `OPENROUTER_PROVIDER_ALLOW_FALLBACKS` | `true` | When False, OpenRouter fails fast on the primary/ordered provider instead of falling back |
 | `PROVIDER_MAX_PRICE_PROMPT` | `OPENROUTER_PROVIDER_MAX_PRICE_PROMPT` | `""` | Maximum prompt price (USD per 1M tokens) |
 | `PROVIDER_MAX_PRICE_COMPLETION` | `OPENROUTER_PROVIDER_MAX_PRICE_COMPLETION` | `""` | Maximum completion price (USD per 1M tokens) |
-| `SERVICE_TIER` | `OPENROUTER_SERVICE_TIER` | `""` | OpenAI-style service tier: `auto`, `default`, `flex`, `priority`, `scale` |
+| `SERVICE_TIER` | `OPENROUTER_SERVICE_TIER` | `""` | Service tier hint: `flex` (cheaper/slower) or `priority` (faster). Empty leaves it to the provider |
 | `REQUIRE_PARAMETERS` | `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Only use providers that support all request parameters |
 | `DATA_COLLECTION` | `OPENROUTER_DATA_COLLECTION` | `allow` | Data policy: `allow` or `deny` |
 | `ZDR_ENFORCE` | `OPENROUTER_ZDR_ENFORCE` | `false` | Send `provider.zdr=true` so OpenRouter routes only to ZDR endpoints (request fails if none available) |

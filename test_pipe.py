@@ -2590,17 +2590,19 @@ _assert(
 # ── 28g. v1.6.0 — SERVICE_TIER ──────────────────────────────────────────────
 _section("28g. v1.6.0 service tier")
 
-for tier in ("auto", "default", "flex", "priority", "scale"):
+# Only OpenRouter's documented tiers ('flex','priority') are forwarded.
+for tier in ("flex", "priority"):
     _pipe_st = Pipe()
     _pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER=tier)
     _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
     _assert(_p_st.get("service_tier") == tier, f"SERVICE_TIER='{tier}' forwarded")
 
-# Bogus value silently dropped
-_pipe_st = Pipe()
-_pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER="bogus")
-_p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
-_assert("service_tier" not in _p_st, "garbage SERVICE_TIER silently ignored")
+# Undocumented OpenAI-direct tiers + garbage are dropped (not valid on OpenRouter)
+for tier in ("auto", "default", "scale", "bogus"):
+    _pipe_st = Pipe()
+    _pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER=tier)
+    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+    _assert("service_tier" not in _p_st, f"unsupported SERVICE_TIER='{tier}' dropped")
 
 # ── 28h. v1.6.0 — Cached prompt-token cost breakdown ────────────────────────
 _section("28h. v1.6.0 cached prompt token reporting")
