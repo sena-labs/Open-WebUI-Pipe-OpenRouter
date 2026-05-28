@@ -1861,6 +1861,50 @@ class Pipe:
             return []
         return list(await asyncio.gather(*(_run_one(c) for c in tool_calls)))
 
+    _CREDIT_TTL = 60.0
+
+    def _fetch_credit_balance(self, valves) -> Optional[float]:
+        """Return remaining OpenRouter credit (total_credits - total_usage), cached
+        ~60s per key. Returns None on any failure so the footer is simply omitted.
+        """
+        key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
+        if not key:
+            return None
+        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        cached = self._credit_cache.get(key_hash)
+        if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
+            return cached[0]
+        resp = None
+        try:
+            resp = self._session.get(
+                f"{self._base}{_API_PATH_CREDITS}",
+                headers=self._build_headers(include_content_type=False, valves=valves),
+                timeout=min(valves.REQUEST_TIMEOUT, 15),
+                allow_redirects=False,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json().get("data", {})
+            remaining = float(data.get("total_credits", 0)) - float(data.get("total_usage", 0))
+        except Exception:
+            return None
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+        self._credit_cache[key_hash] = (remaining, time.monotonic())
+        return remaining
+
+    @staticmethod
+    def _format_credit_info(remaining: Optional[float], currency: str = "USD") -> str:
+        """Format the remaining-credit footer line."""
+        if remaining is None:
+            return ""
+        symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
+        return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
+
     def _format_final_message(self, res: dict, payload: dict, valves) -> str:
         """Format a completed OpenRouter response dict into the user-facing string.
 
@@ -1909,6 +1953,11 @@ class Pipe:
             gen_footer = _format_generation_id(res.get("id"))
             if gen_footer:
                 final_parts.append(gen_footer)
+
+        if valves.SHOW_REMAINING_CREDIT:
+            credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+            if credit_line:
+                final_parts.append(credit_line)
 
         return "".join(final_parts)
 
@@ -2123,6 +2172,10 @@ class Pipe:
             gf = _format_generation_id(state.get("generation_id"))
             if gf:
                 parts.append(gf)
+        if valves.SHOW_REMAINING_CREDIT:
+            credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+            if credit_line:
+                parts.append(credit_line)
         return "".join(parts)
 
     def _stream_response(

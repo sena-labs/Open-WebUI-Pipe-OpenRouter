@@ -3604,6 +3604,38 @@ _assert(
     "assistant(tool_calls) message precedes tool result (OpenRouter protocol order)",
 )
 
+_section("remaining credit")
+
+_pc = Pipe()
+_pc.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pc.valves.SHOW_REMAINING_CREDIT = True
+
+class _CredResp:
+    status_code = 200
+    def json(self): return {"data": {"total_credits": 10.0, "total_usage": 3.5}}
+    def raise_for_status(self): pass
+    def close(self): pass
+
+_credit_calls = {"n": 0}
+def _fake_get(url, headers=None, timeout=None, allow_redirects=None, params=None):
+    _credit_calls["n"] += 1
+    return _CredResp()
+_pc._session.get = _fake_get  # type: ignore
+
+_bal = _pc._fetch_credit_balance(_pc.valves)
+_assert(abs(_bal - 6.5) < 1e-9, "remaining = total_credits - total_usage")
+_bal2 = _pc._fetch_credit_balance(_pc.valves)
+_assert(_credit_calls["n"] == 1, "second call within TTL served from cache (no refetch)")
+_line = _pc._format_credit_info(6.5, "USD")
+_assert("6.5" in _line and "credit" in _line.lower(), "credit line formatted")
+
+def _boom_get(*a, **k):
+    raise RuntimeError("net down")
+_pc2 = Pipe(); _pc2.valves.OPENROUTER_API_KEY = "sk-or-x"
+_pc2._session.get = _boom_get  # type: ignore
+_assert(_pc2._fetch_credit_balance(_pc2.valves) is None, "fetch failure → None")
+_assert(_pc2._format_credit_info(None, "USD") == "", "None remaining → empty line")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
