@@ -1143,6 +1143,18 @@ class Pipe:
                 await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return result
 
+        if stream and tools_payload:
+            agen = self._run_tools_stream(headers, payload, eff, __tools__, __event_emitter__)
+            if __event_emitter__:
+                async def _wrap_tool_stream():
+                    try:
+                        async for piece in agen:
+                            yield piece
+                    finally:
+                        await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                return _wrap_tool_stream()
+            return agen
+
         if stream:
             gen = self._stream_response(headers, payload, eff)
 
@@ -1973,6 +1985,145 @@ class Pipe:
             return f"OpenRouter Error: {exc}"
         final = self._format_final_message(res, payload, valves)
         return final + "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
+
+    def _stream_one_round(self, headers, payload, valves, state: dict):
+        """Stream ONE model round. Yield user-facing content; record into `state`:
+        tool_calls (assembled by index), usage, generation_id, citations,
+        finish_reason. <think> handling mirrors _stream_response.
+        """
+        in_think = False
+        tool_acc: dict = {}
+
+        def _close_think():
+            nonlocal in_think
+            if in_think:
+                in_think = False
+                return "\n</think>\n"
+            return ""
+
+        response = None
+        try:
+            response = self._retryable_request(headers, payload, stream=True, valves=valves)
+            for raw_line in response.iter_lines():
+                if not raw_line or not raw_line.startswith(b"data: "):
+                    continue
+                data = raw_line[len(b"data: "):].decode("utf-8")
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+
+                if "error" in chunk:
+                    err = chunk["error"]
+                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    ct = _close_think()
+                    if ct:
+                        yield ct
+                    yield f"\n\nOpenRouter Error: {msg}"
+                    state["error"] = True
+                    return
+
+                gid = chunk.get("id")
+                if gid and not state.get("generation_id"):
+                    state["generation_id"] = gid
+                if chunk.get("usage"):
+                    state["usage"] = chunk["usage"]
+                cits = chunk.get("citations")
+                if cits is not None:
+                    state["citations"] = cits
+
+                choices = chunk.get("choices") or []
+                first = choices[0] if choices and isinstance(choices[0], dict) else {}
+                if first.get("finish_reason"):
+                    state["finish_reason"] = first["finish_reason"]
+                delta = first.get("delta", {})
+
+                for tc in (delta.get("tool_calls") or []):
+                    idx = tc.get("index", 0)
+                    slot = tool_acc.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+                    if tc.get("id"):
+                        slot["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        slot["function"]["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        slot["function"]["arguments"] += fn["arguments"]
+
+                reasoning = delta.get("reasoning", "")
+                content = delta.get("content") or ""
+                if not content:
+                    content = (delta.get("audio") or {}).get("transcript", "")
+
+                if reasoning:
+                    if not in_think:
+                        yield "<think>\n"
+                        in_think = True
+                    yield _insert_citations(reasoning, state.get("citations") or [])
+                if content:
+                    ct = _close_think()
+                    if ct:
+                        yield ct
+                    yield _insert_citations(content, state.get("citations") or [])
+
+            ct = _close_think()
+            if ct:
+                yield ct
+        except requests.exceptions.Timeout:
+            yield f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+            state["error"] = True
+        except requests.exceptions.HTTPError as exc:
+            yield self._format_http_error(exc)
+            state["error"] = True
+        except Exception as exc:  # pragma: no cover
+            print(f"[OpenRouter Pipe] Stream round error: {exc}")
+            state["error"] = True
+        finally:
+            if tool_acc:
+                state["tool_calls"] = [tool_acc[k] for k in sorted(tool_acc)]
+            if response is not None:
+                response.close()
+
+    async def _run_tools_stream(self, headers, payload, valves, __tools__, __event_emitter__):
+        """Async generator: stream rounds, executing tools between them."""
+        max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
+        for _ in range(max_iter):
+            state: dict = {}
+            for piece in self._stream_one_round(headers, payload, valves, state):
+                yield piece
+            if state.get("error"):
+                return
+            tool_calls = state.get("tool_calls")
+            if not tool_calls:
+                yield self._stream_footer(state, valves)
+                return
+            tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
+            assistant_msg = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+            payload.setdefault("messages", []).append(assistant_msg)
+            payload["messages"].extend(tool_msgs)
+
+        state = {}
+        for piece in self._stream_one_round(headers, payload, valves, state):
+            yield piece
+        yield self._stream_footer(state, valves)
+        yield "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
+
+    def _stream_footer(self, state: dict, valves) -> str:
+        """Build the citations/cost/generation-id footer for a streamed answer."""
+        parts = []
+        rendered = _format_citation_list(state.get("citations") or [])
+        if rendered:
+            parts.append(rendered)
+        if valves.SHOW_COST_INFO:
+            ci = _format_cost_info(state.get("usage") or {}, valves.COST_CURRENCY)
+            if ci:
+                parts.append(ci)
+        if valves.SHOW_GENERATION_ID:
+            gf = _format_generation_id(state.get("generation_id"))
+            if gf:
+                parts.append(gf)
+        return "".join(parts)
 
     def _stream_response(
         self, headers: dict, payload: dict, valves

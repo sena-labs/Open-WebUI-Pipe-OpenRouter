@@ -3556,6 +3556,50 @@ _payload2 = {"model": "x", "messages": [{"role": "user", "content": "go"}], "too
 _capout = _run(_pl._run_tools_nonstream({}, _payload2, _pl.valves, _tools_map2, None))
 _assert("MAX_TOOL_ITERATIONS" in _capout or "tool" in _capout.lower(), "iteration cap produces a note")
 
+_section("streaming tool loop")
+
+class _FakeStream:
+    def __init__(self, lines): self._lines = lines
+    def iter_lines(self): return iter(self._lines)
+    def close(self): pass
+
+def _sse(d):
+    return ("data: " + json.dumps(d)).encode("utf-8")
+
+_ps = Pipe()
+_ps.valves.OPENROUTER_API_KEY = "sk-or-test"
+_ps.valves.MAX_TOOL_ITERATIONS = 3
+
+_r1 = [
+    _sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"ci'}}]}}]}),
+    _sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'ty": "Rome"}'}}]}, "finish_reason": "tool_calls"}]}),
+    b"data: [DONE]",
+]
+_r2 = [
+    _sse({"choices": [{"delta": {"content": "Sunny "}}]}),
+    _sse({"choices": [{"delta": {"content": "in Rome."}}]}),
+    b"data: [DONE]",
+]
+_streams = [_FakeStream(_r1), _FakeStream(_r2)]
+def _fake_retry_stream(headers, payload, stream, valves):
+    return _streams.pop(0)
+_ps._retryable_request = _fake_retry_stream  # type: ignore
+
+_tools_map3 = {"weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}}
+_payload_s = {"model": "x", "messages": [{"role": "user", "content": "weather?"}], "tools": _ps._build_tools_payload(_tools_map3)}
+
+async def _collect():
+    out = []
+    async for piece in _ps._run_tools_stream({}, _payload_s, _ps.valves, _tools_map3, None):
+        out.append(piece)
+    return "".join(out)
+
+_streamed = _run(_collect())
+_assert("Sunny in Rome." in _streamed, "final answer streamed after tool round")
+_assert("c1" not in _streamed, "raw tool_call id not leaked to user output")
+_roles_s = [m.get("role") for m in _payload_s["messages"]]
+_assert("tool" in _roles_s, "tool result appended to messages during stream loop")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
