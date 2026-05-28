@@ -35,7 +35,7 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 | # | Action | Expected result |
 |---|--------|-----------------|
 | 2.1 | Leave `OPENROUTER_API_KEY` empty > open the model selector | A single "error" model appears with message `API key not configured` |
-| 2.2 | Enter a valid key in Valves > reopen the selector | OpenRouter models appear (340+ models), each with provider icon |
+| 2.2 | Enter a valid key in Valves > reopen the selector | OpenRouter models appear (400+ models), each with provider icon |
 | 2.3 | Enter an **invalid** key (e.g. `sk-fake`) > reopen the selector | An "error" model appears with message `Invalid API key (HTTP ...)` |
 
 ---
@@ -270,7 +270,7 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 - [ ] `python test_pipe.py` → 576 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
-- [ ] Valid API key → 340+ models with provider icons
+- [ ] Valid API key → 400+ models with provider icons
 - [ ] Non-streaming chat works
 - [ ] Streaming chat works (token by token)
 - [ ] Reasoning tokens shown with `<think>`

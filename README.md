@@ -4,9 +4,9 @@
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Access the **full OpenRouter catalog** — chat, TTS, audio, image-generation, and embedding models —
-directly inside Open WebUI, with provider routing, reasoning tokens, streaming, fallbacks, and
-cache control out of the box.
+Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio, image-generation, and
+embedding models — directly inside Open WebUI, with provider routing, reasoning tokens, streaming,
+fallbacks, and cache control out of the box.
 
 ## Table of Contents
 
