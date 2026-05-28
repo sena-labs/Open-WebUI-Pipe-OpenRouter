@@ -3599,6 +3599,10 @@ _assert("Sunny in Rome." in _streamed, "final answer streamed after tool round")
 _assert("c1" not in _streamed, "raw tool_call id not leaked to user output")
 _roles_s = [m.get("role") for m in _payload_s["messages"]]
 _assert("tool" in _roles_s, "tool result appended to messages during stream loop")
+_assert(
+    _roles_s.index("assistant") < _roles_s.index("tool"),
+    "assistant(tool_calls) message precedes tool result (OpenRouter protocol order)",
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
