@@ -2338,8 +2338,7 @@ class Pipe:
     @staticmethod
     def _backoff_delay(attempt: int) -> float:
         """Exponential backoff with jitter, capped at 30s."""
-        base = 2 ** attempt if attempt > 0 else 0
-        return min(base + random.uniform(0, 1), 30)
+        return min(2 ** attempt + random.uniform(0, 1), 30)
 
     def _retryable_request(
         self, headers: dict, payload: dict, stream: bool, valves

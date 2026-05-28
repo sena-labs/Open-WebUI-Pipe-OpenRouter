@@ -3674,7 +3674,7 @@ _assert(_pr._parse_retry_after(None) is None, "None → None")
 _assert(_pr._parse_retry_after("abc") is None, "garbage → None")
 
 _d0 = _pr._backoff_delay(0)
-_assert(0.0 <= _d0 <= 1.0, "backoff attempt 0 in [0,1]")
+_assert(1.0 <= _d0 < 2.0, "backoff attempt 0 in [1,2)")
 _d3 = _pr._backoff_delay(3)
 _assert(8.0 <= _d3 <= 9.0, "backoff attempt 3 in [8,9]")
 _assert(_pr._backoff_delay(20) == 30, "backoff capped at 30")
