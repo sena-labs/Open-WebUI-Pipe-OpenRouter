@@ -723,6 +723,11 @@ class Pipe:
                 raise ValueError("Base URL must start with https:// or http://")
             return v
 
+        @field_validator("OPENROUTER_API_KEY")
+        @classmethod
+        def _encrypt_api_key(cls, v: str) -> str:
+            return EncryptedStr.encrypt(v or "")
+
     def __init__(self) -> None:
         self.type = "manifold"
         self.valves = self.Valves()
@@ -772,9 +777,10 @@ class Pipe:
         The API key is hashed (not embedded raw) so it doesn't sit in plaintext
         in long-lived strings that may end up in logs or memory dumps.
         """
+        _resolved_key = EncryptedStr.decrypt(self.valves.OPENROUTER_API_KEY or "")
         api_key_hash = (
-            hashlib.sha256(self.valves.OPENROUTER_API_KEY.encode("utf-8")).hexdigest()[:16]
-            if self.valves.OPENROUTER_API_KEY
+            hashlib.sha256(_resolved_key.encode("utf-8")).hexdigest()[:16]
+            if _resolved_key
             else ""
         )
         return (
@@ -1663,7 +1669,7 @@ class Pipe:
         interleaved-thinking) only when relevant.
         """
         headers = {
-            "Authorization": f"Bearer {valves.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or '')}",
             "HTTP-Referer": self._resolve_referer(valves),
             "X-Title": self._title,
         }

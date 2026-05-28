@@ -3390,6 +3390,31 @@ with patch.dict(os.environ, {}, clear=True):
         "no WEBUI_SECRET_KEY → decrypt() is a plaintext no-op",
     )
 
+# ── Admin key encryption wiring ────────────────────────────────────────────────
+
+_section("Admin key encrypted at rest, decrypted on use")
+
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
+    _p = Pipe()
+    _p.valves.OPENROUTER_API_KEY = mod.EncryptedStr.encrypt("sk-or-v1-secret")
+    _assert(
+        _p.valves.OPENROUTER_API_KEY.startswith("encrypted:"),
+        "stored admin key is ciphertext",
+    )
+    _hdrs = _p._build_headers(valves=_p.valves)
+    _assert(
+        _hdrs["Authorization"] == "Bearer sk-or-v1-secret",
+        "Authorization header carries the decrypted key",
+    )
+
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
+    _p2 = Pipe()
+    _v = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-fromctor")
+    _assert(
+        _v.OPENROUTER_API_KEY.startswith("encrypted:"),
+        "Valves constructor encrypts the key via field_validator",
+    )
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
