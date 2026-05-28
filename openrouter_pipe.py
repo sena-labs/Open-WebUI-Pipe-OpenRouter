@@ -11,6 +11,7 @@ requirements: requests>=2.32.4, pydantic>=2.0
 description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons.
 """
 
+import base64
 import copy
 import hashlib
 import json
@@ -245,6 +246,64 @@ def _format_image_output(images: list) -> str:
             continue
         parts.append(f"![Generated image]({url.replace(')', '%29')})")
     return "\n\n".join(parts)
+
+
+# Optional dependency: Open WebUI bundles `cryptography`. When absent (e.g. the
+# pipe is imported in a bare environment) the key degrades to plaintext storage
+# rather than failing — see EncryptedStr.
+try:
+    from cryptography.fernet import Fernet as _Fernet
+except Exception:  # pragma: no cover - exercised only without cryptography
+    _Fernet = None
+
+_ENC_PREFIX = "encrypted:"
+_ENC_WARNED = False
+
+
+class EncryptedStr(str):
+    """A valve value encrypted at rest in Open WebUI's database.
+
+    Ciphertext is tagged with the ``encrypted:`` prefix. Real OpenRouter keys
+    begin ``sk-or-`` so plaintext never collides with the marker. The Fernet key
+    is derived from ``WEBUI_SECRET_KEY``. When that env var is missing, or the
+    ``cryptography`` package is unavailable, values are stored and returned as
+    plaintext (with a one-time warning) so the pipe keeps working.
+    """
+
+    @staticmethod
+    def _fernet():
+        global _ENC_WARNED
+        secret = os.getenv("WEBUI_SECRET_KEY")
+        if not secret or _Fernet is None:
+            if not _ENC_WARNED:
+                _ENC_WARNED = True
+                reason = "WEBUI_SECRET_KEY not set" if not secret else "cryptography not installed"
+                print(f"[OpenRouter Pipe] API key stored in plaintext ({reason})")
+            return None
+        key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
+        return _Fernet(key)
+
+    @classmethod
+    def encrypt(cls, value: str) -> str:
+        if not value or value.startswith(_ENC_PREFIX):
+            return value
+        fernet = cls._fernet()
+        if fernet is None:
+            return value
+        return _ENC_PREFIX + fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+
+    @classmethod
+    def decrypt(cls, value: str) -> str:
+        if not value or not value.startswith(_ENC_PREFIX):
+            return value
+        fernet = cls._fernet()
+        if fernet is None:
+            return value
+        try:
+            token = value[len(_ENC_PREFIX):].encode("utf-8")
+            return fernet.decrypt(token).decode("utf-8")
+        except Exception:
+            return value
 
 
 class Pipe:

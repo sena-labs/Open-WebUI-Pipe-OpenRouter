@@ -45,6 +45,7 @@ _OWUI_INTERNAL_KEYS = mod._OWUI_INTERNAL_KEYS
 _is_owui_managed_icon = mod._is_owui_managed_icon
 _PROVIDER_REGISTRY_TTL = mod._PROVIDER_REGISTRY_TTL
 _PROVIDER_REGISTRY_FAIL_TTL = mod._PROVIDER_REGISTRY_FAIL_TTL
+EncryptedStr = mod.EncryptedStr
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 _PASS = 0
@@ -3352,6 +3353,42 @@ _assert(_payload35r.get("reasoning", {}).get("summary") == "concise", "35p REASO
 _section("35. USE_GSTATIC_FAVICONS valve default")
 
 _assert(Pipe.Valves(OPENROUTER_API_KEY="k").USE_GSTATIC_FAVICONS is False, "35q USE_GSTATIC_FAVICONS defaults False")
+
+# ── EncryptedStr ──────────────────────────────────────────────────────────────
+
+_section("EncryptedStr key-at-rest")
+
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
+    _ct = EncryptedStr.encrypt("sk-or-v1-abcdef")
+    _assert(_ct.startswith("encrypted:"), "encrypt() tags ciphertext with prefix")
+    _assert(_ct != "sk-or-v1-abcdef", "encrypt() does not return plaintext")
+    _assert(
+        EncryptedStr.decrypt(_ct) == "sk-or-v1-abcdef",
+        "decrypt() round-trips back to original",
+    )
+    _assert(
+        EncryptedStr.encrypt(_ct) == _ct,
+        "encrypt() is idempotent on already-encrypted input",
+    )
+    _assert(
+        EncryptedStr.decrypt("sk-or-v1-plain") == "sk-or-v1-plain",
+        "decrypt() passes through non-prefixed legacy plaintext",
+    )
+    _assert(EncryptedStr.encrypt("") == "", "encrypt() of empty string is empty")
+    _assert(
+        EncryptedStr.decrypt("encrypted:not-a-valid-token") == "encrypted:not-a-valid-token",
+        "decrypt() returns corrupt/foreign token unchanged (never raises)",
+    )
+
+with patch.dict(os.environ, {}, clear=True):
+    _assert(
+        EncryptedStr.encrypt("sk-or-v1-x") == "sk-or-v1-x",
+        "no WEBUI_SECRET_KEY → encrypt() is a plaintext no-op",
+    )
+    _assert(
+        EncryptedStr.decrypt("sk-or-v1-x") == "sk-or-v1-x",
+        "no WEBUI_SECRET_KEY → decrypt() is a plaintext no-op",
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
