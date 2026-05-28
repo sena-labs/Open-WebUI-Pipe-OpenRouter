@@ -192,6 +192,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `ANTHROPIC_PROMPT_CACHE_TTL` | `OPENROUTER_ANTHROPIC_PROMPT_CACHE_TTL` | `5m` | TTL for the Anthropic ephemeral cache breakpoint: `5m` or `1h` |
 | `SHOW_GENERATION_ID` | `OPENROUTER_SHOW_GENERATION_ID` | `false` | Append the OpenRouter generation ID to each response (for `GET /generation?id=` lookups) |
 | `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
+| `USE_GSTATIC_FAVICONS` | `OPENROUTER_USE_GSTATIC_FAVICONS` | `false` | Allow registry-discovered Google gstatic favicons for providers without an OpenRouter-hosted icon. Off by default (avoids per-render requests to `t0.gstatic.com`) |
 
 ### Network
 
