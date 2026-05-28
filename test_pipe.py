@@ -3455,6 +3455,19 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _effd = _p._effective_valves({"valves": {"REASONING_EFFORT": "medium"}})
     _assert(_effd.REASONING_EFFORT == "medium", "dict-form user valves merge")
 
+# ── v1.8 foundation: tool + credit valves ──────────────────────────────────────
+
+_section("v1.8 valves present")
+
+_p18 = Pipe()
+_assert(_p18.valves.MAX_TOOL_ITERATIONS == 5, "MAX_TOOL_ITERATIONS default 5")
+_assert(_p18.valves.SHOW_REMAINING_CREDIT is False, "SHOW_REMAINING_CREDIT default False")
+_uv18 = Pipe.UserValves()
+_assert(_uv18.MAX_TOOL_ITERATIONS is None, "UserValves MAX_TOOL_ITERATIONS inherits (None)")
+_assert(_uv18.SHOW_REMAINING_CREDIT is None, "UserValves SHOW_REMAINING_CREDIT inherits (None)")
+_assert(isinstance(_p18._credit_cache, dict), "credit cache dict initialized")
+_assert(mod._API_PATH_CREDITS == "/credits", "credits path constant")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

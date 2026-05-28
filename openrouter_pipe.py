@@ -37,6 +37,7 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 _API_PATH_MODELS = "/models"
 _API_PATH_CHAT = "/chat/completions"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
+_API_PATH_CREDITS = "/credits"
 
 # Beta header for Claude's interleaved-thinking + tool-use mode.
 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
@@ -715,6 +716,24 @@ class Pipe:
             },
         )
 
+        MAX_TOOL_ITERATIONS: int = Field(
+            default=int(os.getenv("OPENROUTER_MAX_TOOL_ITERATIONS", "5")),
+            ge=1,
+            description=(
+                "Max native tool-call rounds per request before stopping. Each "
+                "round = one model response containing tool_calls that the pipe "
+                "executes and feeds back. Caps runaway tool loops."
+            ),
+        )
+        SHOW_REMAINING_CREDIT: bool = Field(
+            default=os.getenv("OPENROUTER_SHOW_REMAINING_CREDIT", "false").lower() == "true",
+            description=(
+                "Append your remaining OpenRouter credit to each response "
+                "(after the cost line). Makes one extra cached GET /credits call "
+                "per ~60s. Independent of Show Cost Info."
+            ),
+        )
+
         @field_validator("OPENROUTER_BASE_URL")
         @classmethod
         def _validate_base_url(cls, v: str) -> str:
@@ -771,6 +790,8 @@ class Pipe:
         SHOW_COST_INFO: Optional[bool] = None
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
+        MAX_TOOL_ITERATIONS: Optional[int] = Field(default=None, ge=1)
+        SHOW_REMAINING_CREDIT: Optional[bool] = None
 
         @field_validator("OPENROUTER_API_KEY")
         @classmethod
@@ -797,6 +818,9 @@ class Pipe:
         # Lazy-loaded set of model IDs that have at least one ZDR endpoint.
         # None = not attempted; frozenset() = attempted but failed/empty.
         self._zdr_model_ids: Optional[frozenset] = None
+        # Per-key remaining-credit cache: {key_hash: (remaining_float, ts)}.
+        # Keyed by the decrypted key's hash because per-user keys have per-key balances.
+        self._credit_cache: dict = {}
         # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
