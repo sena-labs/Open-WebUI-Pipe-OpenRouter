@@ -91,8 +91,10 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 | 7.1 | Set `MODEL_PROVIDERS = openai` | Only OpenAI models visible in selector |
 | 7.2 | Set `MODEL_PROVIDERS = openai` + `INVERT_PROVIDER_LIST = true` | All models **except** OpenAI visible |
 | 7.3 | Set `MODEL_PROVIDERS = ALL` or clear the field | **All** models visible again. Default `ALL` means no filter |
-| 7.4 | Set `FREE_ONLY = true` | Only free models (including those with pricing 0/0 without `:free` suffix) |
-| 7.5 | `FREE_ONLY = true` > verify that free `google/gemma-*` or `qwen/qwen3-*` appear | Models without `:free` but with pricing 0/0 are included |
+| 7.4 | Set `FREE_MODEL_FILTER = only` | Only free models (including those with pricing 0/0 without `:free` suffix) |
+| 7.5 | `FREE_MODEL_FILTER = only` > verify that free `google/gemma-*` or `qwen/qwen3-*` appear | Models without `:free` but with pricing 0/0 are included |
+| 7.6 | Set `FREE_MODEL_FILTER = exclude` | Free models hidden; only paid models remain |
+| 7.7 | Set env `OPENROUTER_FREE_ONLY=true` (legacy), leave `FREE_MODEL_FILTER` unset | Back-compat: behaves like `only` |
 
 ---
 
@@ -194,14 +196,14 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 431 passed, 0 failed
-- [ ] `python integration_test.py` → 43/43
+- [ ] `python test_pipe.py` → 557 passed, 0 failed
+- [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 340+ models with provider icons
 - [ ] Non-streaming chat works
 - [ ] Streaming chat works (token by token)
 - [ ] Reasoning tokens shown with `<think>`
-- [ ] `FREE_ONLY` filters correctly (`:free` suffix + 0/0 pricing)
+- [ ] `FREE_MODEL_FILTER` filters correctly (`only`/`exclude`/`all`; `:free` suffix + 0/0 pricing)
 - [ ] Provider filter + inversion works
 - [ ] Model prefix applied and removable
 - [ ] Fallback models present in payload

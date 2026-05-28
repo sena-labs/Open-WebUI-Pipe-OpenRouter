@@ -66,8 +66,12 @@ cache control out of the box.
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
 - **Provider icons** — 13 hardcoded fast-path logos plus auto-discovered icons for ~20 more providers (xAI, Inflection, NVIDIA, Arcee, Morph, Cerebras, …) lazy-loaded from OpenRouter's provider registry, all synced directly into Open WebUI's model database.
-- **Retry logic** — exponential backoff with jitter on timeout and connection errors.
-- **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).
+- **ZDR (Zero Data Retention)** — filter the catalog to ZDR-capable models (`ZDR_MODELS_ONLY`) and/or enforce ZDR per request (`ZDR_ENFORCE`).
+- **Tool-calling filter** — show all / only / exclude tool-capable models (`TOOL_CALLING_FILTER`).
+- **Provider preferences** — `PROVIDER_ONLY` allowlist, `PROVIDER_QUANTIZATIONS`, `PROVIDER_ALLOW_FALLBACKS`, and `PROVIDER_MAX_PRICE_PROMPT/COMPLETION` price caps.
+- **Free-tier filter** — `FREE_MODEL_FILTER` shows all / only / excludes free-tier models (`:free` suffix or `0/0` pricing).
+- **Retry logic** — exponential backoff with proportional jitter on timeout/connection errors and on HTTP 429/502/503/504 (honours `Retry-After`).
+- **Cost transparency** — `SHOW_COST_INFO` appends token usage + cost (currency configurable via `COST_CURRENCY`).
 - **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
 
 ## Requirements
@@ -103,7 +107,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 431 tests — verify everything is green
+python test_pipe.py        # 557 tests — verify everything is green
 ```
 
 ## Usage
@@ -116,7 +120,7 @@ an environment variable fallback (see [Configuration](#configuration)).
 | Goal | Valves to set |
 | --- | --- |
 | Show only OpenAI and Anthropic models | `MODEL_PROVIDERS = openai,anthropic` |
-| Show only free models | `FREE_ONLY = true` |
+| Show only free models | `FREE_MODEL_FILTER = only` |
 | Use DeepSeek for reasoning | select `deepseek/deepseek-r1`, `INCLUDE_REASONING = true` |
 | Route cheapest provider first | `PROVIDER_SORT = price` |
 | Add a fallback model | `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` |
@@ -213,6 +217,15 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors |
 | `HTTP_REFERER_OVERRIDE` | `OPENROUTER_HTTP_REFERER` | `""` | Override the `HTTP-Referer` header sent to OpenRouter (must include scheme). Empty falls back to `WEBUI_URL` |
 
+### Cost Display
+
+| Valve | Env Var | Default | Description |
+| --- | --- | --- | --- |
+| `SHOW_COST_INFO` | — | `false` | Append token usage and cost to each response (also requests `usage` so streaming responses include cost) |
+| `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Currency label for the cost display (display only; OpenRouter bills in USD) |
+
+> **Migration (v1.5.0):** the old boolean `FREE_ONLY` valve was replaced by `FREE_MODEL_FILTER` (`all` / `only` / `exclude`). Set `FREE_MODEL_FILTER = only` to preserve the old `FREE_ONLY = true` behaviour. For backward compatibility, the legacy `OPENROUTER_FREE_ONLY=true` environment variable is still honoured when `FREE_MODEL_FILTER` is unset.
+
 ## Architecture
 
 The pipe implements the **Manifold** pattern: one pipe entry point that surfaces multiple models.
@@ -230,8 +243,8 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (431 tests)
-├── integration_test.py     # Live API integration tests (43 assertions)
+├── test_pipe.py            # Unit test suite (557 tests)
+├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
 ├── CONTRIBUTING.md         # Contribution guidelines
@@ -260,7 +273,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (431 tests)
+python test_pipe.py                       # Unit tests (557 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
@@ -313,7 +326,7 @@ reasoning models can take over a minute for complex prompts.
 
 1. Verify your API key is valid (a single "error" model appears if it is not).
 2. If `MODEL_PROVIDERS` is set, confirm the provider names are lowercase: `openai`, `anthropic`, `google`.
-3. If `FREE_ONLY` is enabled, some providers may have no free models — try disabling it.
+3. If `FREE_MODEL_FILTER = only` is set, some providers may have no free models — set it back to `all`.
 4. Set `MODEL_PROVIDERS = ALL` to show the full catalog.
 
 ### Models load but chat returns errors
@@ -333,7 +346,7 @@ re-invokes the pipe with the updated thread. The pipe forwards the full message 
 OpenRouter on each invocation. Whether a model can generate tool calls depends on
 OpenRouter's provider support for that model.
 
-**Q: Why does `FREE_ONLY` include models without a `:free` suffix?**
+**Q: Why does `FREE_MODEL_FILTER = only` include models without a `:free` suffix?**
 
 A: Some models are listed as free on OpenRouter without carrying a `:free` suffix in their
 ID. The pipe uses a two-pass check: first it looks for the `:free` suffix, then it falls

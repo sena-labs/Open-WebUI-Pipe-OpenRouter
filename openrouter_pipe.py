@@ -329,11 +329,18 @@ class Pipe:
             description="When true the provider list becomes an exclusion list",
         )
         FREE_MODEL_FILTER: str = Field(
-            default=os.getenv("OPENROUTER_FREE_MODEL_FILTER", "all"),
+            # Back-compat: honour the legacy OPENROUTER_FREE_ONLY env var
+            # (boolean) when the new var is unset, so installs upgrading from
+            # the FREE_ONLY era don't silently start returning paid models.
+            default=os.getenv(
+                "OPENROUTER_FREE_MODEL_FILTER",
+                "only" if os.getenv("OPENROUTER_FREE_ONLY", "").lower() == "true" else "all",
+            ),
             description=(
                 "Filter the catalog by free-tier status (':free' suffix or zero "
                 "prompt+completion pricing). 'all' = no filter (default), "
-                "'only' = keep just free models, 'exclude' = hide free models."
+                "'only' = keep just free models, 'exclude' = hide free models. "
+                "Replaces the legacy FREE_ONLY valve (FREE_ONLY=true → 'only')."
             ),
             json_schema_extra={
                 "input": {
@@ -746,6 +753,7 @@ class Pipe:
                 headers=headers,
                 params=params,
                 timeout=self.valves.REQUEST_TIMEOUT,
+                allow_redirects=False,
             )
             # Detect auth errors from the models endpoint itself
             # 502 from Clerk usually means the key format is invalid
@@ -1165,6 +1173,7 @@ class Pipe:
             resp = self._session.get(
                 _PROVIDER_REGISTRY_URL,
                 timeout=min(self.valves.REQUEST_TIMEOUT, 15),
+                allow_redirects=False,
             )
             try:
                 if resp.status_code == 200:
@@ -1260,6 +1269,7 @@ class Pipe:
                 f"{self._base}{_API_PATH_ZDR_ENDPOINTS}",
                 headers=self._build_headers(include_content_type=False),
                 timeout=min(self.valves.REQUEST_TIMEOUT, 30),
+                allow_redirects=False,
             )
             try:
                 if resp.status_code == 200:
@@ -1815,6 +1825,7 @@ class Pipe:
                     json=payload,
                     timeout=self.valves.REQUEST_TIMEOUT,
                     stream=stream,
+                    allow_redirects=False,
                 )
                 response.raise_for_status()
                 return response

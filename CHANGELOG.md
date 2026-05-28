@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **No redirect following on any OpenRouter call** — `allow_redirects=False` is now passed to all four HTTP requests (`/models`, `/chat/completions`, the provider-registry fetch, and the ZDR `/endpoints/zdr` fetch). Combined with the `requests>=2.32.4` floor, this prevents the `Authorization: Bearer` header from being forwarded to a redirect target (CVE-2024-35195 family) if the base URL is misconfigured
+
+### Changed
+
+- **`FREE_MODEL_FILTER` honours the legacy `OPENROUTER_FREE_ONLY` env var** — when `OPENROUTER_FREE_MODEL_FILTER` is unset, `OPENROUTER_FREE_ONLY=true` now maps to `only`, so installs upgrading from the pre-1.5 `FREE_ONLY` era don't silently start returning paid models
+
+### Fixed
+
+- **Version metadata** — `function.json` reported `1.6.0` while the code was `1.6.1`; bumped the manifest version (and `updated_at`) to match
+- **Docs: `FREE_ONLY` → `FREE_MODEL_FILTER`** — README and TESTING.md still referenced the removed `FREE_ONLY` valve; updated all references, added a migration note, documented the missing `SHOW_COST_INFO` / `COST_CURRENCY` valves, and corrected the test counts
+
 ## [1.6.1] — 2026-05-08
 
 ### Fixed
