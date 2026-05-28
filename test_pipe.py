@@ -3519,6 +3519,43 @@ def _boom():
 _raise = _run(_pe._execute_tool_calls([{"id": "c5", "function": {"name": "b", "arguments": "{}"}}], {"b": {"spec": {}, "callable": _boom}}, None))
 _assert("Error" in _raise[0]["content"] and "kaboom" in _raise[0]["content"], "callable exception → error content, no raise")
 
+_section("non-stream tool loop")
+
+class _FakeResp:
+    def __init__(self, payload): self._p = payload
+    def json(self): return self._p
+    def close(self): pass
+
+_pl = Pipe()
+_pl.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pl.valves.MAX_TOOL_ITERATIONS = 3
+
+_round1 = {"choices": [{"message": {"role": "assistant", "content": None,
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"city": "Rome"}'}}]}}]}
+_round2 = {"choices": [{"message": {"role": "assistant", "content": "It is sunny in Rome."}}], "model": "x"}
+_seq = [_FakeResp(_round1), _FakeResp(_round2)]
+
+def _fake_retry(headers, payload, stream, valves):
+    return _seq.pop(0)
+
+_pl._retryable_request = _fake_retry  # type: ignore
+_tools_map2 = {"weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}}
+_payload = {"model": "x", "messages": [{"role": "user", "content": "weather?"}], "tools": _pl._build_tools_payload(_tools_map2)}
+_out = _run(_pl._run_tools_nonstream({}, _payload, _pl.valves, _tools_map2, None))
+_assert("It is sunny in Rome." in _out, "final content returned after tool round")
+_roles = [m.get("role") for m in _payload["messages"]]
+_assert("tool" in _roles and "assistant" in _roles, "assistant + tool messages appended")
+_assert(any(m.get("tool_call_id") == "c1" for m in _payload["messages"]), "tool result carries tool_call_id")
+
+_pl.valves.MAX_TOOL_ITERATIONS = 2
+_loopres = [_FakeResp(_round1) for _ in range(5)]
+def _always_tools(headers, payload, stream, valves):
+    return _loopres.pop(0)
+_pl._retryable_request = _always_tools  # type: ignore
+_payload2 = {"model": "x", "messages": [{"role": "user", "content": "go"}], "tools": _pl._build_tools_payload(_tools_map2)}
+_capout = _run(_pl._run_tools_nonstream({}, _payload2, _pl.valves, _tools_map2, None))
+_assert("MAX_TOOL_ITERATIONS" in _capout or "tool" in _capout.lower(), "iteration cap produces a note")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

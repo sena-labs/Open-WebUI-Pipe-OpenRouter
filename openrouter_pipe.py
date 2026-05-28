@@ -1097,6 +1097,7 @@ class Pipe:
         body: dict,
         __user__: Optional[dict] = None,
         __event_emitter__: Optional[Callable] = None,
+        __tools__: Optional[dict] = None,
     ) -> Union[str, Generator[str, None, None], AsyncGenerator[str, None]]:
         """Route a chat completion request to OpenRouter (stream or non-stream).
 
@@ -1131,6 +1132,16 @@ class Pipe:
         payload = self._prepare_payload(body, eff)
         headers = self._build_headers(model_id=payload.get("model"), valves=eff)
         stream = body.get("stream", False)
+
+        tools_payload = self._build_tools_payload(__tools__)
+        if tools_payload:
+            payload["tools"] = tools_payload
+
+        if tools_payload and not stream:
+            result = await self._run_tools_nonstream(headers, payload, eff, __tools__, __event_emitter__)
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+            return result
 
         if stream:
             gen = self._stream_response(headers, payload, eff)
@@ -1838,6 +1849,57 @@ class Pipe:
             return []
         return list(await asyncio.gather(*(_run_one(c) for c in tool_calls)))
 
+    def _format_final_message(self, res: dict, payload: dict, valves) -> str:
+        """Format a completed OpenRouter response dict into the user-facing string.
+
+        Shared by the plain non-stream path and the tool-loop final round.
+        """
+        if not res.get("choices"):
+            return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
+        choice = res["choices"][0]
+        message = choice.get("message", {})
+        citations = res.get("citations", [])
+
+        reasoning = _insert_citations(message.get("reasoning", ""), citations)
+        content = _insert_citations(message.get("content") or "", citations)
+        rendered_citations = _format_citation_list(citations)
+
+        audio_obj = message.get("audio") or {}
+        if audio_obj and not content:
+            transcript = audio_obj.get("transcript", "")
+            content = transcript or "*[Audio response — transcript not available.]*"
+
+        image_md = _format_image_output(message.get("images") or [])
+
+        final_parts = []
+        if reasoning:
+            final_parts.append(f"<think>\n{reasoning}\n</think>\n")
+        if content:
+            final_parts.append(content)
+        if image_md:
+            prefix = "\n\n" if final_parts else ""
+            final_parts.append(prefix + image_md)
+
+        actual_model = res.get("model", "")
+        requested_model = payload.get("model", "")
+        if payload.get("models") and actual_model and actual_model != requested_model:
+            final_parts.append(f"\n\n---\n*Responded by: {actual_model}*")
+
+        if rendered_citations:
+            final_parts.append(rendered_citations)
+
+        if valves.SHOW_COST_INFO:
+            cost_info = _format_cost_info(res.get("usage", {}), valves.COST_CURRENCY)
+            if cost_info:
+                final_parts.append(cost_info)
+
+        if valves.SHOW_GENERATION_ID:
+            gen_footer = _format_generation_id(res.get("id"))
+            if gen_footer:
+                final_parts.append(gen_footer)
+
+        return "".join(final_parts)
+
     def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
         """Send a non-streaming request and return the formatted response."""
         try:
@@ -1855,57 +1917,8 @@ class Pipe:
 
             if not res.get("choices"):
                 return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
-            choice = res["choices"][0]
-            message = choice.get("message", {})
-            citations = res.get("citations", [])
 
-            reasoning = _insert_citations(message.get("reasoning", ""), citations)
-            content = _insert_citations(message.get("content") or "", citations)
-            rendered_citations = _format_citation_list(citations)
-
-            # Audio output: show transcript when the model returns audio instead of text
-            audio_obj = message.get("audio") or {}
-            if audio_obj and not content:
-                transcript = audio_obj.get("transcript", "")
-                content = transcript or "*[Audio response — transcript not available.]*"
-
-            # Image output: render generated images as markdown
-            image_md = _format_image_output(message.get("images") or [])
-
-            final_parts = []
-            if reasoning:
-                final_parts.append(f"<think>\n{reasoning}\n</think>\n")
-            if content:
-                final_parts.append(content)
-            if image_md:
-                # Ensure a blank line before the image when there is preceding text
-                prefix = "\n\n" if final_parts else ""
-                final_parts.append(prefix + image_md)
-
-            # Show which fallback model actually responded
-            actual_model = res.get("model", "")
-            requested_model = payload.get("model", "")
-            if (
-                payload.get("models")
-                and actual_model
-                and actual_model != requested_model
-            ):
-                final_parts.append(f"\n\n---\n*Responded by: {actual_model}*")
-
-            if rendered_citations:
-                final_parts.append(rendered_citations)
-
-            if valves.SHOW_COST_INFO:
-                cost_info = _format_cost_info(res.get("usage", {}), valves.COST_CURRENCY)
-                if cost_info:
-                    final_parts.append(cost_info)
-
-            if valves.SHOW_GENERATION_ID:
-                gen_footer = _format_generation_id(res.get("id"))
-                if gen_footer:
-                    final_parts.append(gen_footer)
-
-            return "".join(final_parts)
+            return self._format_final_message(res, payload, valves)
         except requests.exceptions.Timeout:
             return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
@@ -1914,6 +1927,52 @@ class Pipe:
             print(f"[OpenRouter Pipe] Non-stream response error: {exc}")
             traceback.print_exc()
             return f"OpenRouter Error: {exc}"
+
+    async def _run_tools_nonstream(self, headers, payload, valves, __tools__, __event_emitter__) -> str:
+        """Drive the non-streaming native-tool loop: request → execute → repeat."""
+        max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
+        for _ in range(max_iter):
+            try:
+                resp = self._retryable_request(headers, payload, stream=False, valves=valves)
+                try:
+                    res = resp.json()
+                finally:
+                    if hasattr(resp, "close"):
+                        resp.close()
+            except requests.exceptions.Timeout:
+                return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+            except requests.exceptions.HTTPError as exc:
+                return self._format_http_error(exc)
+            except Exception as exc:  # pragma: no cover
+                return f"OpenRouter Error: {exc}"
+
+            if "error" in res and not res.get("choices"):
+                err = res["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return f"OpenRouter Error: {msg}"
+
+            choices = res.get("choices") or []
+            message = choices[0].get("message", {}) if choices else {}
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                return self._format_final_message(res, payload, valves)
+
+            tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
+            payload.setdefault("messages", []).append(message)
+            payload["messages"].extend(tool_msgs)
+
+        # Cap reached while still requesting tools: one last call, then a note.
+        try:
+            resp = self._retryable_request(headers, payload, stream=False, valves=valves)
+            try:
+                res = resp.json()
+            finally:
+                if hasattr(resp, "close"):
+                    resp.close()
+        except Exception as exc:  # pragma: no cover
+            return f"OpenRouter Error: {exc}"
+        final = self._format_final_message(res, payload, valves)
+        return final + "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
 
     def _stream_response(
         self, headers: dict, payload: dict, valves
