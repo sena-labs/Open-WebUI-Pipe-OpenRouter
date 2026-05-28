@@ -278,9 +278,22 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ---
 
+## 25. Native tool calling & remaining credit (v1.8)
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 25.1 | Enable Function Calling: Native, give the model a tool, ask something that needs it (non-streaming) | Tool runs; model's final answer uses the tool result |
+| 25.2 | Same as 25.1 but streaming | Answer streams after the tool executes; tool-call internals not shown as content |
+| 25.3 | A prompt that triggers multiple tools in one round | Tools execute in parallel; all results fed back |
+| 25.4 | A tool that raises / bad args | Error returned to the model as the tool result; turn does not crash |
+| 25.5 | Force a tool loop beyond `MAX_TOOL_ITERATIONS` | Loop stops at the cap with a `Tool calling stopped: reached MAX_TOOL_ITERATIONS.` note |
+| 25.6 | Set `SHOW_REMAINING_CREDIT = true`, chat | Response shows `OpenRouter credit remaining: $…` after the cost line; repeat within ~60s makes no extra `/credits` call |
+
+---
+
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 595 passed, 0 failed
+- [ ] `python test_pipe.py` → 624 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 400+ models with provider icons

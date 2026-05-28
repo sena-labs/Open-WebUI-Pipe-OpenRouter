@@ -55,7 +55,7 @@ By participating, you agree to uphold this code.
 
 | Command | Description |
 | --- | --- |
-| `python test_pipe.py` | Run the full unit test suite (595 tests) |
+| `python test_pipe.py` | Run the full unit test suite (624 tests) |
 | `python integration_test.py` | Run live API tests (requires `OPENROUTER_API_KEY`) |
 
 ## Deliverable-PR playbook
@@ -74,7 +74,7 @@ of value. The playbook:
    incidental refactors.
 
 3. **Add or update tests.** A change without test coverage needs a written justification
-   in the PR body. The unit test suite must remain at 595/595.
+   in the PR body. The unit test suite must remain at 624/624.
 
 4. **Validate locally** using the same commands CI runs:
 

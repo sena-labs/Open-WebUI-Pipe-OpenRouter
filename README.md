@@ -91,7 +91,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 595 tests — verify everything is green
+python test_pipe.py        # 624 tests — verify everything is green
 ```
 
 ## Usage
@@ -200,6 +200,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | --- | --- | --- | --- |
 | `REQUEST_TIMEOUT` | `OPENROUTER_REQUEST_TIMEOUT` | `90` | HTTP timeout in seconds |
 | `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors |
+| `MAX_TOOL_ITERATIONS` | `OPENROUTER_MAX_TOOL_ITERATIONS` | `5` | Max native tool-call rounds per request before stopping (caps runaway tool loops) |
 | `HTTP_REFERER_OVERRIDE` | `OPENROUTER_HTTP_REFERER` | `""` | Override the `HTTP-Referer` header sent to OpenRouter (must include scheme). Empty falls back to `WEBUI_URL` |
 
 ### Cost Display
@@ -208,6 +209,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | --- | --- | --- | --- |
 | `SHOW_COST_INFO` | — | `false` | Append token usage and cost to each response (also requests `usage` so streaming responses include cost) |
 | `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Currency label for the cost display (display only; OpenRouter bills in USD) |
+| `SHOW_REMAINING_CREDIT` | `OPENROUTER_SHOW_REMAINING_CREDIT` | `false` | Append remaining OpenRouter credit after the cost line (cached ~60s `GET /credits` call; independent of Show Cost Info) |
 
 > **Migration (v1.5.0):** the old boolean `FREE_ONLY` valve was replaced by `FREE_MODEL_FILTER` (`all` / `only` / `exclude`). Set `FREE_MODEL_FILTER = only` to preserve the old `FREE_ONLY = true` behaviour. For backward compatibility, the legacy `OPENROUTER_FREE_ONLY=true` environment variable is still honoured when `FREE_MODEL_FILTER` is unset.
 
@@ -228,6 +230,16 @@ The `OPENROUTER_API_KEY` (admin and per-user) is stored **encrypted** in Open We
 
 > **Key rotation:** the encryption is keyed on `WEBUI_SECRET_KEY`. If that secret is rotated or removed after keys are stored, previously encrypted keys can no longer be decrypted and requests will fail with HTTP 401 — re-enter the API key(s) in Valves to re-encrypt under the new secret.
 
+### Tool calling (native function calling)
+
+Enable **Function Calling: Native** for the model in Open WebUI. The pipe then receives the selected tools, forwards them to OpenRouter, and runs the full tool loop itself: it executes the model's `tool_calls`, feeds the results back, and repeats until the model produces a final answer — in both streaming and non-streaming chats.
+
+- **Parallel execution** — multiple tool calls in one round run concurrently.
+- **Sync and async tools** are both supported; a failing tool returns its error to the model (the turn never crashes).
+- **`MAX_TOOL_ITERATIONS`** (default 5) caps the number of tool rounds per request.
+
+Open WebUI's default (prompt-based) tool mode is unaffected — it is handled by OWUI middleware and needs no pipe support.
+
 ## Architecture
 
 The pipe implements the **Manifold** pattern: one pipe entry point that surfaces multiple models.
@@ -245,7 +257,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (595 tests)
+├── test_pipe.py            # Unit test suite (624 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -275,7 +287,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (595 tests)
+python test_pipe.py                       # Unit tests (624 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
