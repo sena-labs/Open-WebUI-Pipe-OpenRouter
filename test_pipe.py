@@ -16,7 +16,6 @@ import io
 import json
 import os
 import sys
-import traceback
 from types import ModuleType
 from typing import List
 from unittest.mock import MagicMock, patch
@@ -128,7 +127,7 @@ v = Pipe.Valves()
 # The default is os.getenv() evaluated at class-definition time (module load);
 # if the env var was set at that point, the default is non-empty — by design.
 frozen_default = Pipe.Valves.model_fields["OPENROUTER_API_KEY"].default
-_assert(v.OPENROUTER_API_KEY == frozen_default, f"API key default matches frozen class default")
+_assert(v.OPENROUTER_API_KEY == frozen_default, "API key default matches frozen class default")
 _assert(v.OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1", "base URL default")
 _assert(v.REASONING_EFFORT == "", "reasoning effort empty")
 _assert(v.INCLUDE_REASONING is True, "include_reasoning True by default")
@@ -438,13 +437,16 @@ with patch.object(pipe, "_retryable_request", return_value=mock_resp_empty):
 
 _assert("empty response" in result.lower(), "empty choices → informative message")
 
-# 11d. Timeout
+# 11d. Timeout — assert on distinctive phrase from the real error template
+# ("timed out after Ns"), not the bare word "timeout" which the exception
+# arg also contains (tautology).
 with patch.object(
     pipe, "_retryable_request",
-    side_effect=req_lib.exceptions.Timeout("timeout"),
+    side_effect=req_lib.exceptions.Timeout("boom"),
 ):
     result = pipe._non_stream_response({}, {})
-_assert("timeout" in result.lower(), "timeout error message")
+_assert("timed out after" in result.lower(), "timeout error: distinctive template phrase present")
+_assert("openrouter error" in result.lower(), "timeout error: error-prefixed message")
 
 # 11e. HTTP Error
 mock_resp_http = MagicMock()
@@ -819,7 +821,7 @@ res = asyncio.run(_test_pipe_non_stream())
 _assert(isinstance(res, str), "pipe non-stream: returns string")
 _assert("Hello!" in res, "pipe non-stream: content correct")
 
-# 14c. Stream returns generator
+# 14c. Stream returns AsyncGenerator (unified return type — ARCH-2)
 async def _test_pipe_stream() -> str:
     sse = _make_sse_response([
         b"data: " + json.dumps({"choices": [{"delta": {"content": "World"}}]}).encode(),
@@ -829,8 +831,10 @@ async def _test_pipe_stream() -> str:
         result = await pipe.pipe(
             {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True}
         )
-        # result is a generator
-        chunks = list(result)
+        # result is always an AsyncGenerator for streaming requests
+        chunks = []
+        async for chunk in result:
+            chunks.append(chunk)
         return "".join(chunks)
 
 res = asyncio.run(_test_pipe_stream())
@@ -1339,11 +1343,13 @@ _assert("Responded by" not in _primary_result, "no attribution when primary resp
 
 _section("23. Citation edge cases")
 
-# 23a. URL with parentheses gets encoded
+# 23a. URL with parentheses gets fully encoded (both '(' and ')' to defend
+# against markdown injection like ``https://x](javascript:evil)``).
 _paren_citations = ["https://en.wikipedia.org/wiki/Test_(disambiguation)"]
 _paren_result = _insert_citations("See [1].", _paren_citations)
-_assert("%29" in _paren_result, "parenthesis in URL encoded as %29")
-_assert("Test_(disambiguation" in _paren_result, "citation content preserved")
+_assert("%29" in _paren_result, "closing parenthesis encoded as %29")
+_assert("%28" in _paren_result, "opening parenthesis encoded as %28")
+_assert("Test_%28disambiguation%29" in _paren_result, "citation URL re-rendered with encoded parens")
 
 # 23b. Unsafe URL not linked
 _unsafe_citations = ["javascript:alert(1)"]
@@ -2296,6 +2302,1036 @@ _sse_null_content = [
 with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)):
     _null_chunks = list(_pipe34s._stream_response({}, {}))
 _assert(isinstance("".join(_null_chunks), str), "stream content=None delta: no crash")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §35  _looks_like_image_content + image-gen content detection
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("35 · _looks_like_image_content helper")
+
+_looks_like_image_content = mod._looks_like_image_content
+
+# 35a. data:image/ URI → True
+_assert(_looks_like_image_content("data:image/png;base64,abc123"), "35a data:image/ → True")
+
+# 35b. data:image/ with leading/trailing whitespace → True
+_assert(_looks_like_image_content("  data:image/jpeg;base64,xyz  "), "35b data:image/ trimmed → True")
+
+# 35c. https URL with no extension (CDN, Replicate, fal.ai) → True
+_assert(_looks_like_image_content("https://cdn.openai.com/generated/img_abc123"), "35c bare CDN URL → True")
+
+# 35d. https URL with .png extension → True
+_assert(_looks_like_image_content("https://example.com/image.png"), "35d .png URL → True")
+
+# 35e. https URL with .jpg extension → True
+_assert(_looks_like_image_content("https://example.com/photo.jpg?v=1"), "35e .jpg URL with query → True")
+
+# 35f. https URL ending in .html → False (non-image extension)
+_assert(not _looks_like_image_content("https://example.com/page.html"), "35f .html URL → False")
+
+# 35g. https URL ending in .json → False
+_assert(not _looks_like_image_content("https://api.example.com/data.json"), "35g .json URL → False")
+
+# 35h. https URL ending in .py → False
+_assert(not _looks_like_image_content("https://raw.github.com/file.py"), "35h .py URL → False")
+
+# 35i. Plain text prose → False (contains spaces)
+_assert(not _looks_like_image_content("Here is your generated image"), "35i prose text → False")
+
+# 35j. Multiline text → False
+_assert(not _looks_like_image_content("line one\nline two"), "35j multiline → False")
+
+# 35k. Empty string → False
+_assert(not _looks_like_image_content(""), "35k empty → False")
+
+# 35l. Only whitespace → False
+_assert(not _looks_like_image_content("   "), "35l whitespace-only → False")
+
+# 35m. http:// URL on known image CDN → True (allowlisted host)
+_assert(_looks_like_image_content("http://replicate.delivery/some/path"), "35m http:// allowlisted CDN → True")
+
+# 35n. ftp:// scheme → False (not http/https/data:image)
+_assert(not _looks_like_image_content("ftp://files.example.com/image.png"), "35n ftp:// → False")
+
+# 35o. URL with fragment, non-image ext stripped → fragment-aware
+_assert(not _looks_like_image_content("https://example.com/page.html#section"), "35o .html with fragment → False")
+
+# ── Non-stream response: image URL as message.content (FLUX-style) ───────────
+
+_section("35 · non-stream image-gen content detection")
+
+_pipe35 = Pipe()
+_pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 35p. FLUX-style: message.content is bare CDN image URL → rendered as markdown
+_flux_url = "https://replicate.delivery/cdn/generated/img_flux_abc123"
+_mock35p = MagicMock()
+_mock35p.json.return_value = {
+    "choices": [{"message": {"role": "assistant", "content": _flux_url}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+}
+with patch.object(_pipe35, "_retryable_request", return_value=_mock35p):
+    _flux_result = _pipe35._non_stream_response({}, {})
+_assert("![Generated image]" in _flux_result, "35p FLUX CDN URL → markdown image tag")
+_assert(_flux_url.replace(")", "%29") in _flux_result, "35p FLUX URL preserved in markdown")
+
+# 35q. data:image/ base64 as message.content → rendered as markdown
+_b64_uri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+_mock35q = MagicMock()
+_mock35q.json.return_value = {
+    "choices": [{"message": {"role": "assistant", "content": _b64_uri}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+}
+with patch.object(_pipe35, "_retryable_request", return_value=_mock35q):
+    _b64_result = _pipe35._non_stream_response({}, {})
+_assert("![Generated image]" in _b64_result, "35q base64 URI → markdown image tag")
+_assert("data:image/png" in _b64_result, "35q base64 URI preserved in markdown")
+
+# 35r. Normal text content is NOT mistaken for image
+_mock35r = MagicMock()
+_mock35r.json.return_value = {
+    "choices": [{"message": {"role": "assistant", "content": "Hello world!"}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+}
+with patch.object(_pipe35, "_retryable_request", return_value=_mock35r):
+    _text_result = _pipe35._non_stream_response({}, {})
+_assert("Hello world!" in _text_result, "35r normal text: content preserved")
+_assert("![Generated image]" not in _text_result, "35r normal text: no spurious image tag")
+
+# 35s. message.images list still works (explicit image list, not content URL)
+_mock35s = MagicMock()
+_mock35s.json.return_value = {
+    "choices": [{"message": {"role": "assistant", "content": "Caption", "images": [{"image_url": {"url": "https://example.com/gen.png"}}]}}],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+}
+with patch.object(_pipe35, "_retryable_request", return_value=_mock35s):
+    _images_result = _pipe35._non_stream_response({}, {})
+_assert("Caption" in _images_result, "35s images list: text content present")
+_assert("gen.png" in _images_result, "35s images list: image URL present")
+
+# ── Streaming response: image URL as single SSE chunk (FLUX-style) ────────────
+
+_section("35 · stream image-gen content detection")
+
+_pipe35s = Pipe()
+_pipe35s.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 35t. Stream: image CDN URL in single delta → converted to markdown image
+_stream_img_url = "https://replicate.delivery/cdn/generated/img_stream_xyz"
+_sse_flux_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": _stream_img_url}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_flux_chunks)):
+    _stream_flux_chunks = list(_pipe35s._stream_response({}, {}))
+_stream_flux_full = "".join(_stream_flux_chunks)
+_assert("![Generated image]" in _stream_flux_full, "35t stream image URL → markdown image tag")
+_assert(_stream_img_url.replace(")", "%29") in _stream_flux_full, "35t stream: URL preserved in tag")
+
+# 35u. Stream: data:image/ URI in delta → converted to markdown
+_sse_b64_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": _b64_uri}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_b64_chunks)):
+    _stream_b64_chunks = list(_pipe35s._stream_response({}, {}))
+_stream_b64_full = "".join(_stream_b64_chunks)
+_assert("![Generated image]" in _stream_b64_full, "35u stream base64 URI → markdown image tag")
+
+# 35v. Stream: normal text NOT converted
+_sse_text_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Normal response text"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_text_chunks)):
+    _stream_text_chunks = list(_pipe35s._stream_response({}, {}))
+_stream_text_full = "".join(_stream_text_chunks)
+_assert("Normal response text" in _stream_text_full, "35v stream normal text: preserved")
+_assert("![Generated image]" not in _stream_text_full, "35v stream normal text: no spurious image tag")
+
+# 35w. Stream: URL with .html extension NOT converted (webpage URL)
+_webpage_url = "https://example.com/result.html"
+_sse_html_chunks = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": _webpage_url}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_html_chunks)):
+    _stream_html_chunks = list(_pipe35s._stream_response({}, {}))
+_stream_html_full = "".join(_stream_html_chunks)
+_assert("![Generated image]" not in _stream_html_full, "35w .html URL not converted to image")
+_assert(_webpage_url in _stream_html_full, "35w .html URL passed through as text")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §36  Bug regression tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("36 · Bug regression: exc.response=None in pipes() HTTPError")
+
+# Bug 1: pipes() HTTPError handler crashed with AttributeError when
+# requests.exceptions.HTTPError was raised without a response object
+# (e.g. raised manually outside raise_for_status).
+
+_pipe36 = Pipe()
+_pipe36.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 36a. HTTPError with response=None must return an error model, not crash
+_no_resp_err = req_lib.exceptions.HTTPError("network error")
+# exc.response is None by default when constructed without a response
+_assert(_no_resp_err.response is None, "36a precondition: exc.response is None")
+with patch.object(_pipe36._session, "get", side_effect=_no_resp_err):
+    _models_no_resp = _pipe36.pipes()
+_assert(len(_models_no_resp) == 1, "36a no-response HTTPError: one model returned")
+_assert(_models_no_resp[0]["id"] == "error", "36a no-response HTTPError: id == error")
+_assert("no response" in _models_no_resp[0]["name"].lower(), "36a no-response HTTPError: msg mentions no response")
+
+# 36b. HTTPError WITH a response object still works correctly
+_mock36b = MagicMock()
+_mock36b.status_code = 500
+_mock36b.json.return_value = {"error": {"message": "server blew up"}}
+_with_resp_err = req_lib.exceptions.HTTPError(response=_mock36b)
+with patch.object(_pipe36._session, "get", side_effect=_with_resp_err):
+    _models_with_resp = _pipe36.pipes()
+_assert(_models_with_resp[0]["id"] == "error", "36b HTTPError with response: id == error")
+_assert("500" in _models_with_resp[0]["name"], "36b HTTPError with response: status code in msg")
+_assert("server blew up" in _models_with_resp[0]["name"], "36b HTTPError with response: detail in msg")
+
+# ── Bug 2: OPENROUTER_BASE_URL not in cache key ───────────────────────────────
+
+_section("36 · Bug regression: OPENROUTER_BASE_URL in cache key")
+
+_pipe36c = Pipe()
+_pipe36c.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 36c. Cache key changes when BASE_URL changes
+_key_prod = _pipe36c._build_cache_key()
+_pipe36c.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    OPENROUTER_BASE_URL="https://staging.openrouter.ai/api/v1",
+)
+_key_staging = _pipe36c._build_cache_key()
+_assert(_key_prod != _key_staging, "36c BASE_URL change invalidates cache key")
+
+# 36d. Cache built on prod URL is invalidated when URL changes to staging
+_pipe36d = Pipe()
+_pipe36d.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_pipe36d._models_cache = [{"id": "openai/gpt-4o", "name": "GPT-4o"}]
+_pipe36d._models_cache_ts = _time_mod.monotonic()
+_pipe36d._models_cache_key = _pipe36d._build_cache_key()
+_assert(_pipe36d._models_cache_valid(), "36d precondition: prod cache is valid")
+_pipe36d.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    OPENROUTER_BASE_URL="https://staging.openrouter.ai/api/v1",
+)
+_assert(not _pipe36d._models_cache_valid(), "36d cache invalid after BASE_URL change")
+
+# ── Bug 3: audio transcript bypassed _insert_citations ────────────────────────
+
+_section("36 · Bug regression: audio transcript citations")
+
+_pipe36e = Pipe()
+_pipe36e.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 36e. Audio transcript with citations: [1] refs must be linked
+_mock36e = MagicMock()
+_mock36e.json.return_value = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": None,
+            "audio": {"transcript": "See [1] for details."},
+        }
+    }],
+    "citations": ["https://example.com/source"],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+}
+with patch.object(_pipe36e, "_retryable_request", return_value=_mock36e):
+    _audio_result = _pipe36e._non_stream_response({}, {})
+_assert("[[1]]" in _audio_result, "36e audio transcript: citation [1] expanded to [[1]]")
+_assert("https://example.com/source" in _audio_result, "36e audio transcript: citation URL present")
+
+# 36f. Audio transcript WITHOUT citations: transcript rendered verbatim
+_mock36f = MagicMock()
+_mock36f.json.return_value = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": None,
+            "audio": {"transcript": "Hello world"},
+        }
+    }],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 5},
+}
+with patch.object(_pipe36e, "_retryable_request", return_value=_mock36f):
+    _audio_plain = _pipe36e._non_stream_response({}, {})
+_assert("Hello world" in _audio_plain, "36f audio no citations: transcript preserved")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §37  Swarm-debug hardening: SEC, ARCH, PROD, PERF
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── SEC-2: _md_escape_url full character set ──────────────────────────────────
+
+_section("37 · _md_escape_url markdown-injection defense")
+
+_md_escape_url = mod._md_escape_url
+
+# 37a. Closing paren encoded
+_assert(_md_escape_url("https://x/a)b") == "https://x/a%29b", "37a ')' -> %29")
+# 37b. Opening paren encoded (breaks `[text](url)` second-link injection)
+_assert(_md_escape_url("https://x/a(b") == "https://x/a%28b", "37b '(' -> %28")
+# 37c. Brackets encoded
+_assert("%5D" in _md_escape_url("https://x]y"), "37c ']' -> %5D")
+_assert("%5B" in _md_escape_url("https://x[y"), "37d '[' -> %5B")
+# 37e. Angle brackets encoded
+_assert("%3C" in _md_escape_url("https://x<y"), "37e '<' -> %3C")
+_assert("%3E" in _md_escape_url("https://x>y"), "37f '>' -> %3E")
+# 37g. Whitespace encoded
+_assert("%20" in _md_escape_url("https://x y"), "37g space -> %20")
+_assert("%0A" in _md_escape_url("https://x\ny"), "37h newline -> %0A")
+_assert("%09" in _md_escape_url("https://x\ty"), "37i tab -> %09")
+_assert("%0D" in _md_escape_url("https://x\ry"), "37j CR -> %0D")
+# 37k. Markdown-injection payload neutralized
+_inject = "https://safe.com](javascript:alert(1))"
+_inject_safe = _md_escape_url(_inject)
+_assert("](javascript" not in _inject_safe, "37k injection: ']' encoded so `[..](evil)` cannot inject")
+_assert("%5D" in _inject_safe and "%28" in _inject_safe, "37k injection: payload neutralized")
+# 37l. Empty / safe URL unchanged
+_assert(_md_escape_url("") == "", "37l empty unchanged")
+_assert(_md_escape_url("https://example.com/abc") == "https://example.com/abc", "37m safe URL untouched")
+
+# ── SEC-4: data:image/svg+xml blocked ─────────────────────────────────────────
+
+_section("37 · SVG data URIs blocked in image rendering")
+
+_is_safe_image_data_uri = mod._is_safe_image_data_uri
+_looks_like_image_content = mod._looks_like_image_content
+
+# 37n. svg+xml rejected
+_assert(not _is_safe_image_data_uri("data:image/svg+xml;base64,abc"), "37n svg+xml rejected")
+_assert(not _looks_like_image_content("data:image/svg+xml,<svg/onload=alert(1)>"), "37o looks_like_image: svg rejected")
+# 37p. png/jpeg/webp accepted
+_assert(_is_safe_image_data_uri("data:image/png;base64,abc"), "37p png accepted")
+_assert(_is_safe_image_data_uri("data:image/jpeg;base64,abc"), "37q jpeg accepted")
+_assert(_is_safe_image_data_uri("data:image/webp;base64,abc"), "37r webp accepted")
+# 37s. _format_image_output drops svg+xml entries
+_svg_imgs = [{"image_url": {"url": "data:image/svg+xml,<svg/onload=alert(1)>"}}]
+_assert(mod._format_image_output(_svg_imgs) == "", "37s _format_image_output drops svg entry")
+
+# ── SEC-3: base URL validator rejects non-loopback http:// ────────────────────
+
+_section("37 · base URL validator hardening")
+
+# 37t. https accepted
+_pipe37 = Pipe()
+_pipe37.valves = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="https://openrouter.ai/api/v1")
+_assert(_pipe37.valves.OPENROUTER_BASE_URL.startswith("https://"), "37t https accepted")
+
+# 37u. http://localhost accepted (dev)
+_pipe37b = Pipe()
+_pipe37b.valves = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="http://localhost:8080/v1")
+_assert("localhost" in _pipe37b.valves.OPENROUTER_BASE_URL, "37u http://localhost accepted")
+
+# 37v. http://127.0.0.1 accepted (loopback)
+_pipe37c = Pipe()
+_pipe37c.valves = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="http://127.0.0.1/api")
+_assert("127.0.0.1" in _pipe37c.valves.OPENROUTER_BASE_URL, "37v http://127.0.0.1 accepted")
+
+# 37w. http://public-host REJECTED
+try:
+    Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="http://attacker.example.com/api")
+    _assert(False, "37w http://public-host should raise ValidationError")
+except Exception as exc:
+    _assert("https" in str(exc).lower() or "localhost" in str(exc).lower(), "37w http://public-host rejected with msg")
+
+# 37x. http://internal-ip (e.g. 169.254.169.254) REJECTED
+try:
+    Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="http://169.254.169.254/latest/meta-data")
+    _assert(False, "37x http://169.254.169.254 should raise (SSRF metadata service)")
+except Exception:
+    _assert(True, "37x http://169.254.169.254 rejected")
+
+# ── ARCH-1: retry on 5xx + Retry-After honored on 429 ─────────────────────────
+
+_section("37 · retry on 5xx and 429 with Retry-After")
+
+# 37y. 503 retried then succeeds on next attempt
+_pipe37r = Pipe()
+_pipe37r.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=2)
+_mock_503 = MagicMock()
+_mock_503.status_code = 503
+_mock_503.headers = {}
+_mock_503.json.return_value = {"error": {"message": "upstream busy"}}
+_mock_503.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_503)
+
+_mock_ok = MagicMock()
+_mock_ok.status_code = 200
+_mock_ok.headers = {}
+_mock_ok.raise_for_status.return_value = None
+
+# Patch backoff to 0 so test runs fast
+with patch.object(Pipe, "_backoff_delay", staticmethod(lambda a: 0.0)):
+    with patch.object(_pipe37r, "_parse_retry_after", return_value=0.0):
+        with patch.object(_pipe37r._session, "post", side_effect=[_mock_503, _mock_ok]):
+            _resp = _pipe37r._retryable_request({}, {}, stream=False)
+_assert(_resp is _mock_ok, "37y 503 retried, second attempt returns 200")
+
+# 37z. 429 with Retry-After header parsed
+_mock_429 = MagicMock()
+_mock_429.status_code = 429
+_mock_429.headers = {"Retry-After": "1.5"}
+_assert(Pipe._parse_retry_after(_mock_429) == 1.5, "37z Retry-After parsed as float")
+
+# 37aa. Retry-After clamped at 30
+_mock_429_big = MagicMock()
+_mock_429_big.headers = {"Retry-After": "999"}
+_assert(Pipe._parse_retry_after(_mock_429_big) == 30.0, "37aa Retry-After clamped at 30")
+
+# 37ab. Retry-After missing → falls back to default backoff
+_mock_429_no = MagicMock()
+_mock_429_no.headers = {}
+_fallback = Pipe._parse_retry_after(_mock_429_no)
+_assert(0 < _fallback <= 30.0, "37ab missing Retry-After: fallback in (0, 30]")
+
+# 37ac. 502 retried (proxy/gateway hiccup)
+_pipe37s = Pipe()
+_pipe37s.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=1)
+_mock_502 = MagicMock()
+_mock_502.status_code = 502
+_mock_502.headers = {}
+_mock_502.json.return_value = {}
+with patch.object(Pipe, "_backoff_delay", staticmethod(lambda a: 0.0)):
+    with patch.object(_pipe37s, "_parse_retry_after", return_value=0.0):
+        with patch.object(_pipe37s._session, "post", side_effect=[_mock_502, _mock_ok]):
+            _r502 = _pipe37s._retryable_request({}, {}, stream=False)
+_assert(_r502 is _mock_ok, "37ac 502 retried, success on next attempt")
+
+# 37ad. 4xx (non-429) NOT retried — fail-fast
+_pipe37t = Pipe()
+_pipe37t.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=2)
+_mock_400 = MagicMock()
+_mock_400.status_code = 400
+_mock_400.headers = {}
+_mock_400.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_400)
+_call_count = {"n": 0}
+def _count_post(*a, **kw):
+    _call_count["n"] += 1
+    return _mock_400
+with patch.object(_pipe37t._session, "post", side_effect=_count_post):
+    try:
+        _pipe37t._retryable_request({}, {}, stream=False)
+    except req_lib.exceptions.HTTPError:
+        pass
+_assert(_call_count["n"] == 1, "37ad 4xx not retried: only 1 attempt")
+
+# ── PROD-5: empty model='' guarded in pipe() ──────────────────────────────────
+
+_section("37 · empty-model guard at pipe() entry")
+
+_pipe37e = Pipe()
+_pipe37e.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+# 37ae. pipe(body) with model="" returns guard message
+_empty_model_result = asyncio.run(_pipe37e.pipe({"model": "", "messages": [{"role": "user", "content": "hi"}]}))
+_assert("No model specified" in _empty_model_result, "37ae empty model -> 'No model specified'")
+
+# 37af. pipe(body) with model field missing entirely
+_no_model_result = asyncio.run(_pipe37e.pipe({"messages": [{"role": "user", "content": "hi"}]}))
+_assert("No model specified" in _no_model_result, "37af missing model field -> 'No model specified'")
+
+# 37ag. pipe(body) with model='error' still produces the error-pseudo guard
+_error_model_result = asyncio.run(_pipe37e.pipe({"model": "error", "messages": [{"role": "user", "content": "hi"}]}))
+_assert("No valid model selected" in _error_model_result, "37ag model='error' -> 'No valid model selected'")
+
+# ── PERF-3: icon insert retry cap ─────────────────────────────────────────────
+
+_section("37 · icon insert retry cap")
+
+# 37ah. _icon_insert_attempts initialized empty in new Pipe
+_pipe37p = Pipe()
+_assert(_pipe37p._icon_insert_attempts == {}, "37ah _icon_insert_attempts initialized")
+
+# 37ai. After 3 failed inserts, model is added to _icons_synced (no further attempts)
+# Direct attribute manipulation to simulate state
+_pipe37p._icon_insert_attempts["openai/gpt-4o"] = 3
+_assert(_pipe37p._icon_insert_attempts["openai/gpt-4o"] == 3, "37ai precondition: 3 attempts recorded")
+
+# Note: full integration test of the cap path requires mocking OWUI's Models module,
+# which is already covered by the existing _sync_model_icons tests (section 25).
+# Here we just verify the attribute exists and is per-instance state.
+
+# ── PERF-1: HTTPAdapter pool mounted ──────────────────────────────────────────
+
+_section("37 · HTTPAdapter mounted with larger pool")
+
+_pipe37h = Pipe()
+_https_adapter = _pipe37h._session.adapters.get("https://")
+_assert(_https_adapter is not None, "37aj https:// adapter mounted")
+# Adapter exposes the pool config; verify it's NOT the default
+_assert(_https_adapter._pool_connections == 20, "37ak pool_connections=20")
+_assert(_https_adapter._pool_maxsize == 50, "37al pool_maxsize=50")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §38  CR-B1: image-content allow-list (URL-only false-positive defense)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("38 · image-content allow-list")
+
+# 38a. Plain GitHub URL (model answering 'what is GitHub URL?') NOT treated as image
+_assert(not _looks_like_image_content("https://github.com"), "38a https://github.com NOT image")
+_assert(not _looks_like_image_content("https://example.com"), "38b https://example.com NOT image")
+_assert(not _looks_like_image_content("http://localhost:3000"), "38c http://localhost NOT image")
+
+# 38d. Random CDN with no image extension and not in allowlist → NOT image
+_assert(not _looks_like_image_content("https://cdn.example.com/anything"), "38d unknown CDN NOT image")
+
+# 38e. URL with image extension (any host) → IS image
+_assert(_looks_like_image_content("https://example.com/logo.png"), "38e .png ext on any host → image")
+_assert(_looks_like_image_content("https://example.com/photo.webp"), "38f .webp ext → image")
+_assert(_looks_like_image_content("https://example.com/anim.gif"), "38g .gif ext → image")
+_assert(_looks_like_image_content("https://example.com/img.avif"), "38h .avif ext → image")
+
+# 38i. Allow-listed image CDNs → IS image (even without extension)
+_assert(_looks_like_image_content("https://replicate.delivery/abc123"), "38i replicate.delivery → image")
+_assert(_looks_like_image_content("https://fal.media/files/elephant/abc"), "38j fal.media → image")
+_assert(_looks_like_image_content("https://oaidalleapiprodscus.blob.core.windows.net/private/org-xxx/img-yyy"), "38k DALL-E blob → image")
+_assert(_looks_like_image_content("https://images.bfl.ai/generation/abc"), "38l BFL/FLUX → image")
+
+# 38m. Allow-listed CDN with port stripped
+_assert(_looks_like_image_content("https://replicate.delivery:443/abc"), "38m allowlist host with port → image")
+
+# 38n. Query string and fragment ignored when checking extension
+_assert(_looks_like_image_content("https://example.com/img.jpg?v=1&size=large"), "38n .jpg with query string → image")
+_assert(_looks_like_image_content("https://example.com/img.png#anchor"), "38o .png with fragment → image")
+
+# 38p. Non-image extension still blocked
+_assert(not _looks_like_image_content("https://example.com/page.html"), "38p .html still blocked")
+_assert(not _looks_like_image_content("https://api.example.com/data.json"), "38q .json still blocked")
+
+# 38r. Capitalized URLs still work
+_assert(_looks_like_image_content("https://EXAMPLE.com/IMG.PNG"), "38r uppercase URL → image")
+
+# 38s. Trailing-dot FQDN on allow-listed host still matches (host.rstrip("."))
+_assert(_looks_like_image_content("https://images.bfl.ai./generation/abc"), "38s trailing-dot FQDN → image")
+
+# 38t. Google CDN hosts now allow-listed (Gemini/Imagen image output)
+_assert(_looks_like_image_content("https://lh3.googleusercontent.com/abc123"), "38t googleusercontent → image")
+_assert(_looks_like_image_content("https://storage.googleapis.com/bucket/img"), "38u googleapis storage → image")
+
+# 38v. .svg NEVER auto-rendered, even on an allow-listed host (inline-script XSS defense)
+_assert(not _looks_like_image_content("https://cdn.discordapp.com/attachments/x/y.svg"), "38v .svg on trusted host → NOT image")
+_assert(not _looks_like_image_content("https://replicate.delivery/foo.svg"), "38w .svg on CDN host → NOT image")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §39  Deferred coverage gaps from swarm tester audit
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── MAX_RETRIES=0 boundary ────────────────────────────────────────────────────
+
+_section("39 · MAX_RETRIES=0 boundary")
+
+# 39a. MAX_RETRIES=0 → exactly 1 attempt then raise
+_pipe39 = Pipe()
+_pipe39.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=0)
+_call_count39 = {"n": 0}
+def _conn_err39(*a, **kw):
+    _call_count39["n"] += 1
+    raise req_lib.exceptions.ConnectionError("net down")
+with patch.object(_pipe39._session, "post", side_effect=_conn_err39):
+    try:
+        _pipe39._retryable_request({}, {}, stream=False)
+    except req_lib.exceptions.ConnectionError:
+        pass
+_assert(_call_count39["n"] == 1, "39a MAX_RETRIES=0: exactly 1 attempt")
+
+# ── _format_cost_info edge cases ──────────────────────────────────────────────
+
+_section("39 · _format_cost_info edge cases")
+
+_format_cost_info = mod._format_cost_info
+
+# 39b. Negative cost (refund/credit) — formats without crash
+_neg_usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": -0.001}
+_neg_result = _format_cost_info(_neg_usage, "USD")
+_assert("Cost:" in _neg_result, "39b negative cost: rendered without crash")
+_assert("-" in _neg_result, "39c negative cost: minus sign preserved")
+
+# 39d. Boundary value exactly 0.01 (>= boundary)
+_boundary_usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.01}
+_boundary_result = _format_cost_info(_boundary_usage, "USD")
+_assert("$0.0100" in _boundary_result, "39d cost=0.01: 4 decimals")
+
+# 39e. Boundary value exactly 0.0001
+_micro_usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.0001}
+_micro_result = _format_cost_info(_micro_usage, "USD")
+_assert("0.000" in _micro_result, "39e cost=0.0001: formatted")
+
+# 39f. total_tokens=0 with non-zero prompt+completion → falls back to sum
+_falsy_total_usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 0, "cost": 0.01}
+_falsy_result = _format_cost_info(_falsy_total_usage, "USD")
+_assert("15 total" in _falsy_result, "39f total=0: falls back to prompt+completion")
+
+# 39g. cost = string "abc" (unparseable) → cost line omitted, no crash
+_bad_cost_usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": "abc"}
+_bad_result = _format_cost_info(_bad_cost_usage, "USD")
+_assert("Tokens:" in _bad_result, "39g bad cost type: tokens still rendered")
+_assert("Cost:" not in _bad_result, "39h bad cost type: cost line dropped")
+
+# ── _is_owui_managed_icon None / case ─────────────────────────────────────────
+
+_section("39 · _is_owui_managed_icon None/case-sensitivity")
+
+_is_owui_managed_icon = mod._is_owui_managed_icon
+
+# 39i. None → True (treated as no icon, replaceable)
+_assert(_is_owui_managed_icon(None), "39i None input → True (replaceable)")
+
+# 39j. Empty string → True
+_assert(_is_owui_managed_icon(""), "39j empty string → True")
+
+# 39k. data: URL → True
+_assert(_is_owui_managed_icon("data:image/png;base64,abc"), "39k data: URL → True")
+
+# 39l. Uppercase HTTPS://OPENROUTER.AI/... — currently matches via lowercase prefix check
+# Note: startswith is case-sensitive in current impl; uppercase host returns False.
+# Verify current behavior (potential future improvement, not regression):
+_assert(not _is_owui_managed_icon("HTTPS://OPENROUTER.AI/images/icons/X"), "39l uppercase URL: not matched (case-sensitive)")
+
+# ── _base property trailing slash ─────────────────────────────────────────────
+
+_section("39 · _base trailing slash sanitization")
+
+_pipe39b = Pipe()
+_pipe39b.valves = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="https://openrouter.ai/api/v1///")
+_assert(_pipe39b._base == "https://openrouter.ai/api/v1", "39m _base strips trailing slashes")
+_assert(_pipe39b.models_url == "https://openrouter.ai/api/v1/models", "39n models_url joined correctly")
+_assert(_pipe39b.chat_url == "https://openrouter.ai/api/v1/chat/completions", "39o chat_url joined correctly")
+
+# ── _validate_base_url whitespace ─────────────────────────────────────────────
+
+_section("39 · _validate_base_url whitespace trim")
+
+_pipe39c = Pipe()
+_pipe39c.valves = Pipe.Valves(OPENROUTER_API_KEY="k", OPENROUTER_BASE_URL="  https://openrouter.ai/api/v1  ")
+_assert(_pipe39c.valves.OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1", "39p validator trims whitespace")
+
+# ── Invalid valve values silently ignored ─────────────────────────────────────
+
+_section("39 · invalid valve values silently ignored in payload")
+
+_pipe39d = Pipe()
+_pipe39d.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k",
+    REASONING_EFFORT="extreme",  # invalid: not low/medium/high
+    PROVIDER_SORT="random",       # invalid: not price/throughput/latency
+    DATA_COLLECTION="maybe",      # invalid: not allow/deny
+)
+_payload_invalid = _pipe39d._prepare_payload({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+_assert("reasoning" not in _payload_invalid, "39q invalid REASONING_EFFORT omitted")
+_assert("provider" not in _payload_invalid or "sort" not in _payload_invalid.get("provider", {}), "39r invalid PROVIDER_SORT omitted")
+_assert("provider" not in _payload_invalid or "data_collection" not in _payload_invalid.get("provider", {}), "39s invalid DATA_COLLECTION → defaults to allow (key omitted)")
+
+# ── Stream alternating reasoning↔content ──────────────────────────────────────
+
+_section("39 · stream: alternating reasoning↔content (two think blocks)")
+
+_pipe39s = Pipe()
+_pipe39s.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_sse_alt = [
+    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "First think. "}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Some output. "}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "More think. "}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "More output."}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe39s, "_retryable_request", return_value=_make_sse_response(_sse_alt)):
+    _alt_chunks = list(_pipe39s._stream_response({}, {}))
+_alt_full = "".join(_alt_chunks)
+_assert(_alt_full.count("<think>") == 2, "39t alternating: two <think> openings")
+_assert(_alt_full.count("</think>") == 2, "39u alternating: two </think> closings")
+_assert(_alt_full.find("<think>") < _alt_full.find("Some output"), "39v alternating: first think before content")
+_assert(_alt_full.find("More think") < _alt_full.find("More output"), "39w alternating: second think before content")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §40  API key handling — plain str + UI password masking, _api_key accessor
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# NOTE: a prior revision typed OPENROUTER_API_KEY as pydantic.SecretStr.  That
+# was REVERTED: Open WebUI persists valves by JSON-serialising them, and a
+# SecretStr serialises to the literal mask "**********" — which would overwrite
+# the stored key on the next valve save (catastrophic key-wipe).  The key is a
+# plain str; UI masking is delivered via json_schema_extra input.type=password.
+
+_section("40 · API key handling (plain str, password UI, _api_key accessor)")
+
+# 40a. Field is a plain str (NOT SecretStr) — survives OWUI JSON valve persistence
+_pipe40 = Pipe()
+_pipe40.valves = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-xyz123")
+_assert(isinstance(_pipe40.valves.OPENROUTER_API_KEY, str), "40a API key is plain str")
+
+# 40b. model_dump() / model_dump_json() round-trips the RAW key (no mask) so a
+#      valve re-save cannot wipe it — the regression that SecretStr introduced.
+_dump = _pipe40.valves.model_dump()
+_assert(_dump["OPENROUTER_API_KEY"] == "sk-or-v1-xyz123", "40b model_dump keeps raw key (no mask wipe)")
+_assert("sk-or-v1-xyz123" in _pipe40.valves.model_dump_json(), "40c model_dump_json keeps raw key")
+_assert("**********" not in _pipe40.valves.model_dump_json(), "40d model_dump_json has no mask literal")
+
+# 40e. UI masking is declared via json_schema_extra password input type
+_field = Pipe.Valves.model_fields["OPENROUTER_API_KEY"]
+_extra = _field.json_schema_extra or {}
+_assert(_extra.get("input", {}).get("type") == "password", "40e field declares password input for UI masking")
+
+# 40f. _api_key property returns the raw key
+_assert(_pipe40._api_key == "sk-or-v1-xyz123", "40f _api_key property returns raw value")
+
+# 40g. Authorization header built from raw key
+_headers = _pipe40._build_headers()
+_assert(_headers["Authorization"] == "Bearer sk-or-v1-xyz123", "40g Bearer header includes raw key")
+_assert("**" not in _headers["Authorization"], "40h Bearer header has unmasked key, not mask")
+
+# 40i. Empty key treated as missing in pipes()
+_pipe40e = Pipe()
+_pipe40e.valves = Pipe.Valves(OPENROUTER_API_KEY="")
+_pipes_result = _pipe40e.pipes()
+_assert(_pipes_result[0]["id"] == "error", "40i empty key: pipes() returns error model")
+_assert("not configured" in _pipes_result[0]["name"].lower(), "40j empty key: msg mentions not configured")
+
+# 40k. Empty key in pipe() returns config error string
+_pipe_call = asyncio.run(_pipe40e.pipe({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]}))
+_assert("not configured" in _pipe_call.lower(), "40k empty key: pipe() returns config error")
+
+# 40l. Cache key uses SHA256 of raw key; same key → same fingerprint, differs by value
+_key1 = _pipe40._build_cache_key()
+_pipe40b = Pipe()
+_pipe40b.valves = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-xyz123")
+_assert(_key1 == _pipe40b._build_cache_key(), "40l same key → same cache key")
+_pipe40c = Pipe()
+_pipe40c.valves = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-different")
+_assert(_key1 != _pipe40c._build_cache_key(), "40m different key → different cache key")
+_assert("sk-or-v1-xyz123" not in _key1, "40n cache key does not embed raw key (SHA256 hashed)")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §41  ARCH-2: pipe() streaming always returns AsyncGenerator
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("41 · pipe() stream: AsyncGenerator regardless of __event_emitter__")
+
+_pipe41 = Pipe()
+_pipe41.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+
+_sse_stream = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "tok1"}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "tok2"}}]}).encode(),
+    b"data: [DONE]",
+]
+
+# 41a. Stream WITHOUT __event_emitter__ → AsyncGenerator (not sync Generator)
+async def _stream_no_emitter():
+    with patch.object(_pipe41, "_retryable_request", return_value=_make_sse_response(_sse_stream)):
+        result = await _pipe41.pipe(
+            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        )
+    return result
+
+_no_em_result = asyncio.run(_stream_no_emitter())
+_assert(hasattr(_no_em_result, "__aiter__"), "41a stream w/o emitter → has __aiter__ (async)")
+_assert(not hasattr(_no_em_result, "__next__"), "41b stream w/o emitter → NOT sync generator")
+
+# 41c. Stream WITH __event_emitter__ → also AsyncGenerator + emits done event
+_done_calls = []
+async def _emitter(event):
+    _done_calls.append(event)
+
+async def _stream_with_emitter():
+    with patch.object(_pipe41, "_retryable_request", return_value=_make_sse_response(_sse_stream)):
+        result = await _pipe41.pipe(
+            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __event_emitter__=_emitter,
+        )
+        chunks = []
+        async for chunk in result:
+            chunks.append(chunk)
+        return "".join(chunks)
+
+_emitted = asyncio.run(_stream_with_emitter())
+_assert("tok1" in _emitted and "tok2" in _emitted, "41c stream w/ emitter: content streamed")
+_done_events = [e for e in _done_calls if e.get("data", {}).get("done") is True]
+_assert(len(_done_events) == 1, "41d stream w/ emitter: exactly one done event emitted")
+_initial_events = [e for e in _done_calls if e.get("data", {}).get("done") is False]
+_assert(len(_initial_events) == 1, "41e stream w/ emitter: initial 'Querying...' event emitted")
+
+# 41f. Non-stream still returns plain str
+async def _non_stream_test():
+    _mock_ns = MagicMock()
+    _mock_ns.json.return_value = {"choices": [{"message": {"content": "hello"}}]}
+    with patch.object(_pipe41, "_retryable_request", return_value=_mock_ns):
+        return await _pipe41.pipe(
+            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False}
+        )
+_ns_result = asyncio.run(_non_stream_test())
+_assert(isinstance(_ns_result, str), "41f non-stream returns str (not generator)")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §42  Strengthened tests for branches flagged WEAK/MISSING by swarm tester
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── _write_model_icon clear-path (icon_url="") — stale /images/models/ URL ────
+
+_section("42 · _sync_model_icons stale-icon clear path")
+
+_pipe42 = Pipe()
+_pipe42.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe42._function_id = "openrouter_pipe"
+# Provider 'aion-labs' has NO entry in _PROVIDER_ICONS → icon_url is None →
+# triggers the stale-clear branch when the DB holds an old /images/models/ URL.
+_mock_Models_42 = MagicMock()
+_stale_model = MagicMock()
+_stale_model.meta.profile_image_url = "https://openrouter.ai/images/models/aion.png"
+_stale_model.name = "Aion 1.0"
+_stale_model.params = None
+_mock_Models_42.get_model_by_id.return_value = _stale_model
+_mock_ModelForm_42 = MagicMock()
+_mock_ModelMeta_42 = MagicMock()
+_fake_owui_42 = ModuleType("open_webui.models.models")
+_fake_owui_42.Models = _mock_Models_42
+_fake_owui_42.ModelForm = _mock_ModelForm_42
+_fake_owui_42.ModelMeta = _mock_ModelMeta_42
+_fake_owui_42.ModelParams = MagicMock()
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_42
+    _pipe42._sync_model_icons([{"id": "aion-labs/aion-1.0", "name": "Aion 1.0"}])
+    # 42a. update_model_by_id called to clear the stale icon
+    _assert(_mock_Models_42.update_model_by_id.called, "42a stale-clear: update_model_by_id called")
+    # 42b. ModelMeta built with empty profile_image_url (icon cleared)
+    _meta_calls = _mock_ModelMeta_42.call_args_list
+    _cleared = any(c.kwargs.get("profile_image_url") == "" for c in _meta_calls)
+    _assert(_cleared, "42b stale-clear: ModelMeta profile_image_url='' (cleared)")
+    # 42c. model marked synced after clear
+    _assert("aion-labs/aion-1.0" in _pipe42._icons_synced, "42c stale-clear: model marked synced")
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# 42d. No-icon provider WITHOUT stale URL → no update, just marked synced
+_pipe42b = Pipe()
+_pipe42b.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe42b._function_id = "openrouter_pipe"
+_mock_Models_42b = MagicMock()
+_normal_model = MagicMock()
+_normal_model.meta.profile_image_url = "data:image/svg+xml;base64,xxx"  # OWUI default, not stale
+_normal_model.name = "Aion"
+_normal_model.params = None
+_mock_Models_42b.get_model_by_id.return_value = _normal_model
+_fake_owui_42b = ModuleType("open_webui.models.models")
+_fake_owui_42b.Models = _mock_Models_42b
+_fake_owui_42b.ModelForm = MagicMock()
+_fake_owui_42b.ModelMeta = MagicMock()
+_fake_owui_42b.ModelParams = MagicMock()
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_42b
+    _pipe42b._sync_model_icons([{"id": "aion-labs/aion-1.0", "name": "Aion"}])
+    _assert(not _mock_Models_42b.update_model_by_id.called, "42d no-icon + non-stale: no update")
+    _assert("aion-labs/aion-1.0" in _pipe42b._icons_synced, "42e no-icon + non-stale: marked synced")
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# ── Icon insert retry cap — real path (4 calls, insert stops at cap) ──────────
+
+_section("42 · icon insert retry cap (real path)")
+
+_pipe42c = Pipe()
+_pipe42c.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe42c._function_id = "openrouter_pipe"
+_mock_Models_cap = MagicMock()
+_mock_Models_cap.get_model_by_id.return_value = None  # never registered → always insert path
+_fake_owui_cap = ModuleType("open_webui.models.models")
+_fake_owui_cap.Models = _mock_Models_cap
+_fake_owui_cap.ModelForm = MagicMock()
+_fake_owui_cap.ModelMeta = MagicMock()
+_fake_owui_cap.ModelParams = MagicMock()
+_model_cap = [{"id": "openai/gpt-4o", "name": "GPT-4o"}]  # openai HAS an icon
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_cap
+    # Call 4 times — OWUI never registers the model, so insert is attempted
+    for _ in range(4):
+        _pipe42c._sync_model_icons(_model_cap)
+    # 42f. insert attempted exactly _MAX_ICON_INSERT_ATTEMPTS (3) times, then capped
+    _assert(_mock_Models_cap.insert_new_model.call_count == 3, "42f icon cap: insert tried exactly 3 times")
+    # 42g. after cap reached, model is marked EXHAUSTED (not synced) so a late
+    #      OWUI registration can still be picked up by the existing-branch.
+    _assert("openai/gpt-4o" in _pipe42c._icon_insert_exhausted, "42g icon cap: model marked exhausted (not synced)")
+    _assert("openai/gpt-4o" not in _pipe42c._icons_synced, "42g2 icon cap: NOT in _icons_synced (re-check stays alive)")
+    # 42h. a 5th call does NOT insert again (exhausted)
+    _pipe42c._sync_model_icons(_model_cap)
+    _assert(_mock_Models_cap.insert_new_model.call_count == 3, "42h icon cap: no insert after exhausted")
+    # 42h2. exhausted model is STILL re-checked via get_model_by_id each pass
+    #       (this is the fix: a late registration must be catchable).
+    _calls_before = _mock_Models_cap.get_model_by_id.call_count
+    _pipe42c._sync_model_icons(_model_cap)
+    _assert(_mock_Models_cap.get_model_by_id.call_count > _calls_before, "42h3 exhausted model still re-checked (late-registration catchable)")
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# 42h4. Late registration: exhausted model that OWUI later registers gets synced
+_pipe42cc = Pipe()
+_pipe42cc.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe42cc._function_id = "openrouter_pipe"
+_pipe42cc._icon_insert_exhausted.add("openai/gpt-4o")  # simulate prior exhaustion
+_pipe42cc._icon_insert_attempts["openai/gpt-4o"] = 3
+_mock_Models_late = MagicMock()
+_late_model = MagicMock()
+_late_model.meta.profile_image_url = ""  # OWUI just registered it, empty icon
+_late_model.name = "GPT-4o"
+_late_model.params = None
+_mock_Models_late.get_model_by_id.return_value = _late_model  # now exists!
+_fake_owui_late = ModuleType("open_webui.models.models")
+_fake_owui_late.Models = _mock_Models_late
+_fake_owui_late.ModelForm = MagicMock()
+_fake_owui_late.ModelMeta = MagicMock()
+_fake_owui_late.ModelParams = MagicMock()
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_late
+    _pipe42cc._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
+    _assert(_mock_Models_late.update_model_by_id.called, "42h4 late-registration: icon updated via existing-branch")
+    _assert("openai/gpt-4o" not in _pipe42cc._icon_insert_exhausted, "42h5 late-registration: cleared from exhausted set")
+    _assert("openai/gpt-4o" in _pipe42cc._icons_synced, "42h6 late-registration: now marked synced")
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# ── Stream wrapper GeneratorExit / early-break cleanup ────────────────────────
+
+_section("42 · stream wrapper closes inner gen on early break")
+
+_pipe42d = Pipe()
+_pipe42d.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+_close_flag_42 = {"closed": False}
+
+class _TrackingSSE42:
+    """Mock response whose iter_lines yields slowly and records close()."""
+    def __init__(self):
+        self.status_code = 200
+    def iter_lines(self):
+        for i in range(100):
+            yield b"data: " + json.dumps({"choices": [{"delta": {"content": f"tok{i}"}}]}).encode()
+        yield b"data: [DONE]"
+    def close(self):
+        _close_flag_42["closed"] = True
+    def raise_for_status(self):
+        pass
+
+# 42i. Early break from the AsyncGenerator wrapper closes the underlying response
+async def _early_break():
+    with patch.object(_pipe42d, "_retryable_request", return_value=_TrackingSSE42()):
+        result = await _pipe42d.pipe(
+            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        )
+        count = 0
+        async for chunk in result:
+            count += 1
+            if count >= 2:
+                break  # abort early → triggers GeneratorExit cleanup
+        # Force-close the async generator (what an aborting consumer / runtime does)
+        await result.aclose()
+        return count
+
+_broke_at = asyncio.run(_early_break())
+_assert(_broke_at == 2, "42i early-break: consumed exactly 2 chunks then aborted")
+_assert(_close_flag_42["closed"], "42j early-break: inner response.close() ran (no leak)")
+
+# 42k. Done-event still fires on early break (wrapper finally block)
+_done_42 = []
+async def _early_break_emitter(event):
+    _done_42.append(event)
+async def _early_break_with_emitter():
+    with patch.object(_pipe42d, "_retryable_request", return_value=_TrackingSSE42()):
+        result = await _pipe42d.pipe(
+            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            __event_emitter__=_early_break_emitter,
+        )
+        async for _chunk in result:
+            break
+        await result.aclose()
+_ = asyncio.run(_early_break_with_emitter())
+_done_evts_42 = [e for e in _done_42 if e.get("data", {}).get("done") is True]
+_assert(len(_done_evts_42) == 1, "42k early-break: done-event still emitted in finally")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §43  3rd-audit findings: usage-in-stream, SSE prefix, cache bare-string
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── #6: usage requested when SHOW_COST_INFO (cost in streaming) ───────────────
+
+_section("43 · usage:{include:true} requested when SHOW_COST_INFO")
+
+# 43a. SHOW_COST_INFO=True → payload carries usage.include=true (so streaming
+#      responses get a final usage chunk with cost; OpenRouter requires opt-in).
+_pipe43 = Pipe()
+_pipe43.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
+_payload_cost = _pipe43._prepare_payload({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+_assert(_payload_cost.get("usage") == {"include": True}, "43a SHOW_COST_INFO=True → usage.include=true")
+
+# 43b. SHOW_COST_INFO=False → no usage key (don't pay for what we won't show)
+_pipe43b = Pipe()
+_pipe43b.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=False)
+_payload_nocost = _pipe43b._prepare_payload({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}]})
+_assert("usage" not in _payload_nocost, "43b SHOW_COST_INFO=False → no usage key")
+
+# 43c. End-to-end: streaming with cost shows cost when usage arrives in final chunk
+_pipe43c = Pipe()
+_pipe43c.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
+_sse_cost = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]}).encode(),
+    b"data: " + json.dumps({"choices": [{"delta": {}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7, "cost": 0.0012}}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe43c, "_retryable_request", return_value=_make_sse_response(_sse_cost)):
+    _cost_stream = "".join(_pipe43c._stream_response({}, {}))
+_assert("Cost:" in _cost_stream, "43c streaming cost: cost line rendered from final usage chunk")
+
+# ── SSE "data:" without trailing space (spec-valid) ──────────────────────────
+
+_section("43 · SSE data: prefix tolerates missing space")
+
+_pipe43d = Pipe()
+_pipe43d.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
+# 43d. "data:{json}" with NO space after colon must still parse (SSE spec)
+_sse_nospace = [
+    b"data:" + json.dumps({"choices": [{"delta": {"content": "nospace"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe43d, "_retryable_request", return_value=_make_sse_response(_sse_nospace)):
+    _nospace_out = "".join(_pipe43d._stream_response({}, {}))
+_assert("nospace" in _nospace_out, "43d SSE 'data:' without space → content parsed")
+
+# 43e. Mixed: spaced and unspaced in same stream
+_sse_mixed_prefix = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "A"}}]}).encode(),
+    b"data:" + json.dumps({"choices": [{"delta": {"content": "B"}}]}).encode(),
+    b"data: [DONE]",
+]
+with patch.object(_pipe43d, "_retryable_request", return_value=_make_sse_response(_sse_mixed_prefix)):
+    _mixed_prefix_out = "".join(_pipe43d._stream_response({}, {}))
+_assert("A" in _mixed_prefix_out and "B" in _mixed_prefix_out, "43e SSE mixed spaced/unspaced both parsed")
+
+# ── _inject_cache_control with a bare-string content part ─────────────────────
+
+_section("43 · cache_control tolerates bare-string content part")
+
+_pipe43f = Pipe()
+_pipe43f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_CACHE_CONTROL=True)
+# 43f. content list containing a bare string part (not a dict) → must not abort;
+#      the text part still gets tagged.
+_payload_mixed_parts = {
+    "model": "anthropic/claude-3.5-sonnet",
+    "messages": [{
+        "role": "user",
+        "content": [
+            "a bare string part",  # not a dict — must be skipped, not crash
+            {"type": "text", "text": "the long cacheable text part here"},
+        ],
+    }],
+}
+_prepared_mixed = _pipe43f._prepare_payload(_payload_mixed_parts)
+_tagged = _prepared_mixed["messages"][0]["content"][1].get("cache_control")
+_assert(_tagged == {"type": "ephemeral"}, "43f cache_control: text part tagged despite bare-string sibling")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
