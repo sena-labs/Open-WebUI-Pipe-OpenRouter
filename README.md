@@ -61,7 +61,7 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — 13 provider logos synced directly into Open WebUI's model database.
+- **Provider icons** — 14 provider logos synced directly into Open WebUI's model database.
 - **Retry logic** — exponential backoff with proportional jitter on timeout/connection errors and on HTTP 429/502/503/504 (honours `Retry-After`).
 - **Hardened URL handling** — citation/image URLs are markdown-escaped to block link-injection; `data:image/svg+xml` is never rendered; image auto-detection uses a CDN allow-list; `OPENROUTER_BASE_URL` requires `https://` (plaintext `http://` only for loopback) and all calls disable redirects to prevent bearer-token leakage.
 - **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).

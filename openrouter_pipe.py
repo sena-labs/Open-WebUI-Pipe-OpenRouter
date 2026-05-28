@@ -8,15 +8,18 @@ license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.32.4, pydantic>=2.0
-description: Access 300+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 13 provider icons, and configurable retry logic.
+description: Access 300+ AI models through OpenRouter directly inside Open WebUI. Features provider routing, reasoning tokens with <think> tags, full SSE streaming, model fallbacks, middle-out compression, Anthropic cache control, citations, 14 provider icons, and configurable retry logic.
 """
 
+import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import os
 import random
 import re
+import threading
 import time
 import traceback
 from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
@@ -49,7 +52,9 @@ _MAX_ICON_INSERT_ATTEMPTS = 3  # give up inserting a model's icon after N tries
 # Provider icons — synced into the Open WebUI Models database by
 # _sync_model_icons() so the frontend can serve them via
 # /models/model/profile/image.  Disable with SYNC_PROVIDER_ICONS = False.
-# URLs verified against https://openrouter.ai/images/icons/ (May 2025).
+# URLs verified live against https://openrouter.ai/images/icons/ (2026-05).
+# Only these providers have an icon hosted at that path; others fall back to
+# Open WebUI's default icon.
 _PROVIDER_ICONS = {
     "openai": "https://openrouter.ai/images/icons/OpenAI.svg",
     "anthropic": "https://openrouter.ai/images/icons/Anthropic.svg",
@@ -64,6 +69,7 @@ _PROVIDER_ICONS = {
     "microsoft": "https://openrouter.ai/images/icons/Microsoft.svg",
     "fireworks": "https://openrouter.ai/images/icons/Fireworks.png",
     "moonshotai": "https://openrouter.ai/images/icons/MoonshotAI.png",
+    "tencent": "https://openrouter.ai/images/icons/Tencent.png",
 }
 
 
@@ -98,18 +104,52 @@ def _md_escape_url(url: str) -> str:
 def _is_owui_managed_icon(url: str) -> bool:
     """Return True if the icon URL was set by OWUI or our sync logic.
 
-    data: URLs are the pipe's own SVG icon that OWUI assigns as default to all
-    manifold child models.  openrouter.ai/images/models/ and
-    openrouter.ai/images/icons/ are the provider icon paths we write (the
-    former was the old path, now superseded by the latter).  Any other URL is
-    assumed to be a user-set custom icon and must not be overwritten.
+    Overwritable (managed) icons:
+      * empty / None
+      * ``data:`` URLs — the pipe's own SVG that OWUI assigns as a default
+      * ``/static/`` paths — OWUI's built-in default asset for pipe models
+        (current OWUI uses ``/static/favicon.png``)
+      * our own provider-icon paths (``openrouter.ai/images/models/`` —
+        legacy — and ``openrouter.ai/images/icons/`` — current)
+
+    Any other URL is assumed to be a user-set custom icon and is preserved.
     """
     return (
         not url
         or url.startswith("data:")
+        or url.startswith("/static/")
         or url.startswith("https://openrouter.ai/images/models/")
         or url.startswith("https://openrouter.ai/images/icons/")
     )
+
+
+def _resolve_owui_call(result):
+    """Resolve a possibly-async Open WebUI ORM result.
+
+    Recent Open WebUI builds migrated the ``Models`` table methods to ``async``
+    coroutines, while older releases are synchronous.  ``_sync_model_icons``
+    runs inside OWUI's running event loop (``pipes()`` is invoked synchronously
+    from the async model-listing handler), so ``asyncio.run`` on the current
+    loop would raise.  When a coroutine comes back, run it to completion in a
+    dedicated thread with its own event loop; pass synchronous results through
+    unchanged so the code still works on older OWUI.
+    """
+    if not inspect.iscoroutine(result):
+        return result
+    box: dict = {}
+
+    def _runner():
+        try:
+            box["value"] = asyncio.run(result)
+        except Exception as exc:  # pragma: no cover - surfaced to caller
+            box["error"] = exc
+
+    thread = threading.Thread(target=_runner)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
@@ -821,7 +861,7 @@ class Pipe:
                 # broken /images/models/ URLs, clear it so OWUI shows its
                 # default icon rather than a broken image.
                 try:
-                    existing = Models.get_model_by_id(db_model_id)
+                    existing = _resolve_owui_call(Models.get_model_by_id(db_model_id))
                     if existing and hasattr(existing, "meta") and existing.meta:
                         stale = getattr(existing.meta, "profile_image_url", "") or ""
                         if stale.startswith("https://openrouter.ai/images/models/"):
@@ -835,7 +875,7 @@ class Pipe:
                 continue
 
             try:
-                existing = Models.get_model_by_id(db_model_id)
+                existing = _resolve_owui_call(Models.get_model_by_id(db_model_id))
                 if existing:
                     existing_icon = ""
                     if hasattr(existing, "meta") and existing.meta:
@@ -878,7 +918,7 @@ class Pipe:
                         continue
                     self._icon_insert_attempts[model_id] = attempts + 1
                     try:
-                        Models.insert_new_model(
+                        _resolve_owui_call(Models.insert_new_model(
                             ModelForm(
                                 id=db_model_id,
                                 name=model.get("name", model_id),
@@ -886,7 +926,7 @@ class Pipe:
                                 params=ModelParams(),
                             ),
                             user_id="pipe:openrouter",
-                        )
+                        ))
                     except Exception:
                         pass
                     continue  # do not add to _icons_synced yet
@@ -915,7 +955,7 @@ class Pipe:
             existing.name if hasattr(existing, "name")
             else model.get("name", model_id)
         )
-        Models.update_model_by_id(
+        _resolve_owui_call(Models.update_model_by_id(
             db_model_id,
             ModelForm(
                 id=db_model_id,
@@ -923,7 +963,7 @@ class Pipe:
                 meta=ModelMeta(profile_image_url=icon_url),
                 params=existing_params,
             ),
-        )
+        ))
 
     @staticmethod
     def get_provider_icon(provider: str) -> Optional[str]:

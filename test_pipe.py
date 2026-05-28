@@ -285,6 +285,12 @@ pipe = Pipe()
 _assert(Pipe.get_provider_icon("openai") is not None, "openai icon found")
 _assert(Pipe.get_provider_icon("Anthropic") is not None, "Anthropic (case) icon found")
 _assert(Pipe.get_provider_icon("unknown-provider") is None, "unknown → None")
+_assert(Pipe.get_provider_icon("tencent") is not None, "tencent icon found (live-verified addition)")
+_assert(len(mod._PROVIDER_ICONS) == 14, "14 provider icons in dict")
+_assert(
+    all(u.startswith("https://openrouter.ai/images/icons/") for u in mod._PROVIDER_ICONS.values()),
+    "all provider icon URLs use the verified /images/icons/ path",
+)
 
 # ── 8. _parse_provider_filter ────────────────────────────────────────────────
 
@@ -3332,6 +3338,156 @@ _payload_mixed_parts = {
 _prepared_mixed = _pipe43f._prepare_payload(_payload_mixed_parts)
 _tagged = _prepared_mixed["messages"][0]["content"][1].get("cache_control")
 _assert(_tagged == {"type": "ephemeral"}, "43f cache_control: text part tagged despite bare-string sibling")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# §44  Async OWUI Models API + /static default icon (live-confirmed icon bug)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Root cause (confirmed against open-webui:main on the live instance):
+#   1. OWUI migrated Models.get_model_by_id / insert_new_model /
+#      update_model_by_id to async coroutines.  The pipe called them
+#      synchronously, so every read returned an un-awaited coroutine and every
+#      write was a silent no-op -> no icon ever reached the DB.
+#   2. OWUI's default pipe-model icon is "/static/favicon.png", which
+#      _is_owui_managed_icon did not recognise -> even once writes worked, the
+#      record would be skipped as a "user-set" icon.
+
+_section("44 · /static default icon recognised as managed")
+
+# 44a. OWUI's current default pipe-model icon must be overwritable
+_assert(_is_owui_managed_icon("/static/favicon.png"), "44a /static/favicon.png -> managed")
+_assert(_is_owui_managed_icon("/static/anything.png"), "44b /static/ prefix -> managed")
+# 44c. data: and our own paths still managed
+_assert(_is_owui_managed_icon("data:image/svg+xml;base64,x"), "44c data: -> managed")
+_assert(_is_owui_managed_icon("https://openrouter.ai/images/icons/Qwen.png"), "44d our icon path -> managed")
+# 44e. genuine user-set custom icon still preserved
+_assert(not _is_owui_managed_icon("https://my-cdn.example.com/custom.png"), "44e user custom URL -> preserved")
+_assert(not _is_owui_managed_icon("/cache/image/user-upload.png"), "44f /cache upload -> preserved")
+
+_section("44 · _resolve_owui_call (sync passthrough + async resolution)")
+
+_resolve_owui_call = mod._resolve_owui_call
+
+# 44g. Non-coroutine passes through unchanged (old sync OWUI)
+_assert(_resolve_owui_call(123) == 123, "44g sync value passthrough")
+_sentinel = object()
+_assert(_resolve_owui_call(_sentinel) is _sentinel, "44h sync object identity preserved")
+
+# 44i. Coroutine is run to completion (new async OWUI)
+async def _coro_value():
+    return "resolved-value"
+_assert(_resolve_owui_call(_coro_value()) == "resolved-value", "44i coroutine resolved to its return value")
+
+# 44j. Coroutine exception propagates to caller
+async def _coro_raises():
+    raise ValueError("db boom")
+try:
+    _resolve_owui_call(_coro_raises())
+    _assert(False, "44j coroutine exception should propagate")
+except ValueError as exc:
+    _assert("db boom" in str(exc), "44j coroutine exception propagates")
+
+# 44k. Works even with an event loop already running (the real pipes() context)
+async def _outer():
+    # _resolve_owui_call must not call asyncio.run on the running loop
+    return _resolve_owui_call(_coro_value())
+_assert(asyncio.run(_outer()) == "resolved-value", "44k resolves coroutine from within a running loop")
+
+_section("44 · _sync_model_icons against ASYNC OWUI Models (regression)")
+
+# Simulate the OWUI:main async API: every Models method is a coroutine.
+class _AsyncModelsRegistry:
+    """Async stand-in for OWUI's Models table; records update calls."""
+    def __init__(self, existing_by_id):
+        self._store = existing_by_id
+        self.updated = {}   # id -> profile_image_url written
+        self.inserted = {}
+
+    async def get_model_by_id(self, mid):
+        return self._store.get(mid)
+
+    async def update_model_by_id(self, mid, form):
+        self.updated[mid] = form.meta.profile_image_url
+        return self._store.get(mid)
+
+    async def insert_new_model(self, form, user_id=None):
+        self.inserted[form.id] = form.meta.profile_image_url
+        return form
+
+class _FakeMeta:
+    def __init__(self, url):
+        self.profile_image_url = url
+
+class _FakeExistingModel:
+    def __init__(self, mid, name, icon):
+        self.id = mid
+        self.name = name
+        self.meta = _FakeMeta(icon)
+        self.params = None
+
+class _RecordingForm:
+    def __init__(self, id=None, name=None, meta=None, params=None):
+        self.id = id; self.name = name; self.meta = meta; self.params = params
+
+class _RecordingMeta:
+    def __init__(self, profile_image_url=""):
+        self.profile_image_url = profile_image_url
+
+class _RecordingParams:
+    def __init__(self, *a, **k):
+        pass
+
+_pipe44 = Pipe()
+_pipe44.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe44._function_id = "openrouter_pipe"
+
+# Existing DB record carrying OWUI's /static default (the live-observed state)
+_existing = {
+    "openrouter_pipe.qwen/qwen3.6-plus": _FakeExistingModel(
+        "openrouter_pipe.qwen/qwen3.6-plus", "Qwen: Qwen3.6 Plus", "/static/favicon.png"
+    ),
+}
+_async_models = _AsyncModelsRegistry(_existing)
+_fake_owui_async = ModuleType("open_webui.models.models")
+_fake_owui_async.Models = _async_models
+_fake_owui_async.ModelForm = _RecordingForm
+_fake_owui_async.ModelMeta = _RecordingMeta
+_fake_owui_async.ModelParams = _RecordingParams
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_async
+    _pipe44._sync_model_icons([{"id": "qwen/qwen3.6-plus", "name": "Qwen: Qwen3.6 Plus"}])
+    # 44l. The async update actually ran (was a silent no-op before the fix)
+    _assert("openrouter_pipe.qwen/qwen3.6-plus" in _async_models.updated, "44l async update_model_by_id was awaited/executed")
+    # 44m. It wrote the correct provider icon over the /static default
+    _assert(
+        _async_models.updated.get("openrouter_pipe.qwen/qwen3.6-plus") == "https://openrouter.ai/images/icons/Qwen.png",
+        "44m async OWUI: qwen record updated to provider icon",
+    )
+    # 44n. Model marked synced after a successful async write
+    _assert("qwen/qwen3.6-plus" in _pipe44._icons_synced, "44n model marked synced after async write")
+finally:
+    sys.modules.pop("open_webui.models.models", None)
+
+# 44o. Async insert path (model not yet in DB) also executes
+_pipe44b = Pipe()
+_pipe44b.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
+_pipe44b._function_id = "openrouter_pipe"
+_async_models2 = _AsyncModelsRegistry({})  # empty -> insert path
+_fake_owui_async2 = ModuleType("open_webui.models.models")
+_fake_owui_async2.Models = _async_models2
+_fake_owui_async2.ModelForm = _RecordingForm
+_fake_owui_async2.ModelMeta = _RecordingMeta
+_fake_owui_async2.ModelParams = _RecordingParams
+try:
+    sys.modules["open_webui.models.models"] = _fake_owui_async2
+    _pipe44b._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
+    _assert("openrouter_pipe.openai/gpt-4o" in _async_models2.inserted, "44o async insert_new_model executed")
+    _assert(
+        _async_models2.inserted.get("openrouter_pipe.openai/gpt-4o") == "https://openrouter.ai/images/icons/OpenAI.svg",
+        "44p async insert carries provider icon",
+    )
+finally:
+    sys.modules.pop("open_webui.models.models", None)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
