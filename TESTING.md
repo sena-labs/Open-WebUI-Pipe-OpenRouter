@@ -192,6 +192,38 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ---
 
+## 18. Cost display
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 18.1 | Set `SHOW_COST_INFO = true`, send a **non-streaming** prompt | Response ends with a `**Tokens:** … · **Cost:** $…` line |
+| 18.2 | Set `SHOW_COST_INFO = true`, send a **streaming** prompt | Cost line still appears (payload sends `usage.include=true`, so the final SSE chunk carries cost) |
+| 18.3 | Set `SHOW_COST_INFO = false` | No cost line; payload has no `usage` field |
+| 18.4 | Set `COST_CURRENCY = EUR` | Cost line shows the `€` symbol (display only; billing remains USD) |
+
+---
+
+## 19. Image-generation output
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 19.1 | Select an image model (e.g. FLUX) that returns the image as `message.content` | Image renders inline as `![Generated image](…)`, not as a raw URL |
+| 19.2 | Ask a text model "What is GitHub's URL?" | Bare URL is shown as text, **not** rendered as a broken image (allow-list gate) |
+| 19.3 | A model returning an `.svg` URL or `data:image/svg+xml` | **Not** auto-rendered (inline-script XSS defence) |
+
+---
+
+## 20. Base-URL security
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 20.1 | Set `OPENROUTER_BASE_URL = http://attacker.example.com/api` | Pydantic validation error — value rejected (plaintext http only for loopback) |
+| 20.2 | Set `OPENROUTER_BASE_URL = http://localhost:8080/v1` | Accepted (loopback exception) |
+| 20.3 | Confirm `https://openrouter.ai/api/v1` default | Accepted; all requests sent with `allow_redirects=False` |
+| 20.4 | Trigger a 503/429 from upstream | Request is retried (502/503/504/429), honouring `Retry-After` |
+
+---
+
 ## Quick pre-release checklist
 
 - [ ] `python test_pipe.py` → 603 passed, 0 failed

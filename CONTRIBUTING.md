@@ -48,7 +48,7 @@ By participating, you agree to uphold this code.
 ### Prerequisites
 
 - **Python** ≥ 3.10 (matches the CI matrix).
-- **`requests`** ≥ 2.20.
+- **`requests`** ≥ 2.32.4.
 - **`pydantic`** ≥ 2.0.
 
 ### Useful commands
