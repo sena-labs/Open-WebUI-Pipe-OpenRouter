@@ -3468,6 +3468,18 @@ _assert(_uv18.SHOW_REMAINING_CREDIT is None, "UserValves SHOW_REMAINING_CREDIT i
 _assert(isinstance(_p18._credit_cache, dict), "credit cache dict initialized")
 _assert(mod._API_PATH_CREDITS == "/credits", "credits path constant")
 
+# ── _build_tools_payload ──────────────────────────────────────────────────────
+
+_section("_build_tools_payload")
+
+_pbt = Pipe()
+_assert(_pbt._build_tools_payload(None) is None, "None __tools__ → None")
+_assert(_pbt._build_tools_payload({}) is None, "empty __tools__ → None")
+_spec = {"name": "get_time", "description": "now", "parameters": {"type": "object", "properties": {}}}
+_tp = _pbt._build_tools_payload({"get_time": {"spec": _spec, "callable": lambda: "x"}})
+_assert(_tp == [{"type": "function", "function": _spec}], "spec wrapped as function tool")
+_assert(_pbt._build_tools_payload({"bad": {"callable": lambda: 1}}) is None, "entry without spec skipped → None")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

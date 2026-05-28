@@ -1780,6 +1780,22 @@ class Pipe:
 
         return headers
 
+    @staticmethod
+    def _build_tools_payload(__tools__) -> Optional[list]:
+        """Convert OWUI's __tools__ dict into an OpenAI `tools` array, or None.
+
+        Entries without a usable `spec` are skipped. Returns None when there is
+        nothing to send so callers can cleanly fall back to the non-tool path.
+        """
+        if not __tools__:
+            return None
+        out = []
+        for entry in __tools__.values():
+            spec = entry.get("spec") if isinstance(entry, dict) else None
+            if spec:
+                out.append({"type": "function", "function": spec})
+        return out or None
+
     def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
         """Send a non-streaming request and return the formatted response."""
         try:
