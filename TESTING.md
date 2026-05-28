@@ -194,8 +194,8 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 252 passed, 0 failed
-- [ ] `python integration_test.py` → 47/47
+- [ ] `python test_pipe.py` → 603 passed, 0 failed
+- [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 340+ models with provider icons
 - [ ] Non-streaming chat works

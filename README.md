@@ -61,8 +61,9 @@ reasoning tokens, streaming, fallbacks, and cache control out of the box.
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — 22 provider logos synced directly into Open WebUI's model database.
-- **Retry logic** — exponential backoff with jitter on timeout and connection errors.
+- **Provider icons** — 13 provider logos synced directly into Open WebUI's model database.
+- **Retry logic** — exponential backoff with proportional jitter on timeout/connection errors and on HTTP 429/502/503/504 (honours `Retry-After`).
+- **Hardened URL handling** — citation/image URLs are markdown-escaped to block link-injection; `data:image/svg+xml` is never rendered; image auto-detection uses a CDN allow-list; `OPENROUTER_BASE_URL` requires `https://` (plaintext `http://` only for loopback) and all calls disable redirects to prevent bearer-token leakage.
 - **FREE_ONLY mode** — filter to show only free-tier models (`:free` suffix or `0/0` pricing).
 - **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
 
@@ -99,7 +100,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 252 tests — verify everything is green
+python test_pipe.py        # 603 tests — verify everything is green
 ```
 
 ## Usage
@@ -178,6 +179,13 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Inject Anthropic `cache_control` on the longest message |
 | `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
 
+### Cost Display
+
+| Valve | Env Var | Default | Description |
+| --- | --- | --- | --- |
+| `SHOW_COST_INFO` | — | `false` | Append token usage and cost to each response |
+| `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Currency label for cost display (display only; OpenRouter bills in USD) |
+
 ### Network
 
 | Valve | Env Var | Default | Description |
@@ -202,8 +210,8 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (252 tests)
-├── integration_test.py     # Live API integration tests (47 tests)
+├── test_pipe.py            # Unit test suite (603 tests)
+├── integration_test.py     # Live API integration tests (44 tests)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
 ├── CONTRIBUTING.md         # Contribution guidelines
@@ -232,7 +240,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (252 tests)
+python test_pipe.py                       # Unit tests (603 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

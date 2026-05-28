@@ -59,9 +59,11 @@ The following are in scope for security reports:
 
 The pipe implements the following security practices:
 
-- **No key logging** — `OPENROUTER_API_KEY` is never written to logs or included in error messages.
+- **No key logging** — `OPENROUTER_API_KEY` is never written to logs or included in error messages; it is read through a single `_api_key` accessor and the cache fingerprint stores only its SHA-256 hash. The valve uses a `password` UI input so the key is masked in the browser.
 - **Pre-flight validation** — invalid keys are caught at model-fetch time via the `/models` response, before any user message is sent.
-- **TLS enforced by default** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; the Pydantic validator requires the value to start with `https://` or `http://` and rejects any other scheme.
+- **TLS enforced** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; the Pydantic validator requires `https://` and rejects plaintext `http://` for any non-loopback host (only `localhost`, `127.0.0.1`, `::1`, `*.localhost` may use `http://`), preventing bearer-token leakage in transit and SSRF to public/internal endpoints.
+- **No redirect following** — all OpenRouter requests pass `allow_redirects=False`, so a misconfigured base URL cannot bounce the `Authorization` header to an attacker-controlled origin. Minimum `requests>=2.32.4` (CVE-2024-35195 family).
+- **Markdown/URL injection defence** — citation and generated-image URLs are percent-encoded via `_md_escape_url` so they cannot break out of `[text](url)` to inject secondary links; `data:image/svg+xml` is never rendered (inline-script XSS), and `.svg` is never auto-rendered even from trusted CDN hosts.
 - **Internal key stripping** — Open WebUI internal fields (`chat_id`, `title`, `task`, `metadata`, `files`, `tool_ids`, `session_id`, `message_id`) are removed from the payload before forwarding.
 - **No data persistence** — the pipe does not store user messages, model responses, or API keys beyond the scope of a single request.
 - **Deep-copy payload** — `copy.deepcopy` is used on the request body to prevent mutation of Open WebUI's internal state.
@@ -70,7 +72,7 @@ The pipe implements the following security practices:
 
 Every push to `main` and every pull request runs:
 
-- **Unit tests** (`.github/workflows/tests.yml`) — 252 tests across Python 3.10–3.13. Failures block merge.
+- **Unit tests** (`.github/workflows/tests.yml`) — 603 tests across Python 3.10–3.13. Failures block merge.
 
 ## Disclosure Policy
 
