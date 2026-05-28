@@ -117,7 +117,7 @@ elapsed = time.time() - t0
 
 _assert(len(models) > 0, f"got models ({len(models)} total)")
 _assert(models[0]["id"] != "error", f"no error: first model = {models[0]['id']}")
-_assert(len(models) >= 200, f"at least 200 models ({len(models)} found)")
+_assert(len(models) >= 400, f"at least 400 models ({len(models)} found)")
 print(f"  ⏱ Fetched in {elapsed:.2f}s")
 
 # Check structure
