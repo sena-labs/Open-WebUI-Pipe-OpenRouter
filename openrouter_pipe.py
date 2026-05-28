@@ -14,6 +14,7 @@ description: The definitive OpenRouter integration for Open WebUI. Full catalog 
 import asyncio
 import base64
 import copy
+import email.utils
 import hashlib
 import inspect
 import json
@@ -40,6 +41,9 @@ _API_PATH_MODELS = "/models"
 _API_PATH_CHAT = "/chat/completions"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
+
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRY_AFTER = 60.0  # cap (seconds) — a huge Retry-After must not hang the request
 
 # Beta header for Claude's interleaved-thinking + tool-use mode.
 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
@@ -2309,6 +2313,33 @@ class Pipe:
             in_think = False
             if response is not None:
                 response.close()
+
+    @staticmethod
+    def _parse_retry_after(value) -> Optional[float]:
+        """Parse a Retry-After header (integer seconds or HTTP-date) into seconds.
+
+        Clamped to [0, _MAX_RETRY_AFTER]. Returns None when absent/unparseable.
+        """
+        if not value:
+            return None
+        value = str(value).strip()
+        try:
+            secs = float(int(value))
+        except ValueError:
+            parsed = email.utils.parsedate_tz(value)
+            if not parsed:
+                return None
+            try:
+                secs = email.utils.mktime_tz(parsed) - time.time()
+            except (TypeError, ValueError, OverflowError):
+                return None
+        return max(0.0, min(secs, _MAX_RETRY_AFTER))
+
+    @staticmethod
+    def _backoff_delay(attempt: int) -> float:
+        """Exponential backoff with jitter, capped at 30s."""
+        base = 2 ** attempt if attempt > 0 else 0
+        return min(base + random.uniform(0, 1), 30)
 
     def _retryable_request(
         self, headers: dict, payload: dict, stream: bool, valves

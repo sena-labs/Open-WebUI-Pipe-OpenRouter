@@ -3636,6 +3636,51 @@ _pc2._session.get = _boom_get  # type: ignore
 _assert(_pc2._fetch_credit_balance(_pc2.valves) is None, "fetch failure → None")
 _assert(_pc2._format_credit_info(None, "USD") == "", "None remaining → empty line")
 
+# ── retry test scaffolding (v1.8.1) ─────────────────────────────────────────────
+
+class _FakeHTTPResp:
+    def __init__(self, status, headers=None, body=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self._body = body or {}
+        self.closed = False
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise mod.requests.exceptions.HTTPError(response=self)
+    def json(self):
+        return self._body
+    def close(self):
+        self.closed = True
+
+def _script_post(pipe, responses):
+    pipe._post_calls = 0
+    def _post(*a, **k):
+        pipe._post_calls += 1
+        return responses.pop(0)
+    pipe._session.post = _post  # type: ignore
+
+# ── retry helpers (v1.8.1) ──────────────────────────────────────────────────────
+
+_section("_parse_retry_after / _backoff_delay")
+
+_pr = Pipe()
+_assert(_pr._parse_retry_after("5") == 5.0, "integer seconds parsed")
+_assert(_pr._parse_retry_after("99999") == mod._MAX_RETRY_AFTER, "huge value capped at _MAX_RETRY_AFTER")
+_assert(_pr._parse_retry_after("-3") == 0.0, "negative clamped to 0")
+_assert(_pr._parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT") == mod._MAX_RETRY_AFTER, "far-future HTTP-date capped")
+_assert(_pr._parse_retry_after("Mon, 01 Jan 2001 00:00:00 GMT") == 0.0, "past HTTP-date clamped to 0")
+_assert(_pr._parse_retry_after("") is None, "empty → None")
+_assert(_pr._parse_retry_after(None) is None, "None → None")
+_assert(_pr._parse_retry_after("abc") is None, "garbage → None")
+
+_d0 = _pr._backoff_delay(0)
+_assert(0.0 <= _d0 <= 1.0, "backoff attempt 0 in [0,1]")
+_d3 = _pr._backoff_delay(3)
+_assert(8.0 <= _d3 <= 9.0, "backoff attempt 3 in [8,9]")
+_assert(_pr._backoff_delay(20) == 30, "backoff capped at 30")
+
+_assert(mod._RETRYABLE_STATUS == frozenset({429, 500, 502, 503, 504}), "retryable status set")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
