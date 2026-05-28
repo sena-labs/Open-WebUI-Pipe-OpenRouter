@@ -9,22 +9,6 @@
 Access **350+ AI models** through OpenRouter directly inside Open WebUI — with provider routing,
 reasoning tokens, streaming, fallbacks, and cache control out of the box.
 
-## Feature gallery
-
-### Model selector
-
-*Models from OpenAI, Anthropic, Google, Meta, Mistral, DeepSeek and more — each with its provider icon.*
-
-### Reasoning tokens
-
-*`<think>` blocks streamed in real time with configurable effort levels.*
-
-### Provider routing in action
-
-*Sort, prefer, exclude and require parameters across providers per request.*
-
----
-
 ## Table of Contents
 
 - [Features](#features)
