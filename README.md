@@ -226,6 +226,8 @@ The merge is concurrency-safe: each request works on a copy of the admin valves,
 
 The `OPENROUTER_API_KEY` (admin and per-user) is stored **encrypted** in Open WebUI's database when `WEBUI_SECRET_KEY` is set (Fernet, derived from that secret) and decrypted only at the moment a request is sent. If `WEBUI_SECRET_KEY` or the `cryptography` package is unavailable, the key falls back to plaintext storage with a one-time warning. Existing plaintext keys keep working and are re-encrypted on the next save.
 
+> **Key rotation:** the encryption is keyed on `WEBUI_SECRET_KEY`. If that secret is rotated or removed after keys are stored, previously encrypted keys can no longer be decrypted and requests will fail with HTTP 401 — re-enter the API key(s) in Valves to re-encrypt under the new secret.
+
 ## Architecture
 
 The pipe implements the **Manifold** pattern: one pipe entry point that surfaces multiple models.
