@@ -7,7 +7,7 @@ version: 1.6.1
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
-requirements: requests>=2.20, pydantic>=2.0
+requirements: requests>=2.32.4, pydantic>=2.0
 description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (auto/flex/priority/scale), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons.
 """
 
@@ -765,14 +765,17 @@ class Pipe:
         except requests.exceptions.Timeout:
             return [{"id": "error", "name": "Timeout fetching models. Try again or increase REQUEST_TIMEOUT."}]
         except requests.exceptions.HTTPError as exc:
-            msg = f"HTTP {exc.response.status_code} fetching models"
-            try:
-                err = exc.response.json().get("error", {})
-                detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                if detail:
-                    msg += f": {detail}"
-            except Exception:
-                pass
+            if exc.response is not None:
+                msg = f"HTTP {exc.response.status_code} fetching models"
+                try:
+                    err = exc.response.json().get("error", {})
+                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    if detail:
+                        msg += f": {detail}"
+                except Exception:
+                    pass
+            else:
+                msg = "HTTP error fetching models (no response)"
             print(f"[OpenRouter Pipe] {msg}")
             return [{"id": "error", "name": msg}]
         except Exception as exc:
@@ -1341,7 +1344,6 @@ class Pipe:
         if not specs:
             return models
 
-        prefix_str = prefix or ""
         # Strip the user-set prefix so we can reuse base names verbatim.
         by_id: dict = {}
         for entry in models:

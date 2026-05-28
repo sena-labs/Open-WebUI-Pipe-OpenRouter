@@ -214,7 +214,7 @@ else:
 
     _assert(isinstance(ns_result, str), "non-stream returns string")
     _assert(len(ns_result) > 0, f"non-stream has content ({len(ns_result)} chars)")
-    _assert("Error" not in ns_result or "INTEGRATION" in ns_result, f"no error in response")
+    _assert("Error" not in ns_result or "INTEGRATION" in ns_result, "no error in response")
     print(f"  ⏱ Response in {elapsed:.2f}s")
     print(f"  ℹ Response: {ns_result[:150]}{'...' if len(ns_result) > 150 else ''}")
 

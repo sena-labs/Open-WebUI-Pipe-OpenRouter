@@ -16,7 +16,6 @@ import io
 import json
 import os
 import sys
-import traceback
 from types import ModuleType
 from typing import List
 from unittest.mock import MagicMock, patch
@@ -131,7 +130,7 @@ v = Pipe.Valves()
 # The default is os.getenv() evaluated at class-definition time (module load);
 # if the env var was set at that point, the default is non-empty — by design.
 frozen_default = Pipe.Valves.model_fields["OPENROUTER_API_KEY"].default
-_assert(v.OPENROUTER_API_KEY == frozen_default, f"API key default matches frozen class default")
+_assert(v.OPENROUTER_API_KEY == frozen_default, "API key default matches frozen class default")
 _assert(v.OPENROUTER_BASE_URL == "https://openrouter.ai/api/v1", "base URL default")
 _assert(v.REASONING_EFFORT == "", "reasoning effort empty")
 _assert(v.INCLUDE_REASONING is True, "include_reasoning True by default")
