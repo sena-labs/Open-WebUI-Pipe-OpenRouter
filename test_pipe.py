@@ -39,6 +39,10 @@ spec.loader.exec_module(mod)
 sys.modules["openrouter_pipe"] = mod
 
 Pipe = mod.Pipe
+
+def _run(coro):
+    return asyncio.run(coro)
+
 _insert_citations = mod._insert_citations
 _format_citation_list = mod._format_citation_list
 _OWUI_INTERNAL_KEYS = mod._OWUI_INTERNAL_KEYS
@@ -3479,6 +3483,41 @@ _spec = {"name": "get_time", "description": "now", "parameters": {"type": "objec
 _tp = _pbt._build_tools_payload({"get_time": {"spec": _spec, "callable": lambda: "x"}})
 _assert(_tp == [{"type": "function", "function": _spec}], "spec wrapped as function tool")
 _assert(_pbt._build_tools_payload({"bad": {"callable": lambda: 1}}) is None, "entry without spec skipped → None")
+
+_section("_execute_tool_calls")
+
+_pe = Pipe()
+
+def _sync_tool(city=None):
+    return f"weather in {city}: sunny"
+
+async def _async_tool(x=0):
+    return x + 1
+
+_tools_map = {
+    "weather": {"spec": {"name": "weather"}, "callable": _sync_tool},
+    "inc": {"spec": {"name": "inc"}, "callable": _async_tool},
+}
+
+_calls = [
+    {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"city": "Rome"}'}},
+    {"id": "c2", "type": "function", "function": {"name": "inc", "arguments": '{"x": 41}'}},
+]
+_res = _run(_pe._execute_tool_calls(_calls, _tools_map, None))
+_assert(len(_res) == 2, "one tool message per call")
+_assert(_res[0] == {"role": "tool", "tool_call_id": "c1", "content": "weather in Rome: sunny"}, "sync callable result")
+_assert(_res[1]["tool_call_id"] == "c2" and _res[1]["content"] == "42", "async callable awaited, order preserved")
+
+_unk = _run(_pe._execute_tool_calls([{"id": "c3", "function": {"name": "nope", "arguments": "{}"}}], _tools_map, None))
+_assert("Error" in _unk[0]["content"] and _unk[0]["tool_call_id"] == "c3", "unknown tool → error content, no raise")
+
+_bad = _run(_pe._execute_tool_calls([{"id": "c4", "function": {"name": "weather", "arguments": "{not json"}}], _tools_map, None))
+_assert("Error" in _bad[0]["content"], "invalid JSON args → error content")
+
+def _boom():
+    raise RuntimeError("kaboom")
+_raise = _run(_pe._execute_tool_calls([{"id": "c5", "function": {"name": "b", "arguments": "{}"}}], {"b": {"spec": {}, "callable": _boom}}, None))
+_assert("Error" in _raise[0]["content"] and "kaboom" in _raise[0]["content"], "callable exception → error content, no raise")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary

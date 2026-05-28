@@ -11,9 +11,11 @@ requirements: requests>=2.32.4, pydantic>=2.0
 description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY).
 """
 
+import asyncio
 import base64
 import copy
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -1795,6 +1797,46 @@ class Pipe:
             if spec:
                 out.append({"type": "function", "function": spec})
         return out or None
+
+    async def _execute_tool_calls(self, tool_calls, __tools__, __event_emitter__) -> list:
+        """Execute model tool_calls in parallel; return one role:tool message each.
+
+        Supports sync and async callables. Any failure (unknown tool, bad JSON
+        args, callable raising) is returned as the tool message content so the
+        model can recover — never raised.
+        """
+        async def _run_one(call):
+            fn_block = call.get("function", {}) if isinstance(call, dict) else {}
+            name = fn_block.get("name", "")
+            call_id = call.get("id", "")
+            if __event_emitter__:
+                try:
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": f"🔧 Calling {name}…", "done": False}}
+                    )
+                except Exception:
+                    pass
+            entry = (__tools__ or {}).get(name)
+            if not entry:
+                return {"role": "tool", "tool_call_id": call_id, "content": f"Error: unknown tool '{name}'"}
+            try:
+                args = json.loads(fn_block.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError("arguments did not decode to an object")
+            except Exception as exc:
+                return {"role": "tool", "tool_call_id": call_id, "content": f"Error: invalid tool arguments — {exc}"}
+            try:
+                callable_fn = entry.get("callable")
+                result = callable_fn(**args)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception as exc:
+                result = f"Error: tool '{name}' failed — {exc}"
+            return {"role": "tool", "tool_call_id": call_id, "content": str(result)}
+
+        if not tool_calls:
+            return []
+        return list(await asyncio.gather(*(_run_one(c) for c in tool_calls)))
 
     def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
         """Send a non-streaming request and return the formatted response."""
