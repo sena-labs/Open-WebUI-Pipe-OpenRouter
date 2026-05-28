@@ -2155,8 +2155,9 @@ class Pipe:
         state = {}
         for piece in self._stream_one_round(headers, payload, valves, state):
             yield piece
-        yield self._stream_footer(state, valves)
-        yield "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
+        if not state.get("error"):
+            yield self._stream_footer(state, valves)
+            yield "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
 
     def _stream_footer(self, state: dict, valves) -> str:
         """Build the citations/cost/generation-id footer for a streamed answer."""
