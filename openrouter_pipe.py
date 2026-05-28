@@ -808,7 +808,7 @@ class Pipe:
                 self._sync_model_icons(self._models_cache)
             return self._models_cache
 
-        headers = self._build_headers(include_content_type=False)
+        headers = self._build_headers(include_content_type=False, valves=self.valves)
         modalities = (self.valves.OUTPUT_MODALITIES or "all").strip() or "all"
         params: dict = {"output_modalities": modalities}
         category = (self.valves.MODEL_CATEGORY or "").strip()
@@ -1029,12 +1029,12 @@ class Pipe:
                 }
             )
 
-        payload = self._prepare_payload(body)
-        headers = self._build_headers(model_id=payload.get("model"))
+        payload = self._prepare_payload(body, self.valves)
+        headers = self._build_headers(model_id=payload.get("model"), valves=self.valves)
         stream = body.get("stream", False)
 
         if stream:
-            gen = self._stream_response(headers, payload)
+            gen = self._stream_response(headers, payload, self.valves)
 
             # Wrap in an async generator so we can await the done event
             if __event_emitter__:
@@ -1050,7 +1050,7 @@ class Pipe:
 
             return gen
 
-        result = self._non_stream_response(headers, payload)
+        result = self._non_stream_response(headers, payload, self.valves)
 
         if __event_emitter__:
             await __event_emitter__(
@@ -1341,7 +1341,7 @@ class Pipe:
         try:
             resp = self._session.get(
                 f"{self._base}{_API_PATH_ZDR_ENDPOINTS}",
-                headers=self._build_headers(include_content_type=False),
+                headers=self._build_headers(include_content_type=False, valves=self.valves),
                 timeout=min(self.valves.REQUEST_TIMEOUT, 30),
                 allow_redirects=False,
             )
@@ -1391,26 +1391,26 @@ class Pipe:
             out.append((base_id, tag))
         return out
 
-    def _build_web_search_plugin(self) -> Optional[dict]:
+    def _build_web_search_plugin(self, valves) -> Optional[dict]:
         """Assemble the OpenRouter `web` plugin spec from valve settings.
 
         Returns ``None`` when the feature is disabled. Output mirrors the
         WebSearchPlugin schema from the official SDK
         (id/enabled/max_results/search_prompt/include_domains/exclude_domains).
         """
-        if not self.valves.ENABLE_WEB_SEARCH:
+        if not valves.ENABLE_WEB_SEARCH:
             return None
         plugin: dict = {"id": "web"}
-        max_results = self.valves.WEB_SEARCH_MAX_RESULTS
+        max_results = valves.WEB_SEARCH_MAX_RESULTS
         if max_results:
             plugin["max_results"] = int(max_results)
-        prompt = (self.valves.WEB_SEARCH_PROMPT or "").strip()
+        prompt = (valves.WEB_SEARCH_PROMPT or "").strip()
         if prompt:
             plugin["search_prompt"] = prompt
-        include = self._parse_csv(self.valves.WEB_SEARCH_INCLUDE_DOMAINS)
+        include = self._parse_csv(valves.WEB_SEARCH_INCLUDE_DOMAINS)
         if include:
             plugin["include_domains"] = include
-        exclude = self._parse_csv(self.valves.WEB_SEARCH_EXCLUDE_DOMAINS)
+        exclude = self._parse_csv(valves.WEB_SEARCH_EXCLUDE_DOMAINS)
         if exclude:
             plugin["exclude_domains"] = exclude
         return plugin
@@ -1462,7 +1462,7 @@ class Pipe:
 
         return models + appended
 
-    def _prepare_payload(self, body: dict) -> dict:
+    def _prepare_payload(self, body: dict, valves) -> dict:
         """Sanitize OWUI internals and inject provider routing, reasoning, and fallbacks."""
         payload = copy.deepcopy(body)
 
@@ -1480,83 +1480,83 @@ class Pipe:
             payload["model"] = self._clean_model_id(model)
 
         # --- Reasoning ---
-        if self.valves.INCLUDE_REASONING:
+        if valves.INCLUDE_REASONING:
             payload["include_reasoning"] = True
 
-        effort = self.valves.REASONING_EFFORT.strip().lower()
-        summary = self.valves.REASONING_SUMMARY_MODE.strip().lower()
+        effort = valves.REASONING_EFFORT.strip().lower()
+        summary = valves.REASONING_SUMMARY_MODE.strip().lower()
         reasoning_cfg: dict = {}
         if effort in ("minimal", "low", "medium", "high", "xhigh"):
             reasoning_cfg["effort"] = effort
         if summary in ("auto", "concise", "detailed"):
             reasoning_cfg["summary"] = summary
-        if self.valves.REASONING_MAX_TOKENS > 0:
-            reasoning_cfg["max_tokens"] = int(self.valves.REASONING_MAX_TOKENS)
+        if valves.REASONING_MAX_TOKENS > 0:
+            reasoning_cfg["max_tokens"] = int(valves.REASONING_MAX_TOKENS)
         if reasoning_cfg:
             payload["reasoning"] = reasoning_cfg
 
         # --- Service tier ---
         # OpenRouter documents only "flex" and "priority" as supported values.
-        tier = (self.valves.SERVICE_TIER or "").strip().lower()
+        tier = (valves.SERVICE_TIER or "").strip().lower()
         if tier in ("flex", "priority"):
             payload["service_tier"] = tier
 
         # --- Provider routing ---
         provider: dict = {}
 
-        sort_val = self.valves.PROVIDER_SORT.strip().lower()
+        sort_val = valves.PROVIDER_SORT.strip().lower()
         if sort_val in ("price", "throughput", "latency"):
             provider["sort"] = sort_val
 
-        order = self._parse_csv(self.valves.PROVIDER_ORDER)
+        order = self._parse_csv(valves.PROVIDER_ORDER)
         if order:
             provider["order"] = order
 
-        ignore = self._parse_csv(self.valves.PROVIDER_IGNORE)
+        ignore = self._parse_csv(valves.PROVIDER_IGNORE)
         if ignore:
             provider["ignore"] = ignore
 
-        only = self._parse_csv(self.valves.PROVIDER_ONLY)
+        only = self._parse_csv(valves.PROVIDER_ONLY)
         if only:
             provider["only"] = only
 
-        quantizations = self._parse_csv(self.valves.PROVIDER_QUANTIZATIONS)
+        quantizations = self._parse_csv(valves.PROVIDER_QUANTIZATIONS)
         if quantizations:
             provider["quantizations"] = [q.lower() for q in quantizations]
 
         # `allow_fallbacks` defaults to true on OpenRouter, so only emit the
         # field when the operator opted out.
-        if not self.valves.PROVIDER_ALLOW_FALLBACKS:
+        if not valves.PROVIDER_ALLOW_FALLBACKS:
             provider["allow_fallbacks"] = False
 
         max_price: dict = {}
-        prompt_cap = (self.valves.PROVIDER_MAX_PRICE_PROMPT or "").strip()
+        prompt_cap = (valves.PROVIDER_MAX_PRICE_PROMPT or "").strip()
         if prompt_cap:
             max_price["prompt"] = prompt_cap
-        completion_cap = (self.valves.PROVIDER_MAX_PRICE_COMPLETION or "").strip()
+        completion_cap = (valves.PROVIDER_MAX_PRICE_COMPLETION or "").strip()
         if completion_cap:
             max_price["completion"] = completion_cap
         if max_price:
             provider["max_price"] = max_price
 
-        if self.valves.REQUIRE_PARAMETERS:
+        if valves.REQUIRE_PARAMETERS:
             provider["require_parameters"] = True
 
-        dc = self.valves.DATA_COLLECTION.strip().lower()
+        dc = valves.DATA_COLLECTION.strip().lower()
         if dc == "deny":
             provider["data_collection"] = "deny"
 
         # ZDR enforcement: forces OpenRouter to route only to Zero Data
         # Retention endpoints; the call fails fast if none exist for the
         # selected model.
-        if self.valves.ZDR_ENFORCE:
+        if valves.ZDR_ENFORCE:
             provider["zdr"] = True
 
         if provider:
             payload["provider"] = provider
 
         # --- Fallback models ---
-        fallbacks = self._parse_csv(self.valves.FALLBACK_MODELS)
+        fallbacks = self._parse_csv(valves.FALLBACK_MODELS)
         if fallbacks:
             primary = payload.get("model", "")
             seen = {primary}
@@ -1568,14 +1568,14 @@ class Pipe:
             payload["models"] = [primary] + unique_fallbacks
 
         # --- Transforms (middle-out) ---
-        if self.valves.ENABLE_MIDDLE_OUT:
+        if valves.ENABLE_MIDDLE_OUT:
             payload["transforms"] = ["middle-out"]
 
         # --- Web search plugin ---
         # Append (don't overwrite) so the user can stack additional plugins
         # via the request body. Skip silently if a `web` plugin is already
         # present — first-match wins.
-        web_plugin = self._build_web_search_plugin()
+        web_plugin = self._build_web_search_plugin(valves)
         if web_plugin is not None:
             existing_plugins = payload.get("plugins")
             if not isinstance(existing_plugins, list):
@@ -1589,12 +1589,12 @@ class Pipe:
                 payload["plugins"] = existing_plugins
 
         # --- Cache control (Anthropic) ---
-        if self.valves.ENABLE_CACHE_CONTROL:
-            self._inject_cache_control(payload)
+        if valves.ENABLE_CACHE_CONTROL:
+            self._inject_cache_control(payload, valves)
 
         return payload
 
-    def _inject_cache_control(self, payload: dict) -> None:
+    def _inject_cache_control(self, payload: dict, valves) -> None:
         """Inject Anthropic cache_control on the longest text chunk.
 
         Applies to the first matching role (system, then user) with list-type
@@ -1602,7 +1602,7 @@ class Pipe:
         excessive cache entries. The TTL valve (5m/1h) is propagated into the
         breakpoint so longer-lived caches are honoured by Anthropic.
         """
-        ttl = (self.valves.ANTHROPIC_PROMPT_CACHE_TTL or "").strip().lower()
+        ttl = (valves.ANTHROPIC_PROMPT_CACHE_TTL or "").strip().lower()
         cache_payload: dict = {"type": "ephemeral"}
         if ttl in ("5m", "1h"):
             cache_payload["ttl"] = ttl
@@ -1634,14 +1634,14 @@ class Pipe:
         # Strip leading '~' (latest aliases) before the prefix check.
         return model_id.lstrip("~").lower().startswith("anthropic/")
 
-    def _resolve_referer(self) -> str:
+    def _resolve_referer(self, valves) -> str:
         """Pick the HTTP-Referer header sent to OpenRouter.
 
         Order: explicit valve override → cached WEBUI_URL env → default.
         Validates that an override is a full URL with scheme; falls back
         silently otherwise so a misconfigured valve never breaks requests.
         """
-        override = (self.valves.HTTP_REFERER_OVERRIDE or "").strip()
+        override = (valves.HTTP_REFERER_OVERRIDE or "").strip()
         # Reject control characters (CR/LF/NUL) that could split the header,
         # then require a full http(s) URL.  Fall back silently otherwise.
         if override and not any(c in override for c in "\r\n\x00"):
@@ -1654,6 +1654,7 @@ class Pipe:
         include_content_type: bool = True,
         *,
         model_id: Optional[str] = None,
+        valves,
     ) -> dict:
         """Build HTTP headers for OpenRouter API requests.
 
@@ -1662,8 +1663,8 @@ class Pipe:
         interleaved-thinking) only when relevant.
         """
         headers = {
-            "Authorization": f"Bearer {self.valves.OPENROUTER_API_KEY}",
-            "HTTP-Referer": self._resolve_referer(),
+            "Authorization": f"Bearer {valves.OPENROUTER_API_KEY}",
+            "HTTP-Referer": self._resolve_referer(valves),
             "X-Title": self._title,
         }
         if include_content_type:
@@ -1671,7 +1672,7 @@ class Pipe:
 
         if (
             model_id
-            and self.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING
+            and valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING
             and self._is_anthropic_model(model_id)
         ):
             existing = headers.get("anthropic-beta", "")
@@ -1682,10 +1683,10 @@ class Pipe:
 
         return headers
 
-    def _non_stream_response(self, headers: dict, payload: dict) -> str:
+    def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
         """Send a non-streaming request and return the formatted response."""
         try:
-            response = self._retryable_request(headers, payload, stream=False)
+            response = self._retryable_request(headers, payload, stream=False, valves=valves)
             try:
                 res = response.json()
             finally:
@@ -1739,19 +1740,19 @@ class Pipe:
             if rendered_citations:
                 final_parts.append(rendered_citations)
 
-            if self.valves.SHOW_COST_INFO:
-                cost_info = _format_cost_info(res.get("usage", {}), self.valves.COST_CURRENCY)
+            if valves.SHOW_COST_INFO:
+                cost_info = _format_cost_info(res.get("usage", {}), valves.COST_CURRENCY)
                 if cost_info:
                     final_parts.append(cost_info)
 
-            if self.valves.SHOW_GENERATION_ID:
+            if valves.SHOW_GENERATION_ID:
                 gen_footer = _format_generation_id(res.get("id"))
                 if gen_footer:
                     final_parts.append(gen_footer)
 
             return "".join(final_parts)
         except requests.exceptions.Timeout:
-            return f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+            return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
             return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
@@ -1760,7 +1761,7 @@ class Pipe:
             return f"OpenRouter Error: {exc}"
 
     def _stream_response(
-        self, headers: dict, payload: dict
+        self, headers: dict, payload: dict, valves
     ) -> Generator[str, None, None]:
         """Stream SSE chunks with <think> block management and mid-stream error recovery."""
         response = None
@@ -1777,7 +1778,7 @@ class Pipe:
             return ""
 
         try:
-            response = self._retryable_request(headers, payload, stream=True)
+            response = self._retryable_request(headers, payload, stream=True, valves=valves)
             for raw_line in response.iter_lines():
                 if not raw_line or not raw_line.startswith(b"data: "):
                     continue
@@ -1848,12 +1849,12 @@ class Pipe:
             if rendered_citations:
                 yield rendered_citations
 
-            if self.valves.SHOW_COST_INFO:
-                cost_info = _format_cost_info(latest_usage, self.valves.COST_CURRENCY)
+            if valves.SHOW_COST_INFO:
+                cost_info = _format_cost_info(latest_usage, valves.COST_CURRENCY)
                 if cost_info:
                     yield cost_info
 
-            if self.valves.SHOW_GENERATION_ID:
+            if valves.SHOW_GENERATION_ID:
                 gen_footer = _format_generation_id(latest_generation_id)
                 if gen_footer:
                     yield gen_footer
@@ -1861,7 +1862,7 @@ class Pipe:
             close_tag = _close_think_tag()
             if close_tag:
                 yield close_tag
-            yield f"OpenRouter Error: Request timed out after {self.valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+            yield f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
             close_tag = _close_think_tag()
             if close_tag:
@@ -1891,17 +1892,17 @@ class Pipe:
                 response.close()
 
     def _retryable_request(
-        self, headers: dict, payload: dict, stream: bool
+        self, headers: dict, payload: dict, stream: bool, valves
     ) -> requests.Response:
         """Send a POST request with automatic retry and exponential backoff."""
         last_exc: Optional[Exception] = None
-        for attempt in range(self.valves.MAX_RETRIES + 1):
+        for attempt in range(valves.MAX_RETRIES + 1):
             try:
                 response = self._session.post(
                     self.chat_url,
                     headers=headers,
                     json=payload,
-                    timeout=self.valves.REQUEST_TIMEOUT,
+                    timeout=valves.REQUEST_TIMEOUT,
                     stream=stream,
                     allow_redirects=False,
                 )
@@ -1913,7 +1914,7 @@ class Pipe:
             ) as exc:
                 last_exc = exc
                 print(f"[OpenRouter Pipe] Attempt {attempt + 1} failed: {exc}")
-                if attempt == self.valves.MAX_RETRIES:
+                if attempt == valves.MAX_RETRIES:
                     raise
                 # Exponential backoff with jitter
                 delay = min(2 ** attempt + random.uniform(0, 1), 30)
@@ -1923,7 +1924,7 @@ class Pipe:
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
                 print(f"[OpenRouter Pipe] Unexpected error: {exc}")
-                if attempt == self.valves.MAX_RETRIES:
+                if attempt == valves.MAX_RETRIES:
                     raise
                 delay = min(2 ** attempt + random.uniform(0, 1), 30)
                 time.sleep(delay)

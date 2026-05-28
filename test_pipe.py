@@ -219,7 +219,7 @@ body = {
     "user": {"id": "u1", "name": "Tester"},
 }
 
-payload = pipe._prepare_payload(body)
+payload = pipe._prepare_payload(body, pipe.valves)
 
 _assert("chat_id" not in payload, "chat_id stripped")
 _assert("title" not in payload, "title stripped")
@@ -255,7 +255,7 @@ pipe2.valves = Pipe.Valves(
     REASONING_EFFORT="",
 )
 body2 = {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "Hi"}]}
-payload2 = pipe2._prepare_payload(body2)
+payload2 = pipe2._prepare_payload(body2, pipe2.valves)
 _assert("include_reasoning" not in payload2, "no include_reasoning when disabled")
 _assert("reasoning" not in payload2, "no reasoning when effort empty")
 _assert("provider" not in payload2, "no provider block when all empty")
@@ -264,30 +264,30 @@ _assert("transforms" not in payload2, "no transforms when middle-out disabled")
 
 # ── 5b. _prepare_payload: user as string preserved ──
 body3 = {"model": "openai/gpt-4o", "messages": [], "user": "string-user"}
-payload3 = pipe2._prepare_payload(body3)
+payload3 = pipe2._prepare_payload(body3, pipe2.valves)
 _assert(payload3.get("user") == "string-user", "string user preserved")
 
 # ── 5c. model without dot (no prefix) ──
 body4 = {"model": "openai/gpt-4o", "messages": []}
-payload4 = pipe2._prepare_payload(body4)
+payload4 = pipe2._prepare_payload(body4, pipe2.valves)
 _assert(payload4["model"] == "openai/gpt-4o", "model without dot left unchanged")
 
 # ── 5d. Extended REASONING_EFFORT levels (minimal, xhigh) ──
 _pipe5d = Pipe()
 _pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="minimal")
-_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5d.valves)
 _assert(_p5d.get("reasoning") == {"effort": "minimal"}, "REASONING_EFFORT='minimal' sent verbatim")
 
 _pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="xhigh")
-_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5d.valves)
 _assert(_p5d.get("reasoning") == {"effort": "xhigh"}, "REASONING_EFFORT='xhigh' sent verbatim")
 
 # Empty/garbage effort drops the key
 _pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="")
-_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5d.valves)
 _assert("reasoning" not in _p5d, "empty REASONING_EFFORT: no reasoning field")
 _pipe5d.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_EFFORT="bogus")
-_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []})
+_p5d = _pipe5d._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5d.valves)
 _assert("reasoning" not in _p5d, "garbage REASONING_EFFORT: silently dropped")
 
 # ── 5e. REASONING_SUMMARY_MODE merged into reasoning object ──
@@ -297,7 +297,7 @@ _pipe5e.valves = Pipe.Valves(
     REASONING_EFFORT="high",
     REASONING_SUMMARY_MODE="detailed",
 )
-_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5e.valves)
 _assert(
     _p5e.get("reasoning") == {"effort": "high", "summary": "detailed"},
     "effort + summary merged into one reasoning object",
@@ -306,23 +306,23 @@ _assert(
 _pipe5e.valves = Pipe.Valves(
     OPENROUTER_API_KEY="k", REASONING_EFFORT="", REASONING_SUMMARY_MODE="auto"
 )
-_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5e.valves)
 _assert(_p5e.get("reasoning") == {"summary": "auto"}, "summary-only reasoning object")
 # disabled summary skipped
 _pipe5e.valves = Pipe.Valves(
     OPENROUTER_API_KEY="k", REASONING_EFFORT="", REASONING_SUMMARY_MODE="disabled"
 )
-_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []})
+_p5e = _pipe5e._prepare_payload({"model": "openai/o1", "messages": []}, _pipe5e.valves)
 _assert("reasoning" not in _p5e, "summary='disabled' + no effort: reasoning key dropped")
 
 # ── 5f. ZDR_ENFORCE injects provider.zdr=true ──
 _pipe5f = Pipe()
 _pipe5f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ZDR_ENFORCE=True)
-_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe5f.valves)
 _assert(_p5f.get("provider", {}).get("zdr") is True, "ZDR_ENFORCE=True: provider.zdr=true injected")
 
 _pipe5f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ZDR_ENFORCE=False)
-_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe5f.valves)
 _assert(
     "provider" not in _p5f or "zdr" not in _p5f.get("provider", {}),
     "ZDR_ENFORCE=False: no provider.zdr field",
@@ -335,7 +335,7 @@ _pipe5f.valves = Pipe.Valves(
     PROVIDER_SORT="price",
     DATA_COLLECTION="deny",
 )
-_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p5f = _pipe5f._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe5f.valves)
 _assert(_p5f["provider"]["zdr"] is True, "ZDR_ENFORCE coexists with sort")
 _assert(_p5f["provider"]["sort"] == "price", "ZDR_ENFORCE: sort preserved")
 _assert(_p5f["provider"]["data_collection"] == "deny", "ZDR_ENFORCE: data_collection preserved")
@@ -347,39 +347,39 @@ _section("6. _build_headers()")
 pipe = Pipe()
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="sk-test-123")
 
-headers = pipe._build_headers()
+headers = pipe._build_headers(valves=pipe.valves)
 _assert(headers["Authorization"] == "Bearer sk-test-123", "auth header")
 _assert("Content-Type" in headers, "Content-Type present")
 _assert(headers["Content-Type"] == "application/json", "Content-Type json")
 _assert("HTTP-Referer" in headers, "HTTP-Referer present")
 _assert("X-Title" in headers, "X-Title present")
 
-headers_no_ct = pipe._build_headers(include_content_type=False)
+headers_no_ct = pipe._build_headers(include_content_type=False, valves=pipe.valves)
 _assert("Content-Type" not in headers_no_ct, "Content-Type omitted")
 _assert("Authorization" in headers_no_ct, "auth still present")
 
 # 6b. ENABLE_ANTHROPIC_INTERLEAVED_THINKING injects beta header for anthropic models only
 pipe = Pipe()
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_ANTHROPIC_INTERLEAVED_THINKING=True)
-_h_anth = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet")
+_h_anth = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=pipe.valves)
 _assert(
     _h_anth.get("anthropic-beta") == "interleaved-thinking-2025-05-14",
     "anthropic model: interleaved-thinking beta header injected",
 )
-_h_oai = pipe._build_headers(model_id="openai/gpt-4o")
+_h_oai = pipe._build_headers(model_id="openai/gpt-4o", valves=pipe.valves)
 _assert(
     "anthropic-beta" not in _h_oai,
     "non-anthropic model: no interleaved-thinking header",
 )
 # Tilde latest-alias still picks up the header
-_h_alias = pipe._build_headers(model_id="~anthropic/claude-haiku-latest")
+_h_alias = pipe._build_headers(model_id="~anthropic/claude-haiku-latest", valves=pipe.valves)
 _assert(
     _h_alias.get("anthropic-beta") == "interleaved-thinking-2025-05-14",
     "tilde anthropic alias: interleaved-thinking header injected",
 )
 # When the valve is off, no header even on Claude
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_ANTHROPIC_INTERLEAVED_THINKING=False)
-_h_off = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet")
+_h_off = pipe._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=pipe.valves)
 _assert(
     "anthropic-beta" not in _h_off,
     "valve off: no interleaved-thinking header even for Claude",
@@ -388,7 +388,7 @@ _assert(
 # 6c. HTTP_REFERER_OVERRIDE: explicit override > env fallback > default
 pipe = Pipe()
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
-_default_ref = pipe._build_headers()["HTTP-Referer"]
+_default_ref = pipe._build_headers(valves=pipe.valves)["HTTP-Referer"]
 _assert(
     _default_ref.startswith(("http://", "https://")),
     "HTTP-Referer falls back to a valid scheme URL when no override set",
@@ -398,13 +398,13 @@ pipe.valves = Pipe.Valves(
     HTTP_REFERER_OVERRIDE="https://my-corp.example.com/owui",
 )
 _assert(
-    pipe._build_headers()["HTTP-Referer"] == "https://my-corp.example.com/owui",
+    pipe._build_headers(valves=pipe.valves)["HTTP-Referer"] == "https://my-corp.example.com/owui",
     "HTTP_REFERER_OVERRIDE: full URL respected",
 )
 # Bogus override (no scheme) → silently falls back
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="not-a-url")
 _assert(
-    pipe._build_headers()["HTTP-Referer"] != "not-a-url",
+    pipe._build_headers(valves=pipe.valves)["HTTP-Referer"] != "not-a-url",
     "HTTP_REFERER_OVERRIDE: schemeless value silently ignored",
 )
 
@@ -489,7 +489,7 @@ payload_cc = {
         {"role": "user", "content": "Hello"},
     ]
 }
-pipe._inject_cache_control(payload_cc)
+pipe._inject_cache_control(payload_cc, pipe.valves)
 _assert(
     payload_cc["messages"][0]["content"][1].get("cache_control")
     == {"type": "ephemeral", "ttl": "5m"},
@@ -515,7 +515,7 @@ payload_ttl = {
         }
     ]
 }
-_pipe_ttl_1h._inject_cache_control(payload_ttl)
+_pipe_ttl_1h._inject_cache_control(payload_ttl, _pipe_ttl_1h.valves)
 _assert(
     payload_ttl["messages"][0]["content"][0].get("cache_control")
     == {"type": "ephemeral", "ttl": "1h"},
@@ -524,7 +524,7 @@ _assert(
 
 # No list content → no crash
 payload_cc2 = {"messages": [{"role": "system", "content": "plain string"}]}
-pipe._inject_cache_control(payload_cc2)  # Should not raise
+pipe._inject_cache_control(payload_cc2, pipe.valves)  # Should not raise
 _assert(True, "plain string content doesn't crash")
 
 # _prepare_payload deepcopy: original body must not be mutated
@@ -542,7 +542,7 @@ original_body = {
         },
     ],
 }
-pipe3._prepare_payload(original_body)
+pipe3._prepare_payload(original_body, pipe3.valves)
 _assert(
     "cache_control" not in original_body["messages"][0]["content"][1],
     "cache_control does not leak into original body",
@@ -564,7 +564,7 @@ mock_response = MagicMock()
 mock_response.json.return_value = mock_json
 
 with patch.object(pipe, "_retryable_request", return_value=mock_response):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 
 _assert("<think>" in result, "has <think> tag")
 _assert("Thinking..." in result, "reasoning content")
@@ -577,7 +577,7 @@ mock_resp_err = MagicMock()
 mock_resp_err.json.return_value = mock_json_err
 
 with patch.object(pipe, "_retryable_request", return_value=mock_resp_err):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 
 _assert("Model overloaded" in result, "error from body detected")
 
@@ -587,7 +587,7 @@ mock_resp_empty = MagicMock()
 mock_resp_empty.json.return_value = mock_json_empty
 
 with patch.object(pipe, "_retryable_request", return_value=mock_resp_empty):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 
 _assert("empty response" in result.lower(), "empty choices → informative message")
 
@@ -596,7 +596,7 @@ with patch.object(
     pipe, "_retryable_request",
     side_effect=req_lib.exceptions.Timeout("timeout"),
 ):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("timeout" in result.lower(), "timeout error message")
 
 # 11e. HTTP Error
@@ -607,7 +607,7 @@ with patch.object(
     pipe, "_retryable_request",
     side_effect=req_lib.exceptions.HTTPError(response=mock_resp_http),
 ):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("401" in result, "HTTP 401 error")
 
 # 11f. Error in body as string (not dict)
@@ -616,7 +616,7 @@ mock_resp_str_err = MagicMock()
 mock_resp_str_err.json.return_value = mock_json_str_err
 
 with patch.object(pipe, "_retryable_request", return_value=mock_resp_str_err):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 
 _assert("plain string error" in result, "error from body as string detected")
 
@@ -644,7 +644,7 @@ sse_lines = [
 
 mock_sse = _make_sse_response(sse_lines)
 with patch.object(pipe, "_retryable_request", return_value=mock_sse):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream: <think> present")
 _assert("</think>" in full, "stream: </think> present")
@@ -662,7 +662,7 @@ sse_err = [
 
 mock_sse_err = _make_sse_response(sse_err)
 with patch.object(pipe, "_retryable_request", return_value=mock_sse_err):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("context_length_exceeded" in full, "stream: mid-stream error detected")
 _assert("Start..." in full, "stream: content before error preserved")
@@ -675,7 +675,7 @@ sse_think_open = [
 
 mock_sse_think = _make_sse_response(sse_think_open)
 with patch.object(pipe, "_retryable_request", return_value=mock_sse_think):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream: think opened")
 _assert("</think>" in full, "stream: think auto-closed at end")
@@ -689,7 +689,7 @@ sse_think_err = [
 
 mock_sse_te = _make_sse_response(sse_think_err)
 with patch.object(pipe, "_retryable_request", return_value=mock_sse_te):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream error-in-think: think opened")
 _assert("</think>" in full, "stream error-in-think: think closed before error")
@@ -700,14 +700,14 @@ with patch.object(
     pipe, "_retryable_request",
     side_effect=req_lib.exceptions.Timeout("timeout"),
 ):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("timeout" in full.lower(), "stream: timeout error")
 
 # 12f. Empty stream
 mock_empty_sse = _make_sse_response([b"data: [DONE]"])
 with patch.object(pipe, "_retryable_request", return_value=mock_empty_sse):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 _assert(len("".join(output)) == 0, "stream: empty → no output")
 
 # 12g. Malformed JSON in stream (should skip)
@@ -718,7 +718,7 @@ sse_bad = [
 ]
 mock_bad = _make_sse_response(sse_bad)
 with patch.object(pipe, "_retryable_request", return_value=mock_bad):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("OK" in full, "stream: skips bad JSON, continues")
 
@@ -732,7 +732,7 @@ sse_mixed = [
 ]
 mock_mixed = _make_sse_response(sse_mixed)
 with patch.object(pipe, "_retryable_request", return_value=mock_mixed):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("Valid" in full, "stream: non-data lines ignored")
 
@@ -744,7 +744,7 @@ sse_empty_choices = [
 ]
 mock_ec = _make_sse_response(sse_empty_choices)
 with patch.object(pipe, "_retryable_request", return_value=mock_ec):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("After" in full, "stream: empty choices array skipped safely")
 
@@ -757,7 +757,7 @@ with patch.object(
     pipe, "_retryable_request",
     side_effect=req_lib.exceptions.HTTPError(response=mock_resp_stream_err),
 ):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("429" in full, "stream: HTTP error status code")
 _assert("Rate limited" in full, "stream: HTTP error detail preserved")
@@ -772,7 +772,7 @@ mock_sse_t.iter_lines.return_value = _iter_lines_timeout()
 mock_sse_t.close = MagicMock()
 
 with patch.object(pipe, "_retryable_request", return_value=mock_sse_t):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream timeout-in-think: think opened")
 _assert("</think>" in full, "stream timeout-in-think: think closed before error")
@@ -788,7 +788,7 @@ mock_sse_ce.iter_lines.return_value = _iter_lines_conn_error()
 mock_sse_ce.close = MagicMock()
 
 with patch.object(pipe, "_retryable_request", return_value=mock_sse_ce):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream exception-in-think: think opened")
 _assert("</think>" in full, "stream exception-in-think: think closed")
@@ -801,7 +801,7 @@ sse_str_err = [
 ]
 mock_str_err = _make_sse_response(sse_str_err)
 with patch.object(pipe, "_retryable_request", return_value=mock_str_err):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("simple string error" in full, "stream: string error detected")
 
@@ -816,7 +816,7 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MAX_RETRIES=2, REQUEST_TIMEOUT
 mock_ok = MagicMock()
 mock_ok.raise_for_status = MagicMock()
 with patch.object(pipe._session, "post", return_value=mock_ok) as mock_post:
-    result = pipe._retryable_request({}, {}, stream=False)
+    result = pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
     _assert(result is mock_ok, "retryable: returns on first success")
     _assert(mock_post.call_count == 1, "retryable: only 1 call on success")
 
@@ -833,14 +833,14 @@ def _post_retry(*args, **kwargs):
 with patch.object(pipe._session, "post", side_effect=_post_retry), \
      patch("time.sleep"):
     call_count[0] = 0
-    result = pipe._retryable_request({}, {}, stream=False)
+    result = pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
     _assert(call_count[0] == 2, "retryable: retried after timeout")
 
 # 13c. All retries exhausted
 with patch.object(pipe._session, "post", side_effect=req_lib.exceptions.Timeout("timeout")), \
      patch("time.sleep"):
     try:
-        pipe._retryable_request({}, {}, stream=False)
+        pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
         _assert(False, "retryable: should raise after all retries")
     except req_lib.exceptions.Timeout:
         _assert(True, "retryable: raises Timeout after exhausting retries")
@@ -852,7 +852,7 @@ with patch.object(pipe._session, "post") as mock_post:
     mock_resp.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=mock_resp)
     mock_post.return_value = mock_resp
     try:
-        pipe._retryable_request({}, {}, stream=False)
+        pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
         _assert(False, "retryable: HTTPError should raise immediately")
     except req_lib.exceptions.HTTPError:
         _assert(True, "retryable: HTTPError not retried")
@@ -871,7 +871,7 @@ def _post_retry_ce(*args, **kwargs):
 with patch.object(pipe._session, "post", side_effect=_post_retry_ce), \
      patch("time.sleep"):
     _call_count_ce[0] = 0
-    result = pipe._retryable_request({}, {}, stream=False)
+    result = pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
     _assert(_call_count_ce[0] == 2, "retryable: retried after ConnectionError")
 
 # ── 14. pipe() async entry point ────────────────────────────────────────────
@@ -1769,7 +1769,7 @@ with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_fallback_re
     _fb_result = _pipe_fb._non_stream_response({}, {
         "model": "openai/gpt-4o",
         "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
-    })
+    }, _pipe_fb.valves)
 _assert("Responded by: anthropic/claude-3.5-sonnet" in _fb_result, "fallback attribution shown")
 
 # 22b. No attribution when primary model responds
@@ -1784,7 +1784,7 @@ with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_primary_res
     _primary_result = _pipe_fb._non_stream_response({}, {
         "model": "openai/gpt-4o",
         "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
-    })
+    }, _pipe_fb.valves)
 _assert("Responded by" not in _primary_result, "no attribution when primary responds")
 
 # ── 23. Citation edge cases ─────────────────────────────────────────────────
@@ -2292,7 +2292,7 @@ sse_mixed_chunk = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_mixed_chunk)):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" in full, "stream mixed chunk: <think> opened for reasoning")
 _assert("Inner thought" in full, "stream mixed chunk: reasoning present")
@@ -2305,7 +2305,7 @@ sse_empty_reason = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_reason)):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("<think>" not in full, "stream empty reasoning: <think> NOT opened")
 _assert("Only content" in full, "stream empty reasoning: content still present")
@@ -2316,7 +2316,7 @@ sse_empty_content = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_content)):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 _assert("".join(output) == "", "stream empty content string: nothing yielded")
 
 # 26d. Non-dict item in choices[0] → skipped safely, next chunk processed
@@ -2326,7 +2326,7 @@ sse_bad_choice = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_bad_choice)):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("OK" in full, "stream non-dict choice: skipped safely, next chunk processed")
 
@@ -2337,14 +2337,14 @@ sse_citations_first = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_citations_first)):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("https://example.com" in full, "stream citations-only chunk: citation applied to later content")
 _assert("Citations:" in full, "stream citations-only chunk: citation list appended")
 
 # 26f. Generic exception raised by _retryable_request → yields OpenRouter Error
 with patch.object(pipe, "_retryable_request", side_effect=ValueError("unexpected")):
-    output = list(pipe._stream_response({}, {}))
+    output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("OpenRouter Error" in full, "stream generic exception: error yielded")
 _assert("unexpected" in full, "stream generic exception: detail preserved")
@@ -2433,7 +2433,7 @@ payload_all_img = {
         }
     ]
 }
-pipe._inject_cache_control(payload_all_img)
+pipe._inject_cache_control(payload_all_img, pipe.valves)
 _assert(
     all("cache_control" not in chunk for chunk in payload_all_img["messages"][0]["content"]),
     "cache_control: all image chunks → nothing applied",
@@ -2451,7 +2451,7 @@ payload_mixed_img = {
         }
     ]
 }
-pipe._inject_cache_control(payload_mixed_img)
+pipe._inject_cache_control(payload_mixed_img, pipe.valves)
 _assert(
     "cache_control" not in payload_mixed_img["messages"][0]["content"][0],
     "cache_control: image_url chunk skipped in mixed content",
@@ -2474,7 +2474,7 @@ payload_user_list = {
         }
     ]
 }
-pipe._inject_cache_control(payload_user_list)
+pipe._inject_cache_control(payload_user_list, pipe.valves)
 _assert(
     payload_user_list["messages"][0]["content"][1].get("cache_control")
     == {"type": "ephemeral", "ttl": "5m"},
@@ -2486,7 +2486,7 @@ _section("28d. v1.6.0 web search plugin")
 
 _pipe_ws = Pipe()
 _pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=False)
-_assert(_pipe_ws._build_web_search_plugin() is None, "web search disabled → None")
+_assert(_pipe_ws._build_web_search_plugin(_pipe_ws.valves) is None, "web search disabled → None")
 
 _pipe_ws.valves = Pipe.Valves(
     OPENROUTER_API_KEY="k",
@@ -2496,7 +2496,7 @@ _pipe_ws.valves = Pipe.Valves(
     WEB_SEARCH_INCLUDE_DOMAINS="*.gov, *.edu",
     WEB_SEARCH_EXCLUDE_DOMAINS="reddit.com",
 )
-_plugin = _pipe_ws._build_web_search_plugin()
+_plugin = _pipe_ws._build_web_search_plugin(_pipe_ws.valves)
 _assert(_plugin and _plugin["id"] == "web", "web plugin id is 'web'")
 _assert(_plugin["max_results"] == 8, "max_results forwarded")
 _assert(_plugin["search_prompt"] == "Find authoritative sources", "custom search_prompt")
@@ -2506,7 +2506,7 @@ _assert(_plugin["exclude_domains"] == ["reddit.com"], "exclude_domains parsed")
 # Payload integration: appended to existing user plugins, never duplicated
 _pipe_ws = Pipe()
 _pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True)
-_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_ws.valves)
 _assert(any(p.get("id") == "web" for p in _p_ws.get("plugins", [])),
         "ENABLE_WEB_SEARCH: plugins[] contains web entry")
 
@@ -2516,7 +2516,7 @@ _p_ws = _pipe_ws._prepare_payload({
     "model": "openai/gpt-4o",
     "messages": [],
     "plugins": [{"id": "file-parser"}],
-})
+}, _pipe_ws.valves)
 _p_ids = [p.get("id") for p in _p_ws.get("plugins", [])]
 _assert("file-parser" in _p_ids and "web" in _p_ids, "user plugins coexist with auto web plugin")
 
@@ -2526,7 +2526,7 @@ _p_ws = _pipe_ws._prepare_payload({
     "model": "openai/gpt-4o",
     "messages": [],
     "plugins": [{"id": "web", "max_results": 3}],
-})
+}, _pipe_ws.valves)
 _assert(
     sum(1 for p in _p_ws["plugins"] if p.get("id") == "web") == 1,
     "user-supplied web plugin not duplicated by valve injection",
@@ -2538,7 +2538,7 @@ _assert(
 
 # Web search disabled → no plugin emitted at all
 _pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=False)
-_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_ws.valves)
 _assert("plugins" not in _p_ws, "web search disabled: no plugins key added")
 
 # ── 28e. v1.6.0 — REASONING_MAX_TOKENS ──────────────────────────────────────
@@ -2548,14 +2548,14 @@ _pipe_rmt = Pipe()
 _pipe_rmt.valves = Pipe.Valves(
     OPENROUTER_API_KEY="k", REASONING_EFFORT="high", REASONING_MAX_TOKENS=2048
 )
-_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []})
+_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []}, _pipe_rmt.valves)
 _assert(
     _p_rmt.get("reasoning") == {"effort": "high", "max_tokens": 2048},
     "reasoning.max_tokens emitted alongside effort",
 )
 
 _pipe_rmt.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_MAX_TOKENS=0)
-_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []})
+_p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []}, _pipe_rmt.valves)
 _assert("reasoning" not in _p_rmt, "max_tokens=0 + no effort: reasoning key omitted")
 
 # ── 28f. v1.6.0 — Provider extras (only/quantizations/allow_fallbacks/max_price) ──
@@ -2570,7 +2570,7 @@ _pipe_pp.valves = Pipe.Valves(
     PROVIDER_MAX_PRICE_PROMPT="3.0",
     PROVIDER_MAX_PRICE_COMPLETION="15.0",
 )
-_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_pp.valves)
 _p_provider = _p_pp.get("provider", {})
 _assert(_p_provider.get("only") == ["anthropic", "openai"], "provider.only forwarded")
 _assert(_p_provider.get("quantizations") == ["bf16", "fp8"], "provider.quantizations lower-cased")
@@ -2582,7 +2582,7 @@ _assert(
 
 # Defaults: allow_fallbacks=true is implicit (omit field)
 _pipe_pp.valves = Pipe.Valves(OPENROUTER_API_KEY="k", PROVIDER_ALLOW_FALLBACKS=True)
-_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+_p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_pp.valves)
 _assert(
     "provider" not in _p_pp or "allow_fallbacks" not in _p_pp.get("provider", {}),
     "PROVIDER_ALLOW_FALLBACKS=True (default): field omitted",
@@ -2595,14 +2595,14 @@ _section("28g. v1.6.0 service tier")
 for tier in ("flex", "priority"):
     _pipe_st = Pipe()
     _pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER=tier)
-    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_st.valves)
     _assert(_p_st.get("service_tier") == tier, f"SERVICE_TIER='{tier}' forwarded")
 
 # Undocumented OpenAI-direct tiers + garbage are dropped (not valid on OpenRouter)
 for tier in ("auto", "default", "scale", "bogus"):
     _pipe_st = Pipe()
     _pipe_st.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SERVICE_TIER=tier)
-    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []})
+    _p_st = _pipe_st._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_st.valves)
     _assert("service_tier" not in _p_st, f"unsupported SERVICE_TIER='{tier}' dropped")
 
 # ── 28h. v1.6.0 — Cached prompt-token cost breakdown ────────────────────────
@@ -2655,7 +2655,7 @@ _mock_gen_resp.json.return_value = {
     "choices": [{"message": {"content": "hi", "role": "assistant"}}],
 }
 with patch.object(_pipe_gen, "_retryable_request", return_value=_mock_gen_resp):
-    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"})
+    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"}, _pipe_gen.valves)
 _assert("gen-zzz111" in _out, "non-stream: generation id rendered when SHOW_GENERATION_ID=True")
 
 # Toggled off → no footer
@@ -2666,7 +2666,7 @@ _mock_gen_resp.json.return_value = {
     "choices": [{"message": {"content": "hi", "role": "assistant"}}],
 }
 with patch.object(_pipe_gen, "_retryable_request", return_value=_mock_gen_resp):
-    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"})
+    _out = _pipe_gen._non_stream_response({}, {"model": "openai/gpt-4o"}, _pipe_gen.valves)
 _assert("gen-zzz111" not in _out, "SHOW_GENERATION_ID=False: footer suppressed")
 
 # ── 28j. v1.6.0 — MODEL_CATEGORY query param ────────────────────────────────
@@ -2768,7 +2768,7 @@ _mock_err_empty_choices.json.return_value = {
     "error": {"message": "Context window exceeded"},
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_err_empty_choices):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("Context window exceeded" in result, "non-stream: error field takes priority over empty choices")
 
 # 29b. message.content is None → no crash, returns empty string
@@ -2777,7 +2777,7 @@ _mock_none_content.json.return_value = {
     "choices": [{"message": {"content": None}}]
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_none_content):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert(isinstance(result, str), "non-stream: None content → still returns string")
 _assert(result == "", "non-stream: None content → empty string (no crash)")
 
@@ -2787,7 +2787,7 @@ _mock_no_content_key.json.return_value = {
     "choices": [{"message": {"role": "assistant"}}]
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_no_content_key):
-    result = pipe._non_stream_response({}, {})
+    result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert(isinstance(result, str), "non-stream: missing content key → still returns string")
 _assert(result == "", "non-stream: missing content key → empty string (no crash)")
 
@@ -2868,7 +2868,7 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 _mock_ok_stream = MagicMock()
 _mock_ok_stream.raise_for_status = MagicMock()
 with patch.object(pipe._session, "post", return_value=_mock_ok_stream) as _mock_post_s:
-    pipe._retryable_request({}, {}, stream=True)
+    pipe._retryable_request({}, {}, stream=True, valves=pipe.valves)
 _assert(
     _mock_post_s.call_args.kwargs.get("stream") is True
     or _mock_post_s.call_args[1].get("stream") is True,
@@ -2879,7 +2879,7 @@ _assert(
 _mock_ok_nostream = MagicMock()
 _mock_ok_nostream.raise_for_status = MagicMock()
 with patch.object(pipe._session, "post", return_value=_mock_ok_nostream) as _mock_post_ns:
-    pipe._retryable_request({}, {}, stream=False)
+    pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
 _assert(
     _mock_post_ns.call_args.kwargs.get("stream") is False
     or _mock_post_ns.call_args[1].get("stream") is False,
@@ -2971,7 +2971,7 @@ _mock_cost_off.json.return_value = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.001},
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_cost_off):
-    _result_off = pipe._non_stream_response({}, {})
+    _result_off = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("---" not in _result_off, "non-stream SHOW_COST_INFO=False: no separator appended")
 _assert("Tokens" not in _result_off, "non-stream SHOW_COST_INFO=False: no Tokens line")
 
@@ -2983,7 +2983,7 @@ _mock_cost_on.json.return_value = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.00123},
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_cost_on):
-    _result_on = pipe._non_stream_response({}, {})
+    _result_on = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("Hello" in _result_on, "non-stream SHOW_COST_INFO=True: content preserved")
 _assert("Tokens" in _result_on, "non-stream SHOW_COST_INFO=True: Tokens label present")
 _assert("$" in _result_on, "non-stream SHOW_COST_INFO=True: cost shown in USD")
@@ -2997,7 +2997,7 @@ _mock_cost_eur.json.return_value = {
     "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8, "cost": 0.05},
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_cost_eur):
-    _result_eur_resp = pipe._non_stream_response({}, {})
+    _result_eur_resp = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("€" in _result_eur_resp, "non-stream SHOW_COST_INFO=True EUR: euro symbol shown")
 
 # 33r. SHOW_COST_INFO=True but response has no usage → no cost appended (no crash)
@@ -3007,7 +3007,7 @@ _mock_no_usage.json.return_value = {
     "choices": [{"message": {"content": "No usage data"}}],
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_no_usage):
-    _result_no_usage = pipe._non_stream_response({}, {})
+    _result_no_usage = pipe._non_stream_response({}, {}, pipe.valves)
 _assert("No usage data" in _result_no_usage, "non-stream no usage: content preserved")
 _assert("Tokens" not in _result_no_usage, "non-stream no usage: no Tokens line (no crash)")
 
@@ -3024,7 +3024,7 @@ sse_with_usage = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_with_usage)):
-    _stream_output = list(pipe._stream_response({}, {}))
+    _stream_output = list(pipe._stream_response({}, {}, pipe.valves))
 _stream_full = "".join(_stream_output)
 _assert("Answer" in _stream_full, "stream SHOW_COST_INFO=True: content preserved")
 _assert("Tokens" in _stream_full, "stream SHOW_COST_INFO=True: Tokens label in output")
@@ -3039,7 +3039,7 @@ sse_no_cost_display = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_no_cost_display)):
-    _stream_off_output = list(pipe._stream_response({}, {}))
+    _stream_off_output = list(pipe._stream_response({}, {}, pipe.valves))
 _stream_off_full = "".join(_stream_off_output)
 _assert("Reply" in _stream_off_full, "stream SHOW_COST_INFO=False: content preserved")
 _assert("Tokens" not in _stream_off_full, "stream SHOW_COST_INFO=False: no Tokens line")
@@ -3051,7 +3051,7 @@ sse_no_usage_chunk = [
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_no_usage_chunk)):
-    _stream_nu_output = list(pipe._stream_response({}, {}))
+    _stream_nu_output = list(pipe._stream_response({}, {}, pipe.valves))
 _stream_nu_full = "".join(_stream_nu_output)
 _assert("Text" in _stream_nu_full, "stream no usage chunk: content preserved")
 _assert("Tokens" not in _stream_nu_full, "stream no usage chunk: no cost line (no crash)")
@@ -3128,7 +3128,7 @@ _mock_audio.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio):
-    _audio_result = _pipe34._non_stream_response({}, {})
+    _audio_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("Hello from audio" in _audio_result, "non-stream audio: transcript used as content")
 
 # 34g. Audio model without transcript → placeholder message returned
@@ -3142,7 +3142,7 @@ _mock_audio_no_transcript.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_no_transcript):
-    _audio_no_tx_result = _pipe34._non_stream_response({}, {})
+    _audio_no_tx_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("transcript not available" in _audio_no_tx_result, "non-stream audio no transcript: placeholder shown")
 
 # 34h. Audio model with both content and audio → text content takes priority
@@ -3156,7 +3156,7 @@ _mock_audio_with_content.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_with_content):
-    _audio_content_result = _pipe34._non_stream_response({}, {})
+    _audio_content_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("Text response" in _audio_content_result, "non-stream audio+content: text content preserved")
 _assert("Audio transcript" not in _audio_content_result, "non-stream audio+content: transcript not used when content present")
 
@@ -3171,7 +3171,7 @@ _mock_image.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image):
-    _image_result = _pipe34._non_stream_response({}, {})
+    _image_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("![Generated image]" in _image_result, "non-stream image: markdown image tag present")
 _assert("IMGDATA==" in _image_result, "non-stream image: URL data in output")
 
@@ -3186,7 +3186,7 @@ _mock_image_with_text.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_with_text):
-    _image_text_result = _pipe34._non_stream_response({}, {})
+    _image_text_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("Here is the image:" in _image_text_result, "non-stream image+text: text preserved")
 _assert("![Generated image]" in _image_text_result, "non-stream image+text: image markdown present")
 _assert("\n\n![Generated image]" in _image_text_result, "non-stream image+text: blank line before image tag")
@@ -3202,7 +3202,7 @@ _mock_image_only.json.return_value = {
     }]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_only):
-    _image_only_result = _pipe34._non_stream_response({}, {})
+    _image_only_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert(_image_only_result.startswith("![Generated image]"), "non-stream image-only: no leading blank lines")
 
 # 34k. message.content = None handled without crash (or "")
@@ -3211,7 +3211,7 @@ _mock_content_null.json.return_value = {
     "choices": [{"message": {"content": None}}]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_content_null):
-    _null_result = _pipe34._non_stream_response({}, {})
+    _null_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert(isinstance(_null_result, str), "non-stream content=None: returns string (no crash)")
 
 # ── Streaming audio response ────────────────────────────────────────────────
@@ -3226,7 +3226,7 @@ _sse_audio_chunks = [
     b"data: [DONE]",
 ]
 with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_audio_chunks)):
-    _stream_audio_chunks = list(_pipe34s._stream_response({}, {}))
+    _stream_audio_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _stream_audio_full = "".join(_stream_audio_chunks)
 _assert("Hello " in _stream_audio_full, "stream audio: first transcript chunk yielded")
 _assert("world" in _stream_audio_full, "stream audio: second transcript chunk yielded")
@@ -3238,7 +3238,7 @@ _sse_mixed_chunks = [
     b"data: [DONE]",
 ]
 with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_mixed_chunks)):
-    _mixed_chunks = list(_pipe34s._stream_response({}, {}))
+    _mixed_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _mixed_full = "".join(_mixed_chunks)
 _assert("Text first" in _mixed_full, "stream mixed: text content chunk present")
 _assert("then audio" in _mixed_full, "stream mixed: audio transcript chunk present")
@@ -3249,7 +3249,7 @@ _sse_null_content = [
     b"data: [DONE]",
 ]
 with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)):
-    _null_chunks = list(_pipe34s._stream_response({}, {}))
+    _null_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _assert(isinstance("".join(_null_chunks), str), "stream content=None delta: no crash")
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3261,14 +3261,14 @@ _section("35. SEC: _resolve_referer CRLF guard")
 _pipe35 = Pipe()
 # Valid override respected
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://my.app")
-_assert(_pipe35._resolve_referer() == "https://my.app", "35a valid referer override respected")
+_assert(_pipe35._resolve_referer(_pipe35.valves) == "https://my.app", "35a valid referer override respected")
 # CRLF-injection override rejected → falls back
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://x\r\nX-Evil: 1")
-_assert("\r" not in _pipe35._resolve_referer() and "\n" not in _pipe35._resolve_referer(), "35b CRLF override rejected (no control chars in referer)")
-_assert(_pipe35._resolve_referer() == _pipe35._referer, "35c CRLF override falls back to default referer")
+_assert("\r" not in _pipe35._resolve_referer(_pipe35.valves) and "\n" not in _pipe35._resolve_referer(_pipe35.valves), "35b CRLF override rejected (no control chars in referer)")
+_assert(_pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer, "35c CRLF override falls back to default referer")
 # Non-http scheme rejected
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="ftp://x")
-_assert(_pipe35._resolve_referer() == _pipe35._referer, "35d non-http override falls back")
+_assert(_pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer, "35d non-http override falls back")
 
 _section("35. SEC: generation ID markdown-breakout sanitization")
 
@@ -3290,13 +3290,13 @@ _sse_genid = [
     b"data: [DONE]",
 ]
 with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_genid)):
-    _genid_stream = "".join(_pipe35s._stream_response({}, {}))
+    _genid_stream = "".join(_pipe35s._stream_response({}, {}, _pipe35s.valves))
 _assert("gen-stream-xyz" in _genid_stream, "35j streaming SHOW_GENERATION_ID: footer present")
 _assert("Generation ID" in _genid_stream, "35k streaming gen-id label present")
 # Off → no footer
 _pipe35s.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=False)
 with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_genid)):
-    _nogenid = "".join(_pipe35s._stream_response({}, {}))
+    _nogenid = "".join(_pipe35s._stream_response({}, {}, _pipe35s.valves))
 _assert("Generation ID" not in _nogenid, "35l streaming gen-id off: no footer")
 
 _section("35. Coverage: FREE_MODEL_FILTER=only + legacy FREE_ONLY shim")
@@ -3347,7 +3347,7 @@ _section("35. Coverage: REASONING_SUMMARY_MODE=concise")
 
 _pipe35r = Pipe()
 _pipe35r.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_SUMMARY_MODE="concise")
-_payload35r = _pipe35r._prepare_payload({"model": "openai/o1", "messages": [{"role": "user", "content": "hi"}]})
+_payload35r = _pipe35r._prepare_payload({"model": "openai/o1", "messages": [{"role": "user", "content": "hi"}]}, _pipe35r.valves)
 _assert(_payload35r.get("reasoning", {}).get("summary") == "concise", "35p REASONING_SUMMARY_MODE=concise → reasoning.summary='concise'")
 
 _section("35. USE_GSTATIC_FAVICONS valve default")
