@@ -3985,6 +3985,25 @@ _pf9._fetch_credit_balance = lambda valves: 7.5  # type: ignore
 _fm9 = _pf9._format_final_message({"choices": [{"message": {"content": "ok"}}]}, {"model": "x"}, _pf9.valves)
 _assert("credit remaining" in _fm9.lower(), "credit line in _format_final_message when enabled")
 
+# ── credit prefetch off-loop in tool footers ───────────────────────────────────
+
+_section("credit prefetch off-loop in tool footers")
+
+import threading as _thr_pf
+_p_pf = Pipe(); _p_pf.valves.SHOW_REMAINING_CREDIT = True
+_threads_pf = []
+def _fake_fetch_pf(valves):
+    _threads_pf.append(_thr_pf.get_ident()); return 1.23
+_p_pf._fetch_credit_balance = _fake_fetch_pf  # type: ignore
+_main_pf = _thr_pf.get_ident()
+asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
+_assert(_threads_pf and all(t != _main_pf for t in _threads_pf), "credit prefetch runs off the main thread")
+
+_threads_pf.clear()
+_p_pf.valves.SHOW_REMAINING_CREDIT = False
+asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
+_assert(_threads_pf == [], "credit prefetch skipped when SHOW_REMAINING_CREDIT off")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

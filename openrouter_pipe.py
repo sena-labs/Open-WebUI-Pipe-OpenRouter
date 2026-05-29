@@ -1972,6 +1972,13 @@ class Pipe:
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
+    async def _prefetch_credit_if_enabled(self, valves) -> None:
+        """Pre-warm the credit cache off the event loop, so the synchronous
+        _fetch_credit_balance call inside a footer hits the cache (no blocking I/O).
+        """
+        if valves.SHOW_REMAINING_CREDIT:
+            await asyncio.to_thread(self._fetch_credit_balance, valves)
+
     def _format_final_message(self, res: dict, payload: dict, valves) -> str:
         """Format a completed OpenRouter response dict into the user-facing string.
 
@@ -2084,6 +2091,7 @@ class Pipe:
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
+                await self._prefetch_credit_if_enabled(valves)
                 return self._format_final_message(res, payload, valves)
 
             tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
@@ -2100,6 +2108,7 @@ class Pipe:
                     resp.close()
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
+        await self._prefetch_credit_if_enabled(valves)
         final = self._format_final_message(res, payload, valves)
         if final.startswith("OpenRouter Error:"):
             return final
@@ -2219,6 +2228,7 @@ class Pipe:
                 return
             tool_calls = state.get("tool_calls")
             if not tool_calls:
+                await self._prefetch_credit_if_enabled(valves)
                 yield self._stream_footer(state, valves)
                 return
             tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
@@ -2234,6 +2244,7 @@ class Pipe:
                 break
             yield piece
         if not state.get("error"):
+            await self._prefetch_credit_if_enabled(valves)
             yield self._stream_footer(state, valves)
             yield "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
 
