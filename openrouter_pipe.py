@@ -2343,7 +2343,12 @@ class Pipe:
     def _retryable_request(
         self, headers: dict, payload: dict, stream: bool, valves
     ) -> requests.Response:
-        """Send a POST request with automatic retry and exponential backoff."""
+        """Send a POST request with automatic retry and exponential backoff.
+
+        Retries transient failures — network Timeout/ConnectionError and HTTP
+        429/5xx (honouring Retry-After when present) — within the MAX_RETRIES
+        budget. Non-transient 4xx fail fast.
+        """
         last_exc: Optional[Exception] = None
         for attempt in range(valves.MAX_RETRIES + 1):
             try:
@@ -2365,18 +2370,29 @@ class Pipe:
                 print(f"[OpenRouter Pipe] Attempt {attempt + 1} failed: {exc}")
                 if attempt == valves.MAX_RETRIES:
                     raise
-                # Exponential backoff with jitter
-                delay = min(2 ** attempt + random.uniform(0, 1), 30)
+                time.sleep(self._backoff_delay(attempt))
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status not in _RETRYABLE_STATUS or attempt == valves.MAX_RETRIES:
+                    raise
+                delay = None
+                if exc.response is not None:
+                    delay = self._parse_retry_after(exc.response.headers.get("Retry-After"))
+                    try:
+                        exc.response.close()
+                    except Exception:
+                        pass
+                if delay is None:
+                    delay = self._backoff_delay(attempt)
+                last_exc = exc
+                print(f"[OpenRouter Pipe] HTTP {status} on attempt {attempt + 1}; retrying in {delay:.1f}s")
                 time.sleep(delay)
-            except requests.exceptions.HTTPError:
-                raise
             except Exception as exc:  # pragma: no cover
                 last_exc = exc
                 print(f"[OpenRouter Pipe] Unexpected error: {exc}")
                 if attempt == valves.MAX_RETRIES:
                     raise
-                delay = min(2 ** attempt + random.uniform(0, 1), 30)
-                time.sleep(delay)
+                time.sleep(self._backoff_delay(attempt))
         if last_exc:
             raise last_exc  # pragma: no cover
         raise RuntimeError("OpenRouter Error: request not completed")  # pragma: no cover

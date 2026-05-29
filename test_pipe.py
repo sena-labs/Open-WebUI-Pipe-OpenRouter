@@ -3681,6 +3681,62 @@ _assert(_pr._backoff_delay(20) == 30, "backoff capped at 30")
 
 _assert(mod._RETRYABLE_STATUS == frozenset({429, 500, 502, 503, 504}), "retryable status set")
 
+_section("retryable_request transient HTTP retries")
+
+# 429 (with Retry-After) then 200 → one retry, returns 200, slept the Retry-After value
+_p_r = Pipe(); _p_r.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_r.valves.MAX_RETRIES = 2
+_script_post(_p_r, [_FakeHTTPResp(429, {"Retry-After": "7"}), _FakeHTTPResp(200, body={"ok": 1})])
+with patch.object(mod.time, "sleep") as _sl:
+    _resp = _p_r._retryable_request({}, {}, False, _p_r.valves)
+_assert(_resp.status_code == 200, "429→200: returns the success response")
+_assert(_p_r._post_calls == 2, "429→200: exactly one retry")
+_assert(_sl.call_args_list[0][0][0] == 7.0, "429: slept the Retry-After value (7s)")
+
+# 503 without Retry-After then 200 → retried with a backoff delay (attempt 0 → [1,2))
+_p_s = Pipe(); _p_s.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_s.valves.MAX_RETRIES = 2
+_script_post(_p_s, [_FakeHTTPResp(503), _FakeHTTPResp(200, body={"ok": 1})])
+with patch.object(mod.time, "sleep") as _sl2:
+    _resp2 = _p_s._retryable_request({}, {}, False, _p_s.valves)
+_assert(_resp2.status_code == 200, "503→200: returns success")
+_assert(1.0 <= _sl2.call_args_list[0][0][0] < 2.0, "503 no Retry-After: backoff delay used")
+
+# Non-retryable 4xx → raise immediately, no retry
+for _code in (400, 401, 403, 404):
+    _p_e = Pipe(); _p_e.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_e.valves.MAX_RETRIES = 2
+    _script_post(_p_e, [_FakeHTTPResp(_code), _FakeHTTPResp(200)])
+    _raised = False
+    with patch.object(mod.time, "sleep"):
+        try:
+            _p_e._retryable_request({}, {}, False, _p_e.valves)
+        except mod.requests.exceptions.HTTPError:
+            _raised = True
+    _assert(_raised, f"HTTP {_code} raised immediately")
+    _assert(_p_e._post_calls == 1, f"HTTP {_code} not retried")
+
+# Retryable every time → raises after MAX_RETRIES+1 attempts, sleeps MAX_RETRIES times
+_p_x = Pipe(); _p_x.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_x.valves.MAX_RETRIES = 2
+_script_post(_p_x, [_FakeHTTPResp(429), _FakeHTTPResp(429), _FakeHTTPResp(429)])
+_raised_x = False
+with patch.object(mod.time, "sleep") as _sl3:
+    try:
+        _p_x._retryable_request({}, {}, False, _p_x.valves)
+    except mod.requests.exceptions.HTTPError:
+        _raised_x = True
+_assert(_raised_x, "exhausted retries → HTTPError raised")
+_assert(_p_x._post_calls == 3, "MAX_RETRIES=2 → 3 attempts total")
+_assert(_sl3.call_count == 2, "slept twice (between the 3 attempts)")
+
+# MAX_RETRIES=0 → no retry even on 429
+_p_z = Pipe(); _p_z.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_z.valves.MAX_RETRIES = 0
+_script_post(_p_z, [_FakeHTTPResp(429), _FakeHTTPResp(200)])
+_raised_z = False
+with patch.object(mod.time, "sleep"):
+    try:
+        _p_z._retryable_request({}, {}, False, _p_z.valves)
+    except mod.requests.exceptions.HTTPError:
+        _raised_z = True
+_assert(_raised_z and _p_z._post_calls == 1, "MAX_RETRIES=0 disables retry")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
