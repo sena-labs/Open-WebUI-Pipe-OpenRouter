@@ -1972,6 +1972,27 @@ class Pipe:
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
+    async def _emit_citation_events(self, emitter, citations) -> None:
+        """Emit one Open WebUI 'citation' event per URL when an emitter is provided.
+
+        Markdown citations still ship in the final footer; this adds a structured
+        event so OWUI can render citations as native footnotes. No-op when the
+        emitter is missing or citations are empty; emitter exceptions are
+        swallowed so a misbehaving consumer never breaks a response.
+        """
+        if not emitter or not citations:
+            return
+        for url in citations:
+            if not isinstance(url, str) or not url:
+                continue
+            try:
+                await emitter({
+                    "type": "citation",
+                    "data": {"source": {"name": url, "url": url}},
+                })
+            except Exception:
+                pass
+
     async def _prefetch_credit_if_enabled(self, valves) -> None:
         """Pre-warm the credit cache off the event loop, so the synchronous
         _fetch_credit_balance call inside a footer hits the cache (no blocking I/O).
@@ -2091,6 +2112,7 @@ class Pipe:
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
+                await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
                 await self._prefetch_credit_if_enabled(valves)
                 return self._format_final_message(res, payload, valves)
 
@@ -2108,6 +2130,7 @@ class Pipe:
                     resp.close()
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
+        await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
         await self._prefetch_credit_if_enabled(valves)
         final = self._format_final_message(res, payload, valves)
         if final.startswith("OpenRouter Error:"):
@@ -2228,6 +2251,7 @@ class Pipe:
                 return
             tool_calls = state.get("tool_calls")
             if not tool_calls:
+                await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
                 await self._prefetch_credit_if_enabled(valves)
                 yield self._stream_footer(state, valves)
                 return
@@ -2244,6 +2268,7 @@ class Pipe:
                 break
             yield piece
         if not state.get("error"):
+            await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
             await self._prefetch_credit_if_enabled(valves)
             yield self._stream_footer(state, valves)
             yield "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"

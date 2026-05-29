@@ -4004,6 +4004,45 @@ _p_pf.valves.SHOW_REMAINING_CREDIT = False
 asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
 _assert(_threads_pf == [], "credit prefetch skipped when SHOW_REMAINING_CREDIT off")
 
+# ── citation events emit ───────────────────────────────────────────────────────
+
+_section("citation events emit (OWUI native)")
+
+_emitter_calls = []
+async def _emitter_ok(ev):
+    _emitter_calls.append(ev)
+_p_ce = Pipe()
+
+asyncio.run(_p_ce._emit_citation_events(_emitter_ok, ["https://a.com", "https://b.com"]))
+_assert(len(_emitter_calls) == 2, "one event per citation URL")
+_assert(_emitter_calls[0]["type"] == "citation", "event type is 'citation'")
+_assert(
+    _emitter_calls[0]["data"]["source"]["url"] == "https://a.com"
+    and _emitter_calls[1]["data"]["source"]["url"] == "https://b.com",
+    "event source.url matches each citation",
+)
+
+_emitter_calls.clear()
+asyncio.run(_p_ce._emit_citation_events(None, ["x"]))
+_assert(_emitter_calls == [], "no emit when emitter is None")
+
+asyncio.run(_p_ce._emit_citation_events(_emitter_ok, []))
+_assert(_emitter_calls == [], "no emit when citations list empty")
+
+asyncio.run(_p_ce._emit_citation_events(_emitter_ok, [None, "", 123, "https://ok.com"]))
+_assert(
+    len(_emitter_calls) == 1
+    and _emitter_calls[0]["data"]["source"]["url"] == "https://ok.com",
+    "non-string / empty citations skipped, valid ones emitted",
+)
+
+# Emitter raising must not break the loop
+_emitter_calls.clear()
+async def _emitter_boom(ev):
+    raise RuntimeError("boom")
+asyncio.run(_p_ce._emit_citation_events(_emitter_boom, ["https://x.com", "https://y.com"]))
+_assert(True, "raising emitter swallowed (no exception leaks)")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
