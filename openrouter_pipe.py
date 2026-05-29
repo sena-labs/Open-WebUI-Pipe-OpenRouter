@@ -733,6 +733,25 @@ class Pipe:
             },
         )
 
+        RESPONSE_FORMAT: str = Field(
+            default=os.getenv("OPENROUTER_RESPONSE_FORMAT", ""),
+            description="Force output format when the request doesn't set one: '' (off) or 'json_object' (any valid JSON). For full JSON-schema mode, send response_format in the request body. The body's own response_format always wins.",
+            json_schema_extra={"input": {"type": "select", "options": [
+                {"value": "", "label": "Off"},
+                {"value": "json_object", "label": "JSON object"},
+            ]}},
+        )
+        TOOL_CHOICE: str = Field(
+            default=os.getenv("OPENROUTER_TOOL_CHOICE", ""),
+            description="Default tool_choice when the request doesn't set one: '' (auto/model decides), 'none', 'auto', or 'required'. The request body's own tool_choice always wins.",
+            json_schema_extra={"input": {"type": "select", "options": [
+                {"value": "", "label": "Default (auto)"},
+                {"value": "none", "label": "None"},
+                {"value": "auto", "label": "Auto"},
+                {"value": "required", "label": "Required"},
+            ]}},
+        )
+
         MAX_TOOL_ITERATIONS: int = Field(
             default=int(os.getenv("OPENROUTER_MAX_TOOL_ITERATIONS", "5")),
             ge=1,
@@ -807,6 +826,8 @@ class Pipe:
         SHOW_COST_INFO: Optional[bool] = None
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
+        RESPONSE_FORMAT: Optional[str] = None
+        TOOL_CHOICE: Optional[str] = None
         MAX_TOOL_ITERATIONS: Optional[int] = Field(default=None, ge=1)
         SHOW_REMAINING_CREDIT: Optional[bool] = None
 
@@ -1738,6 +1759,14 @@ class Pipe:
         # Request usage accounting explicitly so cost/credit footers aren't blank.
         if valves.SHOW_COST_INFO:
             payload["usage"] = {"include": True}
+
+        rf = (valves.RESPONSE_FORMAT or "").strip()
+        if rf == "json_object" and "response_format" not in payload:
+            payload["response_format"] = {"type": "json_object"}
+
+        tc = (valves.TOOL_CHOICE or "").strip().lower()
+        if tc in ("none", "auto", "required") and "tool_choice" not in payload:
+            payload["tool_choice"] = tc
 
         return payload
 

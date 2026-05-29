@@ -3860,6 +3860,32 @@ _pu3 = Pipe()
 _pp3 = _pu3._prepare_payload({"model": "x", "messages": [], "user": {"name": "no-id"}}, _pu3.valves)
 _assert("user" not in _pp3, "user dict without id is dropped (no empty user)")
 
+_section("RESPONSE_FORMAT + TOOL_CHOICE valves")
+
+_prf = Pipe()
+_assert(_prf.valves.RESPONSE_FORMAT == "", "RESPONSE_FORMAT default empty")
+_assert(_prf.valves.TOOL_CHOICE == "", "TOOL_CHOICE default empty")
+_assert(Pipe.UserValves().RESPONSE_FORMAT is None, "UserValves RESPONSE_FORMAT inherits (None)")
+_assert(Pipe.UserValves().TOOL_CHOICE is None, "UserValves TOOL_CHOICE inherits (None)")
+
+_prf.valves.RESPONSE_FORMAT = "json_object"
+_pp = _prf._prepare_payload({"model": "x", "messages": []}, _prf.valves)
+_assert(_pp.get("response_format") == {"type": "json_object"}, "json_object response_format injected")
+
+_prf.valves.TOOL_CHOICE = "required"
+_pp2 = _prf._prepare_payload({"model": "x", "messages": []}, _prf.valves)
+_assert(_pp2.get("tool_choice") == "required", "tool_choice injected from valve")
+
+# body wins over valve
+_pp3 = _prf._prepare_payload({"model": "x", "messages": [], "response_format": {"type": "json_schema", "json_schema": {}}, "tool_choice": "none"}, _prf.valves)
+_assert(_pp3["response_format"]["type"] == "json_schema", "explicit body response_format preserved")
+_assert(_pp3["tool_choice"] == "none", "explicit body tool_choice preserved")
+
+# empty valve → nothing injected
+_prf2 = Pipe()
+_pp4 = _prf2._prepare_payload({"model": "x", "messages": []}, _prf2.valves)
+_assert("response_format" not in _pp4 and "tool_choice" not in _pp4, "no injection when valves empty")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
