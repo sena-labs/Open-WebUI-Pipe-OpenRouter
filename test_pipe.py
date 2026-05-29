@@ -3903,6 +3903,50 @@ _pcc._credit_cache_evict_if_needed()
 _assert(len(_pcc._credit_cache) <= 1000, "credit cache capped at 1000")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Coverage: pipe() tool dispatch + stream cap + credit in final message
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("coverage: pipe() tool dispatch + stream cap + credit in final message")
+
+# (a) pipe() entry with __tools__ (non-stream) runs the tool loop and returns the final answer
+_pe9 = Pipe(); _pe9.valves.OPENROUTER_API_KEY = "sk-or-test"; _pe9.valves.MAX_TOOL_ITERATIONS = 3
+_r1 = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}}]}
+_r2 = {"choices": [{"message": {"role": "assistant", "content": "final answer"}}]}
+class _R9:
+    def __init__(self, b): self._b = b
+    def json(self): return self._b
+    def close(self): pass
+_seq9 = [_R9(_r1), _R9(_r2)]
+_pe9._retryable_request = lambda headers, payload, stream, valves: _seq9.pop(0)  # type: ignore
+_tools9 = {"t": {"spec": {"name": "t"}, "callable": lambda: "tool-result"}}
+_res9 = _run(_pe9.pipe({"model": "x", "messages": [{"role": "user", "content": "hi"}], "stream": False}, __tools__=_tools9))
+_assert("final answer" in _res9, "pipe() with __tools__ runs the loop and returns the final answer")
+
+# (b) streaming tool loop hits the iteration cap → cap note emitted
+_ps9 = Pipe(); _ps9.valves.OPENROUTER_API_KEY = "sk-or-test"; _ps9.valves.MAX_TOOL_ITERATIONS = 1
+def _toolround():
+    return _FakeStream([
+        b"data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}).encode(),
+        b"data: [DONE]",
+    ])
+_streams9 = [_toolround(), _toolround(), _toolround()]
+_ps9._retryable_request = lambda headers, payload, stream, valves: _streams9.pop(0)  # type: ignore
+_tools9b = {"t": {"spec": {"name": "t"}, "callable": lambda: "r"}}
+async def _collect9():
+    out = []
+    async for piece in _ps9._run_tools_stream({}, {"model": "x", "messages": []}, _ps9.valves, _tools9b, None):
+        out.append(piece)
+    return "".join(out)
+_capstream = _run(_collect9())
+_assert("MAX_TOOL_ITERATIONS" in _capstream, "streaming tool loop emits cap note at the limit")
+
+# (c) credit line appears in _format_final_message when enabled
+_pf9 = Pipe(); _pf9.valves.SHOW_REMAINING_CREDIT = True
+_pf9._fetch_credit_balance = lambda valves: 7.5  # type: ignore
+_fm9 = _pf9._format_final_message({"choices": [{"message": {"content": "ok"}}]}, {"model": "x"}, _pf9.valves)
+_assert("credit remaining" in _fm9.lower(), "credit line in _format_final_message when enabled")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 

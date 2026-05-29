@@ -69,7 +69,7 @@ The pipe implements the following security practices:
 
 Every push to `main` and every pull request runs:
 
-- **Unit tests** (`.github/workflows/tests.yml`) — 660 tests across Python 3.10–3.13. Failures block merge.
+- **Unit tests** (`.github/workflows/tests.yml`) — 696 tests across Python 3.10–3.13. Failures block merge.
 
 ## Disclosure Policy
 

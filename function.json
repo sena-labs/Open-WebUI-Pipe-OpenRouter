@@ -9,7 +9,7 @@
       "author": "Sena Labs",
       "author_url": "https://github.com/sena-labs",
       "funding_url": "https://github.com/sponsors/sena-labs",
-      "version": "1.8.1",
+      "version": "1.8.2",
       "license": "MIT",
       "required_open_webui_version": "0.4.0",
       "requirements": ["requests>=2.32.4", "pydantic>=2.0"]
