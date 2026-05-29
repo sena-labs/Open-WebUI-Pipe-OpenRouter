@@ -1,5 +1,5 @@
 """
-Integration test for OpenRouter Pipe v1.3.0
+Integration test for OpenRouter Pipe v1.8.2
 Tests the pipe against the LIVE OpenRouter API.
 
 Usage:
@@ -391,7 +391,7 @@ body_prov = {
     "stream": False,
 }
 
-payload = pipe_prov._prepare_payload(body_prov)
+payload = pipe_prov._prepare_payload(body_prov, pipe_prov.valves)
 _assert(payload["provider"]["sort"] == "price", "provider sort = price")
 _assert(payload["provider"]["order"] == ["openai", "anthropic"], "provider order")
 _assert(payload["provider"]["ignore"] == ["google"], "provider ignore")
