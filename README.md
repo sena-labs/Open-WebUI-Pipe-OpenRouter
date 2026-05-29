@@ -91,7 +91,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 624 tests — verify everything is green
+python test_pipe.py        # 660 tests — verify everything is green
 ```
 
 ## Usage
@@ -199,7 +199,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | Valve | Env Var | Default | Description |
 | --- | --- | --- | --- |
 | `REQUEST_TIMEOUT` | `OPENROUTER_REQUEST_TIMEOUT` | `90` | HTTP timeout in seconds |
-| `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors |
+| `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors (network timeouts/connection failures **and** HTTP 429/5xx, honoring `Retry-After` ≤60s; non-transient 4xx fail fast) |
 | `MAX_TOOL_ITERATIONS` | `OPENROUTER_MAX_TOOL_ITERATIONS` | `5` | Max native tool-call rounds per request before stopping (caps runaway tool loops) |
 | `HTTP_REFERER_OVERRIDE` | `OPENROUTER_HTTP_REFERER` | `""` | Override the `HTTP-Referer` header sent to OpenRouter (must include scheme). Empty falls back to `WEBUI_URL` |
 
@@ -257,7 +257,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (624 tests)
+├── test_pipe.py            # Unit test suite (660 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -287,7 +287,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (624 tests)
+python test_pipe.py                       # Unit tests (660 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
@@ -318,8 +318,9 @@ Your key is incorrect or malformed. Retrieve a valid key from
 
 #### Solution
 
-Wait a moment and retry. `MAX_RETRIES` only retries on network timeouts and connection failures —
-HTTP 429 errors are returned immediately. Consider upgrading your OpenRouter plan for higher limits.
+`MAX_RETRIES` now retries HTTP 429 (and transient 5xx), honoring the server's `Retry-After` header
+(capped at 60s) when present, else exponential backoff. If retries are exhausted the rate-limit error is
+returned — wait a moment, lower your request rate, or upgrade your OpenRouter plan for higher limits.
 
 ### "Insufficient credits (HTTP 402)"
 

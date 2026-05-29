@@ -141,7 +141,9 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 |---|--------|-----------------|
 | 12.1 | Set `MAX_RETRIES = 2`, simulate a temporary server timeout | The pipe retries up to 3 total attempts (1 + 2 retries), then shows error |
 | 12.2 | Check logs for `[OpenRouter Pipe] Attempt X failed:` | Logs show each failed attempt |
-| 12.3 | An HTTP 4xx error (e.g. 401) is **not** retried | Error returned immediately without retry |
+| 12.3 | A non-transient 4xx error (e.g. 401/403/404) is **not** retried | Error returned immediately without retry |
+| 12.4 | HTTP 429 or transient 5xx (502/503/504) with `MAX_RETRIES ≥ 1` | Retried within the budget; succeeds, or surfaces the error after exhaustion |
+| 12.5 | A 429/503 response carrying `Retry-After` | The pipe waits the indicated delay (capped at 60s) before retrying |
 
 ---
 
@@ -293,7 +295,7 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 624 passed, 0 failed
+- [ ] `python test_pipe.py` → 660 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 400+ models with provider icons
