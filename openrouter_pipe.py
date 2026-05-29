@@ -250,10 +250,14 @@ def _format_image_output(images: list) -> str:
         if not isinstance(img, dict):
             continue
         url = (img.get("image_url") or {}).get("url", "")
-        if not url:
+        if not url or len(url) > 2_000_000:
             continue
         lower = url.lower()
-        if not (lower.startswith(("http://", "https://")) or lower.startswith("data:image/")):
+        allowed_data = lower.startswith((
+            "data:image/png", "data:image/jpeg", "data:image/jpg",
+            "data:image/gif", "data:image/webp",
+        ))
+        if not (lower.startswith(("http://", "https://")) or allowed_data):
             continue
         parts.append(f"![Generated image]({url.replace(')', '%29')})")
     return "\n\n".join(parts)
@@ -314,7 +318,7 @@ class EncryptedStr(str):
             token = value[len(_ENC_PREFIX):].encode("utf-8")
             return fernet.decrypt(token).decode("utf-8")
         except Exception:
-            return value
+            return ""
 
 
 class Pipe:
@@ -814,7 +818,8 @@ class Pipe:
         self._session = requests.Session()
         # Cache env vars that don't change at runtime
         self._referer = os.getenv("WEBUI_URL", "http://localhost:3000")
-        self._title = os.getenv("WEBUI_NAME", "OpenWebUI")
+        _raw_title = os.getenv("WEBUI_NAME", "OpenWebUI")
+        self._title = re.sub(r"[\r\n\x00]", "", _raw_title) or "OpenWebUI"
         # Model list cache
         self._models_cache: Optional[List[dict]] = None
         self._models_cache_ts: float = 0.0
@@ -1946,7 +1951,8 @@ class Pipe:
         actual_model = res.get("model", "")
         requested_model = payload.get("model", "")
         if payload.get("models") and actual_model and actual_model != requested_model:
-            final_parts.append(f"\n\n---\n*Responded by: {actual_model}*")
+            safe_model = re.sub(r"[`\r\n\]\[()]", "", str(actual_model))
+            final_parts.append(f"\n\n---\n*Responded by: {safe_model}*")
 
         if rendered_citations:
             final_parts.append(rendered_citations)

@@ -3380,8 +3380,8 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     )
     _assert(EncryptedStr.encrypt("") == "", "encrypt() of empty string is empty")
     _assert(
-        EncryptedStr.decrypt("encrypted:not-a-valid-token") == "encrypted:not-a-valid-token",
-        "decrypt() returns corrupt/foreign token unchanged (never raises)",
+        EncryptedStr.decrypt("encrypted:not-a-valid-token") == "",
+        "decrypt() of undecryptable prefixed token returns empty (never raises)",
     )
 
 with patch.dict(os.environ, {}, clear=True):
@@ -3806,6 +3806,32 @@ finally:
     mod.time.sleep = _orig_sleep
 _assert(_r.status_code == 200, "async retry returns success")
 _assert(_sleep_threads and all(t != _main_thread for t in _sleep_threads), "retry sleep ran off the main/event-loop thread")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Summary
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("security sanitization")
+
+with patch.dict(os.environ, {"WEBUI_NAME": "Evil\r\nX-Inject: 1"}):
+    _px = Pipe(); _px.valves.OPENROUTER_API_KEY = "sk-or-x"
+    _h = _px._build_headers(valves=_px.valves)
+    _assert("\r" not in _h["X-Title"] and "\n" not in _h["X-Title"], "X-Title strips CR/LF")
+
+_pm = Pipe()
+_res_fb = {"choices": [{"message": {"content": "hi"}}], "model": "evil`x", "models": ["a"]}
+_msg = _pm._format_final_message(_res_fb, {"model": "a", "models": ["a", "b"]}, _pm.valves)
+_assert("Responded by" in _msg and "`" not in _msg.split("Responded by")[-1], "Responded-by strips backticks")
+
+_assert(mod._format_image_output([{"image_url": {"url": "data:image/svg+xml,<svg onload=alert(1)>"}}]) == "", "svg data URL rejected")
+_assert("data:image/png;base64,iVBOR" in mod._format_image_output([{"image_url": {"url": "data:image/png;base64,iVBOR"}}]), "png data URL allowed")
+_assert(mod._format_image_output([{"image_url": {"url": "data:image/png;base64," + ("A" * 3_000_000)}}]) == "", "oversized data URL rejected")
+_assert("https://x/y.png" in mod._format_image_output([{"image_url": {"url": "https://x/y.png"}}]), "http image URL still allowed")
+
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretA"}):
+    _ct = mod.EncryptedStr.encrypt("sk-or-real")
+with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretB"}):
+    _assert(mod.EncryptedStr.decrypt(_ct) == "", "wrong-key decrypt returns empty, not ciphertext")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
