@@ -3360,12 +3360,22 @@ _assert(Pipe.Valves(OPENROUTER_API_KEY="k").USE_GSTATIC_FAVICONS is False, "35q 
 
 # ── EncryptedStr ──────────────────────────────────────────────────────────────
 
+# cryptography is an optional dep: when absent, EncryptedStr falls back to
+# plaintext. Gate the ciphertext assertions so the suite passes either way.
+_HAS_CRYPTO = mod._Fernet is not None
+
 _section("EncryptedStr key-at-rest")
 
 with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _ct = EncryptedStr.encrypt("sk-or-v1-abcdef")
-    _assert(_ct.startswith("encrypted:"), "encrypt() tags ciphertext with prefix")
-    _assert(_ct != "sk-or-v1-abcdef", "encrypt() does not return plaintext")
+    _assert(
+        _ct.startswith("encrypted:") if _HAS_CRYPTO else _ct == "sk-or-v1-abcdef",
+        "encrypt() tags ciphertext (crypto) / plaintext no-op (no crypto)",
+    )
+    _assert(
+        (_ct != "sk-or-v1-abcdef") if _HAS_CRYPTO else (_ct == "sk-or-v1-abcdef"),
+        "encrypt() differs from plaintext (crypto) / unchanged (no crypto)",
+    )
     _assert(
         EncryptedStr.decrypt(_ct) == "sk-or-v1-abcdef",
         "decrypt() round-trips back to original",
@@ -3380,8 +3390,9 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     )
     _assert(EncryptedStr.encrypt("") == "", "encrypt() of empty string is empty")
     _assert(
-        EncryptedStr.decrypt("encrypted:not-a-valid-token") == "",
-        "decrypt() of undecryptable prefixed token returns empty (never raises)",
+        EncryptedStr.decrypt("encrypted:not-a-valid-token")
+        == ("" if _HAS_CRYPTO else "encrypted:not-a-valid-token"),
+        "decrypt() undecryptable token → empty (crypto) / passthrough (no crypto)",
     )
 
 with patch.dict(os.environ, {}, clear=True):
@@ -3394,6 +3405,29 @@ with patch.dict(os.environ, {}, clear=True):
         "no WEBUI_SECRET_KEY → decrypt() is a plaintext no-op",
     )
 
+# Force the no-cryptography path (covers the plaintext fallback regardless of
+# whether the cryptography package is installed in the test environment).
+_section("EncryptedStr no-cryptography fallback (forced _Fernet=None)")
+
+_saved_fernet = mod._Fernet
+mod._Fernet = None
+try:
+    with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "x"}):
+        _assert(
+            mod.EncryptedStr.encrypt("sk-or-v1-z") == "sk-or-v1-z",
+            "no crypto → encrypt is a plaintext no-op even with a secret set",
+        )
+        _assert(
+            mod.EncryptedStr.decrypt("encrypted:whatever") == "encrypted:whatever",
+            "no crypto → decrypt returns the prefixed input unchanged",
+        )
+        _assert(
+            mod.EncryptedStr.decrypt("sk-or-v1-plain") == "sk-or-v1-plain",
+            "no crypto → non-prefixed value passes through",
+        )
+finally:
+    mod._Fernet = _saved_fernet
+
 # ── Admin key encryption wiring ────────────────────────────────────────────────
 
 _section("Admin key encrypted at rest, decrypted on use")
@@ -3402,8 +3436,9 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _p = Pipe()
     _p.valves.OPENROUTER_API_KEY = mod.EncryptedStr.encrypt("sk-or-v1-secret")
     _assert(
-        _p.valves.OPENROUTER_API_KEY.startswith("encrypted:"),
-        "stored admin key is ciphertext",
+        _p.valves.OPENROUTER_API_KEY.startswith("encrypted:")
+        if _HAS_CRYPTO else _p.valves.OPENROUTER_API_KEY == "sk-or-v1-secret",
+        "stored admin key ciphertext (crypto) / plaintext (no crypto)",
     )
     _hdrs = _p._build_headers(valves=_p.valves)
     _assert(
@@ -3415,8 +3450,9 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _p2 = Pipe()
     _v = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-fromctor")
     _assert(
-        _v.OPENROUTER_API_KEY.startswith("encrypted:"),
-        "Valves constructor encrypts the key via field_validator",
+        _v.OPENROUTER_API_KEY.startswith("encrypted:")
+        if _HAS_CRYPTO else _v.OPENROUTER_API_KEY == "sk-or-v1-fromctor",
+        "Valves constructor encrypts (crypto) / stores plaintext (no crypto)",
     )
 
 # ── UserValves + effective-valves merge ────────────────────────────────────────
@@ -3831,7 +3867,10 @@ _assert("https://x/y.png" in mod._format_image_output([{"image_url": {"url": "ht
 with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretA"}):
     _ct = mod.EncryptedStr.encrypt("sk-or-real")
 with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretB"}):
-    _assert(mod.EncryptedStr.decrypt(_ct) == "", "wrong-key decrypt returns empty, not ciphertext")
+    _assert(
+        mod.EncryptedStr.decrypt(_ct) == ("" if _HAS_CRYPTO else "sk-or-real"),
+        "wrong-key decrypt → empty (crypto) / plaintext passthrough (no crypto)",
+    )
 
 with patch.dict(os.environ, {"WEBUI_URL": "http://h\r\nX-Inject: 1"}):
     _pr2 = Pipe(); _pr2.valves.OPENROUTER_API_KEY = "sk-or-x"

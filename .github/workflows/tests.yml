@@ -28,6 +28,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # cryptography is an optional runtime dep (Open WebUI bundles it).
+          # Install it in CI so the at-rest key-encryption path is exercised;
+          # the suite also covers the plaintext fallback when it is absent.
+          pip install cryptography
 
       - name: Run tests
         run: python test_pipe.py
