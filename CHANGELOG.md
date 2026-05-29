@@ -7,13 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-05-29
+
 ### Added
 
+- **`RESPONSE_FORMAT` json_schema mode + `RESPONSE_SCHEMA` valve** — set `RESPONSE_FORMAT = json_schema` and paste a JSON Schema string into `RESPONSE_SCHEMA` to inject a strict `response_format: {"type": "json_schema", "json_schema": {"name", "schema", "strict": true}}`. Invalid JSON is logged and skipped. The request body's own `response_format` always wins. Mirrored in `UserValves`
+- **Open WebUI native citation events** — the tool-calling paths (streaming + non-streaming) now emit `{"type": "citation", "data": {"source": {"name": url, "url": url}}}` events to the OWUI event emitter, in addition to the existing markdown footer, so the UI can render citations as native footnotes
 - **`RESPONSE_FORMAT` + `TOOL_CHOICE` valves** — force a JSON output mode (`json_object`) and/or set a default `tool_choice` (`none`/`auto`/`required`) when the request doesn't specify one; the request body's own values always win. Both mirrored in `UserValves`
 - **Explicit usage accounting + user attribution** — when `SHOW_COST_INFO` is on, the pipe requests `usage: {include: true}` so cost/credit footers aren't blank when OpenRouter omits usage; the Open WebUI `user` object is now forwarded to OpenRouter as its id string (for abuse tracking) instead of being dropped
 
 ### Fixed
 
+- **CI green on Python 3.10–3.13** — installed `cryptography` in the CI image so the at-rest encryption path is exercised (it is an optional runtime dep), and made the ciphertext assertions crypto-aware so the suite also passes in a bare environment (gated on `_Fernet` availability, with an explicit forced-`_Fernet=None` fallback section)
+- **`SyntaxError` on Python 3.10/3.11** — the citation-URL sanitize regex was inlined in an f-string expression, illegal before 3.12; hoisted to a module-level compiled regex so the module imports on every CI matrix leg (Open WebUI's runtime is 3.11)
+- **Credit fetch in tool-path footers blocked the event loop** — `_run_tools_stream` / `_run_tools_nonstream` now pre-warm the credit cache via `asyncio.to_thread` before each footer, so a cold `SHOW_REMAINING_CREDIT` fetch no longer stalls other users when tools are used
 - `integration_test.py` calls updated for the v1.7 `valves`-threaded method signatures
 - Remaining-credit footer now also shown on the plain streaming path; tool-iteration cap note no longer appended to error responses
 - Fractional `Retry-After` values are now honored (previously truncated to whole seconds); the per-key credit cache is now bounded; the ZDR-capable model list refreshes hourly instead of caching for the whole process lifetime

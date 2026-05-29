@@ -91,7 +91,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 699 tests — verify everything is green
+python test_pipe.py        # 727 tests — verify everything is green
 ```
 
 ## Usage
@@ -257,7 +257,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (699 tests)
+├── test_pipe.py            # Unit test suite (727 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -287,7 +287,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (699 tests)
+python test_pipe.py                       # Unit tests (727 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
