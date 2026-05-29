@@ -3887,6 +3887,22 @@ _pp4 = _prf2._prepare_payload({"model": "x", "messages": []}, _prf2.valves)
 _assert("response_format" not in _pp4 and "tool_choice" not in _pp4, "no injection when valves empty")
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Robustness polish
+# ══════════════════════════════════════════════════════════════════════════════
+
+_section("robustness polish")
+
+_prr = Pipe()
+_assert(_prr._parse_retry_after("1.5") == 1.5, "fractional Retry-After honored")
+_assert(_prr._parse_retry_after("3") == 3.0, "integer Retry-After still works")
+
+_pcc = Pipe()
+for _i in range(1100):
+    _pcc._credit_cache[f"k{_i}"] = (1.0, 0.0)
+_pcc._credit_cache_evict_if_needed()
+_assert(len(_pcc._credit_cache) <= 1000, "credit cache capped at 1000")
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 

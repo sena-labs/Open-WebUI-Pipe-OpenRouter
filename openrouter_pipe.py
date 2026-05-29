@@ -858,6 +858,7 @@ class Pipe:
         # Lazy-loaded set of model IDs that have at least one ZDR endpoint.
         # None = not attempted; frozenset() = attempted but failed/empty.
         self._zdr_model_ids: Optional[frozenset] = None
+        self._zdr_model_ids_ts: float = 0.0
         # Per-key remaining-credit cache: {key_hash: (remaining_float, ts)}.
         # Keyed by the decrypted key's hash because per-user keys have per-key balances.
         self._credit_cache: dict = {}
@@ -1493,7 +1494,9 @@ class Pipe:
         ``pipes()`` call). The endpoint returns a list of model IDs that have
         at least one Zero Data Retention provider endpoint.
         """
-        if self._zdr_model_ids is not None:
+        if self._zdr_model_ids is not None and (
+            time.monotonic() - self._zdr_model_ids_ts
+        ) < _PROVIDER_REGISTRY_TTL:
             return self._zdr_model_ids
 
         ids: set = set()
@@ -1521,6 +1524,7 @@ class Pipe:
             print(f"[OpenRouter Pipe] ZDR endpoint fetch failed: {exc}")
 
         self._zdr_model_ids = frozenset(ids)
+        self._zdr_model_ids_ts = time.monotonic()
         return self._zdr_model_ids
 
     def _parse_variant_specs(self) -> List[tuple]:
@@ -1917,6 +1921,11 @@ class Pipe:
 
     _CREDIT_TTL = 60.0
 
+    def _credit_cache_evict_if_needed(self) -> None:
+        """Bound the per-key credit cache to avoid unbounded growth."""
+        if len(self._credit_cache) > 1000:
+            self._credit_cache.clear()
+
     def _fetch_credit_balance(self, valves) -> Optional[float]:
         """Return remaining OpenRouter credit (total_credits - total_usage), cached
         ~60s per key. Returns None on any failure so the footer is simply omitted.
@@ -1948,6 +1957,7 @@ class Pipe:
                     resp.close()
                 except Exception:
                     pass
+        self._credit_cache_evict_if_needed()
         self._credit_cache[key_hash] = (remaining, time.monotonic())
         return remaining
 
@@ -2390,7 +2400,7 @@ class Pipe:
             return None
         value = str(value).strip()
         try:
-            secs = float(int(value))
+            secs = float(value)
         except ValueError:
             parsed = email.utils.parsedate_tz(value)
             if not parsed:
