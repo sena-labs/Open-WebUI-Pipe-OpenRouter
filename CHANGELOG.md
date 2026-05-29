@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`RESPONSE_FORMAT` + `TOOL_CHOICE` valves** — force a JSON output mode (`json_object`) and/or set a default `tool_choice` (`none`/`auto`/`required`) when the request doesn't specify one; the request body's own values always win. Both mirrored in `UserValves`
+- **Explicit usage accounting + user attribution** — when `SHOW_COST_INFO` is on, the pipe requests `usage: {include: true}` so cost/credit footers aren't blank when OpenRouter omits usage; the Open WebUI `user` object is now forwarded to OpenRouter as its id string (for abuse tracking) instead of being dropped
+
 ### Fixed
 
 - `integration_test.py` calls updated for the v1.7 `valves`-threaded method signatures
 - Remaining-credit footer now also shown on the plain streaming path; tool-iteration cap note no longer appended to error responses
+- Fractional `Retry-After` values are now honored (previously truncated to whole seconds); the per-key credit cache is now bounded; the ZDR-capable model list refreshes hourly instead of caching for the whole process lifetime
 
 ### Changed
 
