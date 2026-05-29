@@ -151,12 +151,15 @@ def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
         return text
 
 
+_CITATION_SANITIZE_RE = re.compile(r"[`\r\n]")
+
+
 def _format_citation_list(citations: Optional[List[str]]) -> str:
     if not citations:
         return ""
     try:
         rendered = "\n".join(
-            f"{idx + 1}. {re.sub(r'[`\r\n]', '', str(url))}"
+            f"{idx + 1}. {_CITATION_SANITIZE_RE.sub('', str(url))}"
             for idx, url in enumerate(citations)
         )
         return f"\n\n---\nCitations:\n{rendered}"
