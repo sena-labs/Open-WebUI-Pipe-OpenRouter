@@ -3737,6 +3737,21 @@ with patch.object(mod.time, "sleep"):
         _raised_z = True
 _assert(_raised_z and _p_z._post_calls == 1, "MAX_RETRIES=0 disables retry")
 
+_section("_format_http_error new status codes")
+
+def _err(status):
+    return mod.requests.exceptions.HTTPError(response=_FakeHTTPResp(status))
+
+_pf = Pipe()
+_assert("not found" in _pf._format_http_error(_err(404)).lower(), "404 → 'not found' wording")
+_assert("408" in _pf._format_http_error(_err(408)), "408 message")
+_m413 = _pf._format_http_error(_err(413)).lower()
+_assert("large" in _m413 or "limit" in _m413, "413 → too-large/limit wording")
+_assert("500" in _pf._format_http_error(_err(500)), "500 message")
+_assert("502" in _pf._format_http_error(_err(502)), "502 message")
+_assert("503" in _pf._format_http_error(_err(503)), "503 message")
+_assert("504" in _pf._format_http_error(_err(504)), "504 message")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

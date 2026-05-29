@@ -2410,6 +2410,20 @@ class Pipe:
             base = "OpenRouter Error: Invalid API key (HTTP 401). Check your OPENROUTER_API_KEY."
         elif status == 403:
             base = "OpenRouter Error: Access denied (HTTP 403). Your API key may not have permission for this model."
+        elif status == 404:
+            base = "OpenRouter Error: Model or endpoint not found (HTTP 404). The model ID may be wrong or unavailable."
+        elif status == 408:
+            base = "OpenRouter Error: Request timed out on the server (HTTP 408). Try again."
+        elif status == 413:
+            base = "OpenRouter Error: Request too large (HTTP 413). The prompt or context likely exceeds the model's limit."
+        elif status == 500:
+            base = "OpenRouter Error: Provider error (HTTP 500). The upstream model provider failed; try again or pick another model."
+        elif status == 502:
+            base = "OpenRouter Error: Bad gateway (HTTP 502). The upstream provider is unreachable; try again."
+        elif status == 503:
+            base = "OpenRouter Error: Service unavailable (HTTP 503). The provider is overloaded; try again shortly."
+        elif status == 504:
+            base = "OpenRouter Error: Upstream timeout (HTTP 504). The provider took too long; try again."
         else:
             base = f"OpenRouter Error: HTTP {status}"
 
