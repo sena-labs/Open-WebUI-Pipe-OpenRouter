@@ -4102,6 +4102,58 @@ _us_nc = {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.001}
 _msg_nc = mod._format_cost_info(_us_nc, "USD")
 _assert("cached" not in _msg_nc.lower(), "no cached tokens → no cached fragment in footer")
 
+# ── multimodal input: image/file content parts pass through ────────────────────
+
+_section("multimodal input passthrough (vision + file parts)")
+
+_pmm = Pipe()
+_body_vis = {
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "user", "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}},
+        ]},
+    ],
+}
+_pp_vis = _pmm._prepare_payload(_body_vis, _pmm.valves)
+_assert(isinstance(_pp_vis["messages"][0]["content"], list), "list content preserved (no flattening)")
+_assert(_pp_vis["messages"][0]["content"][0]["type"] == "text", "text part preserved")
+_assert(_pp_vis["messages"][0]["content"][1]["type"] == "image_url", "image_url part preserved (vision input)")
+_assert(
+    _pp_vis["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png"),
+    "image data URL preserved verbatim",
+)
+
+# `type:file` parts (for OpenRouter's file-parser plugin) also pass through unchanged
+_body_file = {
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "user", "content": [
+            {"type": "text", "text": "Summarize this PDF."},
+            {"type": "file", "file": {"filename": "doc.pdf", "file_data": "data:application/pdf;base64,JVBERi0..."}},
+        ]},
+    ],
+}
+_pp_file = _pmm._prepare_payload(_body_file, _pmm.valves)
+_assert(_pp_file["messages"][0]["content"][1]["type"] == "file", "file content part preserved (file-parser plugin)")
+_assert(
+    _pp_file["messages"][0]["content"][1]["file"]["filename"] == "doc.pdf",
+    "file metadata preserved",
+)
+
+# Mixed roles: system + user with text-only string content still works
+_body_str = {
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content": "Hi"},
+    ],
+}
+_pp_str = _pmm._prepare_payload(_body_str, _pmm.valves)
+_assert(_pp_str["messages"][0]["content"] == "You are concise.", "plain-string content preserved")
+_assert(_pp_str["messages"][1]["content"] == "Hi", "plain-string user content preserved")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
