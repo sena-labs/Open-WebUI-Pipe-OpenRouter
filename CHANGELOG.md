@@ -7,30 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `integration_test.py` calls updated for the v1.7 `valves`-threaded method signatures
+- Remaining-credit footer now also shown on the plain streaming path; tool-iteration cap note no longer appended to error responses
+
+### Changed
+
+- Blocking retry waits and streaming pulls now run off the asyncio event loop (via `asyncio.to_thread`) so a slow `Retry-After` no longer stalls other users
+
 ### Security
 
-- **No redirect following on any OpenRouter call** — `allow_redirects=False` is now passed to all four HTTP requests (`/models`, `/chat/completions`, the provider-registry fetch, and the ZDR `/endpoints/zdr` fetch). Combined with the `requests>=2.32.4` floor, this prevents the `Authorization: Bearer` header from being forwarded to a redirect target (CVE-2024-35195 family) if the base URL is misconfigured
-- **`HTTP_REFERER_OVERRIDE` header-injection guard** — the referer override is rejected if it contains CR/LF/NUL control characters, so a misconfigured valve cannot split the request headers
-- **Generation-ID markdown sanitization** — `_format_generation_id` strips backticks/newlines from the upstream generation ID before wrapping it in a code span, so a malicious upstream value cannot break out and inject markdown into the rendered response
+- Sanitized `X-Title`/`HTTP-Referer` (CR/LF/NUL) and the "Responded by"/citation footers (markdown injection)
+- Restricted `data:image` model output to raster subtypes with a size cap
+- `EncryptedStr.decrypt` now returns empty (not ciphertext) on failure so a rotated `WEBUI_SECRET_KEY` never sends a stale token
+
+## [1.8.1] — 2026-05-29
+
+### Changed
+
+- **Transient-failure retries + clearer errors** — HTTP 429 (rate limit) and 5xx (500/502/503/504) are now retried within the existing `MAX_RETRIES` budget, honoring the `Retry-After` header (integer seconds or HTTP-date, capped at 60s) when present, otherwise exponential backoff. Non-transient 4xx still fail fast. Added specific error messages for HTTP 404/408/413/500/502/503/504
+
+## [1.8.0] — 2026-05-28
+
+### Added
+
+- **Native function/tool calling** — `pipe()` now accepts OWUI `__tools__`, forwards them to OpenRouter, and runs the execute→re-request loop in both streaming and non-streaming modes. Tool calls execute in parallel; sync and async tool callables are supported; tool errors are fed back to the model rather than crashing the turn. New `MAX_TOOL_ITERATIONS` valve (default 5) caps runaway loops. Prompt-based tool mode (handled by OWUI) is unaffected
+- **Remaining-credit footer** — opt-in `SHOW_REMAINING_CREDIT` valve appends your remaining OpenRouter credit after the cost line, via a cached (~60s, per-key) `GET /credits` call. Independent of `SHOW_COST_INFO`; fails silently (line omitted) if the balance can't be fetched
+
+## [1.7.0] — 2026-05-28
 
 ### Added
 
 - **`USE_GSTATIC_FAVICONS` valve (default off)** — registry-discovered Google `t0.gstatic.com` favicons are now opt-in. When off, providers only resolvable via gstatic fall back to OWUI's default icon, so the browser never leaks the provider domain to Google on every model render. The gstatic icon classifier was also tightened to require a query string, so a user-set bare gstatic URL is no longer misclassified as pipe-managed
 - **Per-user configuration (`UserValves`)** — each Open WebUI user can now set their own OpenRouter API key and chat-path preferences (reasoning, provider routing, web search, fallbacks, service tier, cache control, referer, timeout, retries, cost display), overriding the admin defaults per request. Unset fields inherit the admin value. Catalog/display settings (model filters, prefix, icons, base URL) remain admin-global because the model list has no per-user context. The merge is concurrency-safe — it copies the admin valves per request and never mutates shared state, so users cannot leak settings or keys into each other's requests
 - **At-rest API key encryption (`EncryptedStr`)** — the OpenRouter API key (admin and per-user) is now stored encrypted in Open WebUI's database (Fernet, keyed on `WEBUI_SECRET_KEY`) and decrypted only at the moment it is used. `cryptography` is soft-imported: when it or `WEBUI_SECRET_KEY` is unavailable the key falls back to plaintext storage with a one-time warning, so existing installs keep working. Legacy plaintext keys are read transparently and re-encrypted on the next save
-- **Native function/tool calling** — `pipe()` now accepts OWUI `__tools__`, forwards them to OpenRouter, and runs the execute→re-request loop in both streaming and non-streaming modes. Tool calls execute in parallel; sync and async tool callables are supported; tool errors are fed back to the model rather than crashing the turn. New `MAX_TOOL_ITERATIONS` valve (default 5) caps runaway loops. Prompt-based tool mode (handled by OWUI) is unaffected
-- **Remaining-credit footer** — opt-in `SHOW_REMAINING_CREDIT` valve appends your remaining OpenRouter credit after the cost line, via a cached (~60s, per-key) `GET /credits` call. Independent of `SHOW_COST_INFO`; fails silently (line omitted) if the balance can't be fetched
 
 ### Changed
 
 - **`FREE_MODEL_FILTER` honours the legacy `OPENROUTER_FREE_ONLY` env var** — when `OPENROUTER_FREE_MODEL_FILTER` is unset, `OPENROUTER_FREE_ONLY=true` now maps to `only`, so installs upgrading from the pre-1.5 `FREE_ONLY` era don't silently start returning paid models
 - **`SERVICE_TIER` restricted to OpenRouter's documented values** — only `flex` and `priority` are forwarded now (verified against OpenRouter's API docs). The previously-offered OpenAI-direct tiers `auto`/`default`/`scale` are not valid on OpenRouter and are no longer sent or shown in the valve dropdown
-- **Transient-failure retries + clearer errors** — HTTP 429 (rate limit) and 5xx (500/502/503/504) are now retried within the existing `MAX_RETRIES` budget, honoring the `Retry-After` header (integer seconds or HTTP-date, capped at 60s) when present, otherwise exponential backoff. Non-transient 4xx still fail fast. Added specific error messages for HTTP 404/408/413/500/502/503/504
 
 ### Fixed
 
 - **Version metadata** — `function.json` reported `1.6.0` while the code was `1.6.1`; bumped the manifest version (and `updated_at`) to match
 - **Docs: `FREE_ONLY` → `FREE_MODEL_FILTER`** — README and TESTING.md still referenced the removed `FREE_ONLY` valve; updated all references, added a migration note, documented the missing `SHOW_COST_INFO` / `COST_CURRENCY` valves, and corrected the test counts
+
+### Security
+
+- **No redirect following on any OpenRouter call** — `allow_redirects=False` is now passed to all four HTTP requests (`/models`, `/chat/completions`, the provider-registry fetch, and the ZDR `/endpoints/zdr` fetch). Combined with the `requests>=2.32.4` floor, this prevents the `Authorization: Bearer` header from being forwarded to a redirect target (CVE-2024-35195 family) if the base URL is misconfigured
+- **`HTTP_REFERER_OVERRIDE` header-injection guard** — the referer override is rejected if it contains CR/LF/NUL control characters, so a misconfigured valve cannot split the request headers
+- **Generation-ID markdown sanitization** — `_format_generation_id` strips backticks/newlines from the upstream generation ID before wrapping it in a code span, so a malicious upstream value cannot break out and inject markdown into the rendered response
 
 ## [1.6.1] — 2026-05-08
 

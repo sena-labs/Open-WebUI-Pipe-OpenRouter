@@ -355,11 +355,15 @@ Some models may be temporarily unavailable. Try a different model or check
 
 **Q: Does this work with Open WebUI's native tool calling?**
 
-A: Open WebUI manages tool calling in an iterative loop: when the pipe's response contains
-tool calls, Open WebUI executes them, appends the results as `role: "tool"` messages, and
-re-invokes the pipe with the updated thread. The pipe forwards the full message list to
-OpenRouter on each invocation. Whether a model can generate tool calls depends on
-OpenRouter's provider support for that model.
+A: Yes — in Open WebUI's **native** (Function Calling) mode the pipe receives the selected
+tools, forwards them to OpenRouter, and runs the execute→re-request loop itself. Tool calls
+in each round execute in parallel (sync and async callables both supported); errors are fed
+back to the model rather than crashing the turn. The number of tool rounds per request is
+capped by `MAX_TOOL_ITERATIONS` (default 5). Both streaming and non-streaming chats are
+supported.
+
+Open WebUI's **default (prompt-based)** tool mode is handled entirely by OWUI middleware and
+needs no pipe support — it works the same as before.
 
 **Q: Why does `FREE_MODEL_FILTER = only` include models without a `:free` suffix?**
 

@@ -7,9 +7,9 @@ critical-only fixes on the previous one.
 
 | Version | Status              | Security fixes |
 | ------- | ------------------- | -------------- |
-| 1.6.x   | :white_check_mark:  | active         |
-| 1.5.x   | :white_check_mark:  | critical only  |
-| < 1.5   | :x:                 | end-of-life    |
+| 1.8.x   | :white_check_mark:  | active         |
+| 1.7.x   | :white_check_mark:  | critical only  |
+| < 1.7   | :x:                 | end-of-life    |
 
 ## Reporting a Vulnerability
 
