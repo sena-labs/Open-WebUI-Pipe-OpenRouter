@@ -236,7 +236,7 @@ _assert("files" not in payload, "files stripped")
 _assert("tool_ids" not in payload, "tool_ids stripped")
 _assert("session_id" not in payload, "session_id stripped")
 _assert("message_id" not in payload, "message_id stripped")
-_assert("user" not in payload, "dict user stripped")
+_assert(payload.get("user") == "u1", "dict user reduced to id string")
 _assert(payload["model"] == "google/gemini-2.0-flash-exp", "model prefix removed")
 _assert(payload.get("include_reasoning") is True, "include_reasoning set")
 _assert(payload.get("reasoning") == {"effort": "high"}, "reasoning effort high")
@@ -3844,6 +3844,21 @@ _assert("\r" not in _cl, "citation list strips CR from URLs")
 # the rendered block has exactly the header lines + one line per citation (no extra).
 _assert(len(_cl.strip().split(chr(10))) == 4, "citation list: no extra lines injected (--- + Citations: + 2 urls)")
 _assert("2. https://evil.comINJECT" in _cl, "citation URL CR/LF stripped, content kept on its own line")
+
+_section("usage.include + user-id forwarding")
+
+_pu = Pipe(); _pu.valves.SHOW_COST_INFO = True
+_pp = _pu._prepare_payload({"model": "x", "messages": [], "user": {"id": "u123", "name": "n"}}, _pu.valves)
+_assert(_pp.get("usage") == {"include": True}, "usage.include injected when SHOW_COST_INFO on")
+_assert(_pp.get("user") == "u123", "user dict reduced to its id string")
+
+_pu2 = Pipe(); _pu2.valves.SHOW_COST_INFO = False
+_pp2 = _pu2._prepare_payload({"model": "x", "messages": []}, _pu2.valves)
+_assert("usage" not in _pp2, "no usage.include when SHOW_COST_INFO off")
+
+_pu3 = Pipe()
+_pp3 = _pu3._prepare_payload({"model": "x", "messages": [], "user": {"name": "no-id"}}, _pu3.valves)
+_assert("user" not in _pp3, "user dict without id is dropped (no empty user)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary

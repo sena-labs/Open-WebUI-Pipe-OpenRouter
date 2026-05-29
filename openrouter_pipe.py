@@ -1608,9 +1608,14 @@ class Pipe:
         for key in _OWUI_INTERNAL_KEYS:
             payload.pop(key, None)
 
-        # Open WebUI sends 'user' as dict; OpenRouter expects a string
-        if isinstance(payload.get("user"), dict):
-            payload.pop("user", None)
+        # Open WebUI sends 'user' as a dict; OpenRouter expects a string id.
+        user_val = payload.get("user")
+        if isinstance(user_val, dict):
+            uid = user_val.get("id") or ""
+            if uid:
+                payload["user"] = str(uid)
+            else:
+                payload.pop("user", None)
 
         # Fix model ID (strip manifold prefix)
         model = payload.get("model")
@@ -1729,6 +1734,10 @@ class Pipe:
         # --- Cache control (Anthropic) ---
         if valves.ENABLE_CACHE_CONTROL:
             self._inject_cache_control(payload, valves)
+
+        # Request usage accounting explicitly so cost/credit footers aren't blank.
+        if valves.SHOW_COST_INFO:
+            payload["usage"] = {"include": True}
 
         return payload
 
