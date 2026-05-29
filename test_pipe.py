@@ -3833,6 +3833,18 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretA"}):
 with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretB"}):
     _assert(mod.EncryptedStr.decrypt(_ct) == "", "wrong-key decrypt returns empty, not ciphertext")
 
+with patch.dict(os.environ, {"WEBUI_URL": "http://h\r\nX-Inject: 1"}):
+    _pr2 = Pipe(); _pr2.valves.OPENROUTER_API_KEY = "sk-or-x"
+    _hr = _pr2._build_headers(valves=_pr2.valves)
+    _assert("\r" not in _hr["HTTP-Referer"] and "\n" not in _hr["HTTP-Referer"], "HTTP-Referer (env) strips CR/LF")
+
+_cl = mod._format_citation_list(["https://ok.com/a", "https://evil.com\r\nINJECT"])
+_assert("\r" not in _cl, "citation list strips CR from URLs")
+# The CR/LF inside the malicious URL must be removed, not turned into a new line:
+# the rendered block has exactly the header lines + one line per citation (no extra).
+_assert(len(_cl.strip().split(chr(10))) == 4, "citation list: no extra lines injected (--- + Citations: + 2 urls)")
+_assert("2. https://evil.comINJECT" in _cl, "citation URL CR/LF stripped, content kept on its own line")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════

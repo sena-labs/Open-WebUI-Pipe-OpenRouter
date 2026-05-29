@@ -155,7 +155,10 @@ def _format_citation_list(citations: Optional[List[str]]) -> str:
     if not citations:
         return ""
     try:
-        rendered = "\n".join(f"{idx + 1}. {url}" for idx, url in enumerate(citations))
+        rendered = "\n".join(
+            f"{idx + 1}. {re.sub(r'[`\r\n]', '', str(url))}"
+            for idx, url in enumerate(citations)
+        )
         return f"\n\n---\nCitations:\n{rendered}"
     except Exception as exc:  # pragma: no cover
         print(f"[OpenRouter Pipe] Citation formatting error: {exc}")
@@ -817,7 +820,8 @@ class Pipe:
         self.valves = self.Valves()
         self._session = requests.Session()
         # Cache env vars that don't change at runtime
-        self._referer = os.getenv("WEBUI_URL", "http://localhost:3000")
+        _raw_referer = os.getenv("WEBUI_URL", "http://localhost:3000")
+        self._referer = re.sub(r"[\r\n\x00]", "", _raw_referer) or "http://localhost:3000"
         _raw_title = os.getenv("WEBUI_NAME", "OpenWebUI")
         self._title = re.sub(r"[\r\n\x00]", "", _raw_title) or "OpenWebUI"
         # Model list cache
