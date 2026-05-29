@@ -2037,6 +2037,8 @@ class Pipe:
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
         final = self._format_final_message(res, payload, valves)
+        if final.startswith("OpenRouter Error:"):
+            return final
         return final + "\n\n---\n*Tool calling stopped: reached MAX_TOOL_ITERATIONS.*"
 
     def _stream_one_round(self, headers, payload, valves, state: dict):
@@ -2281,6 +2283,11 @@ class Pipe:
                 gen_footer = _format_generation_id(latest_generation_id)
                 if gen_footer:
                     yield gen_footer
+
+            if valves.SHOW_REMAINING_CREDIT:
+                credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+                if credit_line:
+                    yield credit_line
         except requests.exceptions.Timeout:
             close_tag = _close_think_tag()
             if close_tag:

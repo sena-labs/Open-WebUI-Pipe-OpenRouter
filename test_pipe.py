@@ -3752,6 +3752,35 @@ _assert("502" in _pf._format_http_error(_err(502)), "502 message")
 _assert("503" in _pf._format_http_error(_err(503)), "503 message")
 _assert("504" in _pf._format_http_error(_err(504)), "504 message")
 
+_section("plain-stream credit footer + cap-note guard")
+
+# (A) plain streaming emits credit footer when SHOW_REMAINING_CREDIT on
+class _CreditStream:
+    def __init__(self, lines): self._lines = lines
+    def iter_lines(self): return iter(self._lines)
+    def close(self): pass
+
+_pcs = Pipe(); _pcs.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcs.valves.SHOW_REMAINING_CREDIT = True
+_pcs._fetch_credit_balance = lambda valves: 4.25  # type: ignore
+_lines = [b"data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}).encode(), b"data: [DONE]"]
+_pcs._retryable_request = lambda headers, payload, stream, valves: _CreditStream(_lines)  # type: ignore
+_out_cs = "".join(_pcs._stream_response({}, {"model": "x"}, _pcs.valves))
+_assert("credit remaining" in _out_cs.lower(), "plain stream shows credit footer when enabled")
+_assert("hi" in _out_cs, "plain stream still yields content")
+
+# (B) cap-exit returning an error string does NOT get the cap note appended
+class _CapResp:
+    def __init__(self, body): self._b = body
+    def json(self): return self._b
+    def close(self): pass
+_pcn = Pipe(); _pcn.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcn.valves.MAX_TOOL_ITERATIONS = 1
+_tc = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]}}]}
+_seq = [_CapResp(_tc), _CapResp({"error": {"message": "boom"}})]
+_pcn._retryable_request = lambda headers, payload, stream, valves: _seq.pop(0)  # type: ignore
+_capout = _run(_pcn._run_tools_nonstream({}, {"model": "x", "messages": []}, _pcn.valves, {"t": {"spec": {}, "callable": lambda: "ok"}}, None))
+_assert(_capout.startswith("OpenRouter Error:"), "cap-exit error returns the error string")
+_assert("MAX_TOOL_ITERATIONS" not in _capout, "cap note NOT appended to an error string")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
