@@ -738,11 +738,16 @@ class Pipe:
 
         RESPONSE_FORMAT: str = Field(
             default=os.getenv("OPENROUTER_RESPONSE_FORMAT", ""),
-            description="Force output format when the request doesn't set one: '' (off) or 'json_object' (any valid JSON). For full JSON-schema mode, send response_format in the request body. The body's own response_format always wins.",
+            description="Force output format when the request doesn't set one: '' (off), 'json_object' (any valid JSON), or 'json_schema' (uses RESPONSE_SCHEMA). The body's own response_format always wins.",
             json_schema_extra={"input": {"type": "select", "options": [
                 {"value": "", "label": "Off"},
                 {"value": "json_object", "label": "JSON object"},
+                {"value": "json_schema", "label": "JSON schema (use RESPONSE_SCHEMA)"},
             ]}},
+        )
+        RESPONSE_SCHEMA: str = Field(
+            default=os.getenv("OPENROUTER_RESPONSE_SCHEMA", ""),
+            description="JSON Schema (as a JSON string) used when RESPONSE_FORMAT='json_schema'. Invalid JSON is logged and skipped. The body's own response_format always wins.",
         )
         TOOL_CHOICE: str = Field(
             default=os.getenv("OPENROUTER_TOOL_CHOICE", ""),
@@ -830,6 +835,7 @@ class Pipe:
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
         RESPONSE_FORMAT: Optional[str] = None
+        RESPONSE_SCHEMA: Optional[str] = None
         TOOL_CHOICE: Optional[str] = None
         MAX_TOOL_ITERATIONS: Optional[int] = Field(default=None, ge=1)
         SHOW_REMAINING_CREDIT: Optional[bool] = None
@@ -1768,8 +1774,24 @@ class Pipe:
             payload["usage"] = {"include": True}
 
         rf = (valves.RESPONSE_FORMAT or "").strip()
-        if rf == "json_object" and "response_format" not in payload:
-            payload["response_format"] = {"type": "json_object"}
+        if "response_format" not in payload:
+            if rf == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            elif rf == "json_schema":
+                _schema_str = (getattr(valves, "RESPONSE_SCHEMA", "") or "").strip()
+                if _schema_str:
+                    try:
+                        _schema = json.loads(_schema_str)
+                        payload["response_format"] = {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "response",
+                                "schema": _schema,
+                                "strict": True,
+                            },
+                        }
+                    except json.JSONDecodeError as exc:
+                        print(f"[OpenRouter Pipe] RESPONSE_SCHEMA not applied (invalid JSON): {exc}")
 
         tc = (valves.TOOL_CHOICE or "").strip().lower()
         if tc in ("none", "auto", "required") and "tool_choice" not in payload:

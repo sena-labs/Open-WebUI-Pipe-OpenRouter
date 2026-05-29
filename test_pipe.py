@@ -4043,6 +4043,39 @@ async def _emitter_boom(ev):
 asyncio.run(_p_ce._emit_citation_events(_emitter_boom, ["https://x.com", "https://y.com"]))
 _assert(True, "raising emitter swallowed (no exception leaks)")
 
+# ── RESPONSE_FORMAT json_schema ────────────────────────────────────────────────
+
+_section("RESPONSE_FORMAT json_schema valve")
+
+_pjs = Pipe()
+_pjs.valves.RESPONSE_FORMAT = "json_schema"
+_pjs.valves.RESPONSE_SCHEMA = '{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}'
+_pp_js = _pjs._prepare_payload({"model": "x", "messages": []}, _pjs.valves)
+_assert(_pp_js["response_format"]["type"] == "json_schema", "json_schema injected")
+_assert(_pp_js["response_format"]["json_schema"]["strict"] is True, "strict=True")
+_assert(
+    _pp_js["response_format"]["json_schema"]["schema"]["properties"]["a"]["type"] == "string",
+    "schema parsed correctly",
+)
+
+# body wins
+_pp_js2 = _pjs._prepare_payload(
+    {"model": "x", "messages": [], "response_format": {"type": "json_object"}}, _pjs.valves
+)
+_assert(_pp_js2["response_format"] == {"type": "json_object"}, "body response_format wins over json_schema valve")
+
+# invalid JSON → no inject
+_pjs2 = Pipe(); _pjs2.valves.RESPONSE_FORMAT = "json_schema"; _pjs2.valves.RESPONSE_SCHEMA = "not json"
+_pp_js3 = _pjs2._prepare_payload({"model": "x", "messages": []}, _pjs2.valves)
+_assert("response_format" not in _pp_js3, "invalid RESPONSE_SCHEMA → no inject")
+
+# empty RESPONSE_SCHEMA → no inject
+_pjs3 = Pipe(); _pjs3.valves.RESPONSE_FORMAT = "json_schema"
+_pp_js4 = _pjs3._prepare_payload({"model": "x", "messages": []}, _pjs3.valves)
+_assert("response_format" not in _pp_js4, "empty RESPONSE_SCHEMA → no inject")
+
+_assert(Pipe.UserValves().RESPONSE_SCHEMA is None, "UserValves RESPONSE_SCHEMA inherits (None)")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
