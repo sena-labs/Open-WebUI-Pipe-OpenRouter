@@ -4004,6 +4004,61 @@ _p_pf.valves.SHOW_REMAINING_CREDIT = False
 asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
 _assert(_threads_pf == [], "credit prefetch skipped when SHOW_REMAINING_CREDIT off")
 
+# ── image-files event emit (OWUI native attachment) ───────────────────────────
+
+_section("image-files event emit (OWUI native attachment)")
+
+_img_calls = []
+async def _img_emitter(ev):
+    _img_calls.append(ev)
+_p_ie = Pipe()
+
+# Valid images → emit + clear
+_msg = {"images": [
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
+    {"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}},
+]}
+_ok = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg))
+_assert(_ok is True, "emit returns True when images present")
+_assert(len(_img_calls) == 1 and _img_calls[0]["type"] == "files", "single files event emitted")
+_files = _img_calls[0]["data"]["files"]
+_assert(len(_files) == 2 and all(f["type"] == "image" for f in _files), "two image entries in files event")
+_assert(_files[0]["url"].startswith("data:image/png") and _files[1]["url"].startswith("https://"), "URLs preserved")
+_assert(_msg["images"] == [], "message.images cleared after emit (no double markdown render)")
+
+# No emitter → no-op
+_msg2 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
+_ok2 = asyncio.run(_p_ie._emit_image_files(None, _msg2))
+_assert(_ok2 is False and _msg2["images"], "no emitter → False, images untouched")
+
+# No images → no-op
+_img_calls.clear()
+_msg3 = {"content": "text only"}
+_ok3 = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg3))
+_assert(_ok3 is False and _img_calls == [], "no images → False, no event")
+
+# Invalid URLs filtered
+_img_calls.clear()
+_msg4 = {"images": [
+    {"image_url": {"url": "javascript:alert(1)"}},
+    {"image_url": {"url": "data:image/svg+xml,<svg/>"}},  # svg not allowed by our raster cap (kept here: data:image/ prefix matches, but svg is in fact data:image/* — the helper allows ANY data:image/ subtype, intentional for emission since OWUI renders via attachment, not browser-side data URL injection)
+    {"image_url": {"url": "https://ok.com/a.png"}},
+    {"image_url": {"url": ""}},
+]}
+_ok4 = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg4))
+# Helper allows http(s) and data:image/* (any subtype) — js: is filtered, empty is filtered.
+_assert(_ok4 is True, "at least one valid URL → emit")
+_assert(len(_img_calls) == 1, "single files event")
+_emitted_urls = [f["url"] for f in _img_calls[0]["data"]["files"]]
+_assert("javascript:alert(1)" not in _emitted_urls and "" not in _emitted_urls, "javascript: and empty URLs filtered")
+
+# Emitter raising → no crash + returns False
+async def _emitter_boom(ev):
+    raise RuntimeError("boom")
+_msg5 = {"images": [{"image_url": {"url": "https://ok.com/x.png"}}]}
+_ok5 = asyncio.run(_p_ie._emit_image_files(_emitter_boom, _msg5))
+_assert(_ok5 is False and _msg5["images"], "raising emitter → False, images NOT cleared")
+
 # ── citation events emit ───────────────────────────────────────────────────────
 
 _section("citation events emit (OWUI native)")

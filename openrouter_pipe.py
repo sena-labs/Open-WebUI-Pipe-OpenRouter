@@ -1219,7 +1219,7 @@ class Pipe:
                         await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return _wrap_stream()
 
-        result = await asyncio.to_thread(self._non_stream_response, headers, payload, eff)
+        result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__)
 
         if __event_emitter__:
             await __event_emitter__(
@@ -1994,6 +1994,44 @@ class Pipe:
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
+    async def _emit_image_files(self, emitter, message) -> bool:
+        """Emit a native Open WebUI ``files`` event for generated images.
+
+        Image-output models (e.g. flux, gemini-image-preview) return raster
+        data URLs in ``message.images`` — inlining them as markdown links
+        works for small payloads but breaks for 500 KB+ base64 URLs that
+        OWUI's markdown renderer truncates or refuses. The native files event
+        attaches them as proper image previews instead.
+
+        Mutates ``message`` to clear ``images`` after a successful emit so the
+        markdown formatter doesn't double-render them. Returns True when at
+        least one image was emitted, False otherwise.
+        """
+        if not emitter or not isinstance(message, dict):
+            return False
+        images = message.get("images") or []
+        if not images:
+            return False
+        files = []
+        for img in images:
+            if not isinstance(img, dict):
+                continue
+            url = (img.get("image_url") or {}).get("url", "")
+            if not isinstance(url, str) or not url:
+                continue
+            lower = url.lower()
+            if not (lower.startswith(("http://", "https://")) or lower.startswith("data:image/")):
+                continue
+            files.append({"type": "image", "url": url})
+        if not files:
+            return False
+        try:
+            await emitter({"type": "files", "data": {"files": files}})
+        except Exception:
+            return False
+        message["images"] = []
+        return True
+
     async def _emit_citation_events(self, emitter, citations) -> None:
         """Emit one Open WebUI 'citation' event per URL when an emitter is provided.
 
@@ -2079,6 +2117,48 @@ class Pipe:
 
         return "".join(final_parts)
 
+    def _non_stream_fetch(self, headers: dict, payload: dict, valves):
+        """Send a non-streaming request, return the parsed res dict or an
+        error string. Sync (run via asyncio.to_thread from async callers).
+        """
+        try:
+            response = self._retryable_request(headers, payload, stream=False, valves=valves)
+            try:
+                res = response.json()
+            finally:
+                response.close()
+            if "error" in res and not res.get("choices"):
+                err = res["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return f"OpenRouter Error: {msg}"
+            if not res.get("choices"):
+                return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
+            return res
+        except requests.exceptions.Timeout:
+            return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+        except requests.exceptions.HTTPError as exc:
+            return self._format_http_error(exc)
+        except Exception as exc:  # pragma: no cover
+            print(f"[OpenRouter Pipe] Non-stream fetch error: {exc}")
+            traceback.print_exc()
+            return f"OpenRouter Error: {exc}"
+
+    async def _non_stream_with_events(self, headers: dict, payload: dict, valves, emitter) -> str:
+        """Wrap _non_stream_fetch with image-files + citation event emits and
+        credit prefetch, then format. Used by pipe()'s no-tools non-stream
+        path so generated images render as native OWUI attachments rather
+        than huge inline markdown links.
+        """
+        res = await asyncio.to_thread(self._non_stream_fetch, headers, payload, valves)
+        if isinstance(res, str):
+            return res
+        choices = res.get("choices") or []
+        message = choices[0].get("message", {}) if choices else {}
+        await self._emit_image_files(emitter, message)
+        await self._emit_citation_events(emitter, res.get("citations") or [])
+        await self._prefetch_credit_if_enabled(valves)
+        return self._format_final_message(res, payload, valves)
+
     def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
         """Send a non-streaming request and return the formatted response."""
         try:
@@ -2134,6 +2214,7 @@ class Pipe:
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
+                await self._emit_image_files(__event_emitter__, message)
                 await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
                 await self._prefetch_credit_if_enabled(valves)
                 return self._format_final_message(res, payload, valves)
@@ -2152,6 +2233,9 @@ class Pipe:
                     resp.close()
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
+        _choices = res.get("choices") or []
+        _msg = _choices[0].get("message", {}) if _choices else {}
+        await self._emit_image_files(__event_emitter__, _msg)
         await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
         await self._prefetch_credit_if_enabled(valves)
         final = self._format_final_message(res, payload, valves)
