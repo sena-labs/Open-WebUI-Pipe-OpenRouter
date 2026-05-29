@@ -45,6 +45,10 @@ _API_PATH_CREDITS = "/credits"
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _MAX_RETRY_AFTER = 60.0  # cap (seconds) — a huge Retry-After must not hang the request
 
+# Sentinel used with asyncio.to_thread(next, it, _STREAM_DONE) to detect
+# exhausted sync generators without raising StopIteration across thread boundaries.
+_STREAM_DONE = object()
+
 # Beta header for Claude's interleaved-thinking + tool-use mode.
 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
 _ANTHROPIC_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
@@ -1161,22 +1165,21 @@ class Pipe:
 
         if stream:
             gen = self._stream_response(headers, payload, eff)
+            it = iter(gen)
 
-            # Wrap in an async generator so we can await the done event
-            if __event_emitter__:
-                async def _wrap_stream():
-                    try:
-                        for chunk in gen:
-                            yield chunk
-                    finally:
-                        await __event_emitter__(
-                            {"type": "status", "data": {"description": "", "done": True}}
-                        )
-                return _wrap_stream()
+            async def _wrap_stream():
+                try:
+                    while True:
+                        chunk = await asyncio.to_thread(next, it, _STREAM_DONE)
+                        if chunk is _STREAM_DONE:
+                            break
+                        yield chunk
+                finally:
+                    if __event_emitter__:
+                        await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+            return _wrap_stream()
 
-            return gen
-
-        result = self._non_stream_response(headers, payload, eff)
+        result = await asyncio.to_thread(self._non_stream_response, headers, payload, eff)
 
         if __event_emitter__:
             await __event_emitter__(
@@ -1998,7 +2001,7 @@ class Pipe:
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         for _ in range(max_iter):
             try:
-                resp = self._retryable_request(headers, payload, stream=False, valves=valves)
+                resp = await self._call_request_async(False, headers, payload, valves)
                 try:
                     res = resp.json()
                 finally:
@@ -2028,7 +2031,7 @@ class Pipe:
 
         # Cap reached while still requesting tools: one last call, then a note.
         try:
-            resp = self._retryable_request(headers, payload, stream=False, valves=valves)
+            resp = await self._call_request_async(False, headers, payload, valves)
             try:
                 res = resp.json()
             finally:
@@ -2145,7 +2148,11 @@ class Pipe:
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         for _ in range(max_iter):
             state: dict = {}
-            for piece in self._stream_one_round(headers, payload, valves, state):
+            it = iter(self._stream_one_round(headers, payload, valves, state))
+            while True:
+                piece = await asyncio.to_thread(next, it, _STREAM_DONE)
+                if piece is _STREAM_DONE:
+                    break
                 yield piece
             if state.get("error"):
                 return
@@ -2159,7 +2166,11 @@ class Pipe:
             payload["messages"].extend(tool_msgs)
 
         state = {}
-        for piece in self._stream_one_round(headers, payload, valves, state):
+        it = iter(self._stream_one_round(headers, payload, valves, state))
+        while True:
+            piece = await asyncio.to_thread(next, it, _STREAM_DONE)
+            if piece is _STREAM_DONE:
+                break
             yield piece
         if not state.get("error"):
             yield self._stream_footer(state, valves)
@@ -2403,6 +2414,10 @@ class Pipe:
         if last_exc:
             raise last_exc  # pragma: no cover
         raise RuntimeError("OpenRouter Error: request not completed")  # pragma: no cover
+
+    async def _call_request_async(self, stream, headers, payload, valves) -> requests.Response:
+        """Run the blocking _retryable_request (incl. retry sleeps) off the event loop."""
+        return await asyncio.to_thread(self._retryable_request, headers, payload, stream, valves)
 
     def _format_http_error(self, exc: requests.exceptions.HTTPError) -> str:
         """Format an HTTP error into a user-friendly message."""

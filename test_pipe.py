@@ -976,7 +976,7 @@ res = asyncio.run(_test_pipe_non_stream())
 _assert(isinstance(res, str), "pipe non-stream: returns string")
 _assert("Hello!" in res, "pipe non-stream: content correct")
 
-# 14c. Stream returns generator
+# 14c. Stream returns async generator
 async def _test_pipe_stream() -> str:
     sse = _make_sse_response([
         b"data: " + json.dumps({"choices": [{"delta": {"content": "World"}}]}).encode(),
@@ -986,8 +986,8 @@ async def _test_pipe_stream() -> str:
         result = await pipe.pipe(
             {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True}
         )
-        # result is a generator
-        chunks = list(result)
+        # result is an async generator
+        chunks = [chunk async for chunk in result]
         return "".join(chunks)
 
 res = asyncio.run(_test_pipe_stream())
@@ -3780,6 +3780,32 @@ _pcn._retryable_request = lambda headers, payload, stream, valves: _seq.pop(0)  
 _capout = _run(_pcn._run_tools_nonstream({}, {"model": "x", "messages": []}, _pcn.valves, {"t": {"spec": {}, "callable": lambda: "ok"}}, None))
 _assert(_capout.startswith("OpenRouter Error:"), "cap-exit error returns the error string")
 _assert("MAX_TOOL_ITERATIONS" not in _capout, "cap note NOT appended to an error string")
+
+_section("retry sleep does not block the event loop")
+
+import threading as _threading
+_pb = Pipe(); _pb.valves.OPENROUTER_API_KEY = "sk-or-test"; _pb.valves.MAX_RETRIES = 1
+_seqb = [_FakeHTTPResp(429, {"Retry-After": "0"}), _FakeHTTPResp(200, body={"choices": [{"message": {"content": "ok"}}]})]
+_pb._post_calls = 0
+def _postb(*a, **k):
+    _pb._post_calls += 1
+    return _seqb.pop(0)
+_pb._session.post = _postb  # type: ignore
+
+_main_thread = _threading.get_ident()
+_sleep_threads = []
+_orig_sleep = mod.time.sleep
+def _track_sleep(s):
+    _sleep_threads.append(_threading.get_ident())
+mod.time.sleep = _track_sleep
+try:
+    async def _drive():
+        return await _pb._call_request_async(False, {}, {"model": "x"}, _pb.valves)
+    _r = _run(_drive())
+finally:
+    mod.time.sleep = _orig_sleep
+_assert(_r.status_code == 200, "async retry returns success")
+_assert(_sleep_threads and all(t != _main_thread for t in _sleep_threads), "retry sleep ran off the main/event-loop thread")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
