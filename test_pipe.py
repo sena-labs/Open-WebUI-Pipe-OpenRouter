@@ -4076,6 +4076,32 @@ _assert("response_format" not in _pp_js4, "empty RESPONSE_SCHEMA → no inject")
 
 _assert(Pipe.UserValves().RESPONSE_SCHEMA is None, "UserValves RESPONSE_SCHEMA inherits (None)")
 
+# ── cost footer surfaces cached tokens for OpenAI/Anthropic/Gemini ─────────────
+
+_section("cost footer: cached tokens across providers")
+
+# OpenAI implicit caching + Gemini context caching shape: prompt_tokens_details.cached_tokens
+_us_oa = {
+    "prompt_tokens": 100, "completion_tokens": 50,
+    "prompt_tokens_details": {"cached_tokens": 70}, "cost": 0.001,
+}
+_msg_oa = mod._format_cost_info(_us_oa, "USD")
+_assert("70" in _msg_oa and "cached" in _msg_oa, "OpenAI/Gemini cached_tokens surfaced in cost footer")
+_assert("30" in _msg_oa, "non-cached prompt count (100-70=30) shown")
+
+# Anthropic prompt-cache shape: cache_read_input_tokens
+_us_an = {
+    "prompt_tokens": 100, "completion_tokens": 50,
+    "cache_read_input_tokens": 70, "cost": 0.001,
+}
+_msg_an = mod._format_cost_info(_us_an, "USD")
+_assert("70" in _msg_an and "cached" in _msg_an, "Anthropic cache_read_input_tokens surfaced in cost footer")
+
+# No cache → no cached fragment
+_us_nc = {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.001}
+_msg_nc = mod._format_cost_info(_us_nc, "USD")
+_assert("cached" not in _msg_nc.lower(), "no cached tokens → no cached fragment in footer")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
