@@ -4463,6 +4463,272 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
 
+# ── batch-3 audit gaps: video error branches + ZDR + media combo ──────────────
+
+_section("batch-3 audit gaps: video error branches + ZDR + media combo")
+
+# Submit Timeout → wrapped Timeout-specific message
+import requests as _rq_t
+_p_t1 = Pipe()
+class _SessTimeout:
+    def post(self, *a, **kw):
+        raise _rq_t.exceptions.Timeout("read timeout after Xs")
+_p_t1._session = _SessTimeout()
+_vg_t = asyncio.run(_p_t1._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t1.valves, None, None, None, None,
+))
+_assert("timed out" in _vg_t.lower(), "submit Timeout → 'timed out' message")
+
+# Submit ConnectionError (RequestException) → wrapped generic message
+_p_t2 = Pipe()
+class _SessConn:
+    def post(self, *a, **kw):
+        raise _rq_t.exceptions.ConnectionError("network down")
+_p_t2._session = _SessConn()
+_vg_c = asyncio.run(_p_t2._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t2.valves, None, None, None, None,
+))
+_assert("Video submit failed" in _vg_c and "network down" in _vg_c,
+        "submit RequestException → 'Video submit failed' with detail")
+
+# Mid-poll RequestException → wrapped 'polling failed'
+_p_t3 = Pipe(); _p_t3.valves.VIDEO_POLL_INTERVAL = 0.01
+class _SessPollFail:
+    def __init__(self):
+        self._submit = _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j",
+                                         "status": "pending"})
+    def post(self, *a, **kw): return self._submit
+    def get(self, *a, **kw):
+        raise _rq_t.exceptions.ConnectionError("poll RST")
+_p_t3._session = _SessPollFail()
+_vg_p = asyncio.run(_p_t3._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t3.valves, None, None, None, None,
+))
+_assert("polling failed" in _vg_p, "mid-poll RequestException → 'polling failed' message")
+
+# Polling deadline timeout: infinite 'in_progress' → wraps with job id
+_p_t4 = Pipe(); _p_t4.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t4.valves.VIDEO_GENERATION_TIMEOUT = 30  # min floor 30 in code
+class _SessTimeoutLoop:
+    def __init__(self):
+        self.posts = 0
+    def post(self, *a, **kw):
+        self.posts += 1
+        return _FakeResp(202, {"id": "longjob", "polling_url": "https://openrouter.ai/api/v1/videos/longjob",
+                                 "status": "pending"})
+    def get(self, *a, **kw):
+        return _FakeResp(200, {"id": "longjob", "status": "in_progress"})
+# Override time to force deadline expiry quickly
+import time as _time_d
+_p_t4._session = _SessTimeoutLoop()
+_orig_mono = _time_d.monotonic
+_t0 = _orig_mono()
+def _fake_mono():
+    # Jump 1000s after second call so deadline expires
+    if not hasattr(_fake_mono, "_calls"):
+        _fake_mono._calls = 0
+    _fake_mono._calls += 1
+    return _t0 + (1000 if _fake_mono._calls > 2 else 0)
+_time_d.monotonic = _fake_mono  # type: ignore
+try:
+    _vg_to = asyncio.run(_p_t4._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t4.valves, None, None, None, None,
+    ))
+finally:
+    _time_d.monotonic = _orig_mono  # type: ignore
+_assert("timed out" in _vg_to and "longjob" in _vg_to,
+        "polling deadline → 'timed out' + job id in message")
+_assert("https://" not in _vg_to,
+        "timeout message no longer leaks the full polling_url (security S4)")
+
+# Malformed unsigned_urls: None → reject
+_p_t5 = Pipe(); _p_t5.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t5._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": None}),
+])
+_vg_u1 = asyncio.run(_p_t5._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t5.valves, None, None, None, None,
+))
+_assert("no download URL" in _vg_u1, "unsigned_urls=None → 'no download URL'")
+
+# Malformed unsigned_urls: empty list → reject
+_p_t6 = Pipe(); _p_t6.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t6._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": []}),
+])
+_vg_u2 = asyncio.run(_p_t6._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t6.valves, None, None, None, None,
+))
+_assert("no download URL" in _vg_u2, "unsigned_urls=[] → 'no download URL'")
+
+# Malformed unsigned_urls: non-string element → reject
+_p_t7 = Pipe(); _p_t7.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t7._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": [123]}),
+])
+_vg_u3 = asyncio.run(_p_t7._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t7.valves, None, None, None, None,
+))
+_assert("no download URL" in _vg_u3, "unsigned_urls=[non-string] → 'no download URL'")
+
+# Failed status where error is non-dict (string) → still surfaces detail
+_p_t8 = Pipe(); _p_t8.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t8._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+    _FakeResp(200, {"id": "j", "status": "failed", "error": "policy block"}),
+])
+_vg_f = asyncio.run(_p_t8._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_t8.valves, None, None, None, None,
+))
+_assert("Video generation failed" in _vg_f and "policy block" in _vg_f,
+        "non-dict error string surfaces as detail")
+
+# Forwarded video knobs (duration/resolution/aspect_ratio/generate_audio/seed)
+# from body actually land in the upstream payload
+_p_t9 = Pipe(); _p_t9.valves.VIDEO_POLL_INTERVAL = 0.01
+_captured_payload: dict = {}
+class _CaptureSess:
+    def post(self, url, **kw):
+        _captured_payload.update(kw.get("json") or {})
+        return _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"})
+    def get(self, url, **kw):
+        return _FakeResp(200, {"id": "j", "status": "completed",
+                                 "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]})
+_p_t9._session = _CaptureSess()
+async def _fake_upload_v_t9(self, request, user, metadata, video_bytes, content_type="video/mp4"):
+    return ("vid-x", "/api/v1/files/vid-x/content")
+_p_t9._upload_video_to_owui = _fake_upload_v_t9.__get__(_p_t9, Pipe)  # type: ignore
+# Patch download to return non-empty bytes
+_p_t9._session.post = _CaptureSess.post.__get__(_p_t9._session, _CaptureSess)
+# Re-patch session.get for the download step (third call returns bytes)
+_dl_resp = _FakeResp(200, {})
+_dl_resp.content = b"\x00video"
+_dl_resp.headers = {"Content-Type": "video/mp4"}
+_orig_get = _p_t9._session.get
+class _PatchedGet:
+    def __init__(self): self.calls = 0
+    def __call__(self, url, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            return _FakeResp(200, {"id": "j", "status": "completed",
+                                     "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]})
+        return _dl_resp
+_p_t9._session.get = _PatchedGet()  # type: ignore
+asyncio.run(_p_t9._run_video_generation(
+    {"messages": [{"role": "user", "content": "a red car"}],
+     "duration": 8, "resolution": "1080p", "aspect_ratio": "16:9",
+     "generate_audio": True, "seed": 42},
+    "google/veo-3.1-fast",
+    _p_t9.valves, None, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"},
+))
+_assert(_captured_payload.get("duration") == 8, "duration forwarded to payload")
+_assert(_captured_payload.get("resolution") == "1080p", "resolution forwarded")
+_assert(_captured_payload.get("aspect_ratio") == "16:9", "aspect_ratio forwarded")
+_assert(_captured_payload.get("generate_audio") is True, "generate_audio forwarded")
+_assert(_captured_payload.get("seed") == 42, "seed forwarded")
+_assert(_captured_payload.get("model") == "google/veo-3.1-fast", "model in payload")
+_assert(_captured_payload.get("prompt") == "a red car", "prompt extracted from latest user message")
+
+# Routing precedence: model in BOTH video + audio sets → video wins
+_p_prec = Pipe()
+_p_prec._video_model_ids = frozenset({"hybrid/model"})  # type: ignore
+_p_prec._audio_model_ids = frozenset({"hybrid/model"})  # type: ignore
+_p_prec._lazy_populated = True
+_p_prec.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "z" * 50
+_video_called = {"hit": False}
+async def _fake_vg(self, body, model_id, valves, emitter, request, user, metadata):
+    _video_called["hit"] = True
+    return "VIDEO_RESULT"
+_p_prec._run_video_generation = _fake_vg.__get__(_p_prec, Pipe)  # type: ignore
+_result_prec = asyncio.run(_p_prec.pipe(
+    {"model": "hybrid/model", "messages": [{"role": "user", "content": "x"}]},
+    {"id": "u"}, None, None, object(), {"chat_id": "c"},
+))
+_assert(_video_called["hit"] and _result_prec == "VIDEO_RESULT",
+        "model in BOTH sets → video routing wins (checked first)")
+
+# Body deepcopy isolation + forced stream=True for audio: drive pipe() but
+# short-circuit the actual stream by patching _stream_response to a sync
+# generator that yields nothing (matches the real signature: pipe expects
+# a sync Generator that it wraps via asyncio.to_thread(next, ...)).
+_p_dc = Pipe()
+_p_dc._audio_model_ids = frozenset({"google/lyria-3-clip-preview"})  # type: ignore
+_p_dc._lazy_populated = True
+_p_dc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "z" * 50
+_observed_payload: dict = {}
+def _noop_sync_stream(self, headers, payload, valves, state=None):
+    _observed_payload.update(payload)
+    return iter(())  # empty sync iterator
+_p_dc._stream_response = _noop_sync_stream.__get__(_p_dc, Pipe)  # type: ignore
+caller_body: dict = {"model": "google/lyria-3-clip-preview",
+                      "messages": [{"role": "user", "content": "a melody"}],
+                      "stream": False}
+_gen = asyncio.run(_p_dc.pipe(caller_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
+# Drain the async generator (no actual chunks)
+async def _drain():
+    out = []
+    async for c in _gen:
+        out.append(c)
+    return out
+asyncio.run(_drain())
+_assert("modalities" not in caller_body,
+        "caller body NOT mutated with modalities (deep-copy isolation)")
+_assert("audio" not in caller_body,
+        "caller body NOT mutated with audio config (deep-copy isolation)")
+_assert(caller_body.get("stream") is False,
+        "caller body 'stream' field preserved as False (not flipped to True)")
+_assert(_observed_payload.get("audio", {}).get("format") == "mp3",
+        "audio injection lands in the per-request payload copy (lyria → mp3)")
+
+# ZDR_MODELS_ONLY + video: video models filtered out by ZDR continue to
+# stay out of _video_model_ids (atomic-swap version of the same prior
+# guarantee). Drive pipes() with ZDR filter rejecting the video id.
+class _FakeRespZdr:
+    def __init__(self, status, data):
+        self.status_code = status
+        self._data = data
+    def json(self): return self._data
+    def raise_for_status(self): pass
+    def close(self): pass
+_p_zdr = Pipe()
+_zdr_data = [
+    {"id": "google/veo-3.1-fast", "name": "Veo Fast",
+     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
+    {"id": "openai/gpt-4o", "name": "GPT-4o",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+]
+class _ZdrSess:
+    def get(self, url, **kw):
+        if "endpoints/zdr" in url:
+            return _FakeRespZdr(200, {"data": {"endpoints": [{"model_slug": "openai/gpt-4o"}]}})
+        return _FakeRespZdr(200, {"data": _zdr_data})
+_p_zdr._session = _ZdrSess()
+_p_zdr.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "y" * 50
+_p_zdr.valves.ZDR_MODELS_ONLY = True
+_p_zdr.valves.SYNC_PROVIDER_ICONS = False
+_models_zdr = _p_zdr.pipes()
+_assert("google/veo-3.1-fast" not in _p_zdr._video_model_ids,
+        "ZDR-filtered video model NOT added to _video_model_ids")
+
 # ── batch-1 audit fixes: SSRF guard + atomic set swap + body deepcopy ─────────
 
 _section("batch-1 audit fixes: SSRF + atomic swap + body deepcopy + auth-leak guards")
