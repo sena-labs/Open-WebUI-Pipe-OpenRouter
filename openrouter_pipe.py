@@ -2027,7 +2027,10 @@ class Pipe:
                 from open_webui.routers.images import upload_image as _upload_image
                 from open_webui.models.users import Users as _Users
                 upload_image = _upload_image
-                owui_user = _Users.get_user_by_id(user["id"])
+                _maybe_user = _Users.get_user_by_id(user["id"])
+                if inspect.isawaitable(_maybe_user):
+                    _maybe_user = await _maybe_user
+                owui_user = _maybe_user
             except Exception as exc:
                 print(f"[OpenRouter Pipe] OWUI image-upload helpers unavailable: {exc}")
 
