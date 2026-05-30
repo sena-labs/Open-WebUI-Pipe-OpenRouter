@@ -46,6 +46,10 @@ _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Pre-compiled at module load time so the image-materialize hot path
+# doesn't pay re.compile() cost on every stream finalize.
+_DATA_IMAGE_RE = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
 _MAX_RETRY_AFTER = 60.0  # cap (seconds) — a huge Retry-After must not hang the request
 
 # Sentinel used with asyncio.to_thread(next, it, _STREAM_DONE) to detect
@@ -880,6 +884,16 @@ class Pipe:
         self.type = "manifold"
         self.valves = self.Valves()
         self._session = requests.Session()
+        # Bump connection-pool sizing — default urllib3 pool of 10 is a
+        # bottleneck when many users hit the pipe at once (each stream
+        # ties up a connection for the duration of the OpenRouter call).
+        # max_retries=0 because _retryable_request already drives our
+        # own backoff logic with Retry-After awareness.
+        _pool = requests.adapters.HTTPAdapter(
+            pool_connections=64, pool_maxsize=64, max_retries=0
+        )
+        self._session.mount("https://", _pool)
+        self._session.mount("http://", _pool)
         # Cache env vars that don't change at runtime
         _raw_referer = os.getenv("WEBUI_URL", "http://localhost:3000")
         self._referer = re.sub(r"[\r\n\x00]", "", _raw_referer) or "http://localhost:3000"
@@ -965,12 +979,19 @@ class Pipe:
         )
 
     def _models_cache_valid(self) -> bool:
-        """Check if the cached model list is still valid."""
+        """Check if the cached model list is still valid.
+
+        Compare cheap state first (presence + TTL) before paying the
+        Fernet-decrypt + sha256 cost of ``_build_cache_key`` — that
+        builder runs on every OWUI poll otherwise.
+        """
         if not self._models_cache:
+            return False
+        if (time.monotonic() - self._models_cache_ts) >= _MODELS_CACHE_TTL:
             return False
         if self._build_cache_key() != self._models_cache_key:
             return False
-        return (time.monotonic() - self._models_cache_ts) < _MODELS_CACHE_TTL
+        return True
 
     def pipes(self) -> List[dict]:
         """Fetch and return the list of available OpenRouter models."""
@@ -2659,7 +2680,6 @@ class Pipe:
         if owui_user is None:
             return False
 
-        _data_re = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
         changed = False
         for img in images:
             if not isinstance(img, dict):
@@ -2668,7 +2688,7 @@ class Pipe:
             url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else ""
             if not isinstance(url, str) or not url.lower().startswith("data:image/"):
                 continue
-            m = _data_re.match(url)
+            m = _DATA_IMAGE_RE.match(url)
             if not m:
                 continue
             try:
