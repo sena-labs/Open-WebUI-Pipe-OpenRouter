@@ -4004,60 +4004,65 @@ _p_pf.valves.SHOW_REMAINING_CREDIT = False
 asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
 _assert(_threads_pf == [], "credit prefetch skipped when SHOW_REMAINING_CREDIT off")
 
-# ── image-files event emit (OWUI native attachment) ───────────────────────────
+# ── image materialize: upload data: URLs to OWUI internal files ──────────────
 
-_section("image-files event emit (OWUI native attachment)")
+_section("image materialize: upload data: URLs to OWUI internal files")
 
-_img_calls = []
-async def _img_emitter(ev):
-    _img_calls.append(ev)
-_p_ie = Pipe()
+# Helper requires OWUI runtime context (request + user dict with id + metadata).
+# When that context is missing, it returns False (no-op) and leaves images
+# untouched so the markdown formatter falls back to the original data URL.
+_p_im = Pipe()
 
-# Valid images → emit + clear
-_msg = {"images": [
-    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}},
-    {"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}},
-]}
-_ok = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg))
-_assert(_ok is True, "emit returns True when images present")
-_assert(len(_img_calls) == 1 and _img_calls[0]["type"] == "files", "single files event emitted")
-_files = _img_calls[0]["data"]["files"]
-_assert(len(_files) == 2 and all(f["type"] == "image" for f in _files), "two image entries in files event")
-_assert(_files[0]["url"].startswith("data:image/png") and _files[1]["url"].startswith("https://"), "URLs preserved")
-_assert(_msg["images"] == [], "message.images cleared after emit (no double markdown render)")
+# Missing request → no-op
+_msg_im1 = {"images": [{"image_url": {"url": "data:image/png;base64,iVBOR"}}]}
+_ok_im1 = asyncio.run(_p_im._emit_image_files(None, _msg_im1))
+_assert(_ok_im1 is False and _msg_im1["images"], "no runtime context (no request) → False, images untouched")
 
-# No emitter → no-op
-_msg2 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
-_ok2 = asyncio.run(_p_ie._emit_image_files(None, _msg2))
-_assert(_ok2 is False and _msg2["images"], "no emitter → False, images untouched")
+# Missing user dict → no-op
+_msg_im2 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
+_ok_im2 = asyncio.run(_p_im._emit_image_files(None, _msg_im2, request=object(), user=None, metadata={"chat_id": "c", "message_id": "m"}))
+_assert(_ok_im2 is False and _msg_im2["images"], "no user dict → False, images untouched")
+
+# Empty user id → no-op
+_msg_im3 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
+_ok_im3 = asyncio.run(_p_im._emit_image_files(None, _msg_im3, request=object(), user={"id": ""}, metadata={"chat_id": "c"}))
+_assert(_ok_im3 is False and _msg_im3["images"], "empty user id → False, images untouched")
 
 # No images → no-op
-_img_calls.clear()
-_msg3 = {"content": "text only"}
-_ok3 = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg3))
-_assert(_ok3 is False and _img_calls == [], "no images → False, no event")
+_msg_im4 = {"content": "text only"}
+_ok_im4 = asyncio.run(_p_im._emit_image_files(None, _msg_im4, request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}))
+_assert(_ok_im4 is False, "no images key → False")
 
-# Invalid URLs filtered
-_img_calls.clear()
-_msg4 = {"images": [
+# Non-dict message → no-op (defensive)
+_ok_im5 = asyncio.run(_p_im._emit_image_files(None, "not a dict", request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}))
+_assert(_ok_im5 is False, "non-dict message → False")
+
+# With runtime context but OWUI helpers unavailable locally (no `open_webui`
+# module on the test machine) → helper logs + returns False without crashing.
+_msg_im6 = {"images": [{"image_url": {"url": "data:image/png;base64,iVBOR"}}]}
+_ok_im6 = asyncio.run(_p_im._emit_image_files(None, _msg_im6, request=object(), user={"id": "u1"}, metadata={"chat_id": "c", "message_id": "m"}))
+_assert(_ok_im6 is False, "OWUI helpers missing locally → False, no crash")
+_assert(_msg_im6["images"], "OWUI helpers missing → images untouched (formatter falls back to data URL)")
+
+# _format_image_output now accepts OWUI internal file paths so the markdown
+# carries the small `/api/v1/files/.../content` link that OWUI renders inline.
+_md_internal = mod._format_image_output([
+    {"image_url": {"url": "/api/v1/files/abc-def/content"}},
+])
+_assert("![Generated image](/api/v1/files/abc-def/content)" in _md_internal, "_format_image_output accepts /api/v1/files/ relative URLs")
+_md_http = mod._format_image_output([
+    {"image_url": {"url": "https://example.com/x.png"}},
+])
+_assert("![Generated image](https://example.com/x.png)" in _md_http, "_format_image_output still accepts https URLs")
+_md_data = mod._format_image_output([
+    {"image_url": {"url": "data:image/png;base64,iVBOR"}},
+])
+_assert("![Generated image](data:image/png;base64,iVBOR)" in _md_data, "_format_image_output still accepts data:image/* URLs")
+_md_bad = mod._format_image_output([
     {"image_url": {"url": "javascript:alert(1)"}},
-    {"image_url": {"url": "data:image/svg+xml,<svg/>"}},  # svg not allowed by our raster cap (kept here: data:image/ prefix matches, but svg is in fact data:image/* — the helper allows ANY data:image/ subtype, intentional for emission since OWUI renders via attachment, not browser-side data URL injection)
-    {"image_url": {"url": "https://ok.com/a.png"}},
-    {"image_url": {"url": ""}},
-]}
-_ok4 = asyncio.run(_p_ie._emit_image_files(_img_emitter, _msg4))
-# Helper allows http(s) and data:image/* (any subtype) — js: is filtered, empty is filtered.
-_assert(_ok4 is True, "at least one valid URL → emit")
-_assert(len(_img_calls) == 1, "single files event")
-_emitted_urls = [f["url"] for f in _img_calls[0]["data"]["files"]]
-_assert("javascript:alert(1)" not in _emitted_urls and "" not in _emitted_urls, "javascript: and empty URLs filtered")
-
-# Emitter raising → no crash + returns False
-async def _emitter_boom(ev):
-    raise RuntimeError("boom")
-_msg5 = {"images": [{"image_url": {"url": "https://ok.com/x.png"}}]}
-_ok5 = asyncio.run(_p_ie._emit_image_files(_emitter_boom, _msg5))
-_assert(_ok5 is False and _msg5["images"], "raising emitter → False, images NOT cleared")
+    {"image_url": {"url": "/other/path"}},
+])
+_assert(_md_bad == "", "_format_image_output rejects javascript: and non-/api/v1/files/ relative URLs")
 
 # ── citation events emit ───────────────────────────────────────────────────────
 

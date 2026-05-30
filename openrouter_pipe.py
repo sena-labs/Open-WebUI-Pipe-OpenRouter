@@ -248,8 +248,10 @@ def _format_generation_id(generation_id: Optional[str]) -> str:
 def _format_image_output(images: list) -> str:
     """Format OpenRouter image output objects as markdown image tags.
 
-    Only http(s) and data:image/* URLs are rendered; others are dropped.
-    Closing parentheses in URLs are percent-encoded to avoid breaking markdown.
+    Accepts http(s) URLs, data:image/* raster URLs, and Open WebUI internal file
+    paths (``/api/v1/files/{id}/content`` — written by `_emit_image_files` after a
+    successful upload). Other schemes are dropped. Closing parentheses are
+    percent-encoded so they don't break the markdown image syntax.
     """
     parts = []
     for img in (images or []):
@@ -263,7 +265,8 @@ def _format_image_output(images: list) -> str:
             "data:image/png", "data:image/jpeg", "data:image/jpg",
             "data:image/gif", "data:image/webp",
         ))
-        if not (lower.startswith(("http://", "https://")) or allowed_data):
+        allowed_relative = url.startswith("/api/v1/files/")
+        if not (lower.startswith(("http://", "https://")) or allowed_data or allowed_relative):
             continue
         parts.append(f"![Generated image]({url.replace(')', '%29')})")
     return "\n\n".join(parts)
@@ -1997,85 +2000,79 @@ class Pipe:
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
     async def _emit_image_files(self, emitter, message, request=None, user=None, metadata=None) -> bool:
-        """Emit a native Open WebUI ``files`` event for generated images.
+        """Materialize generated image ``data:`` URLs into Open WebUI internal file URLs.
 
-        Image-output models (e.g. flux, gemini-image-preview) return raster
-        data URLs in ``message.images``. Open WebUI's chat client only renders
-        image attachments fetched from its own ``/api/v1/files/{id}/content``
-        endpoint, so inline ``data:`` URLs never appear in the UI. When the
-        Open WebUI runtime context is available (``request`` + ``user`` +
-        ``metadata`` with chat_id/message_id), we upload each base64 image
-        through OWUI's ``upload_image`` helper and emit the resulting file URL
-        instead. Without that context the data URL is emitted as a fallback.
+        Open WebUI's chat client renders ``![](/api/v1/files/{id}/content)`` inline
+        from message content, but does not reliably render multi-hundred-KB inline
+        ``data:`` URLs. When the OWUI runtime context is available (``request`` +
+        ``user`` dict with id + ``metadata`` with chat_id/message_id), each base64
+        image in ``message.images`` is uploaded via OWUI's ``upload_image`` helper
+        and the entry is rewritten in place with the resulting file URL. The
+        downstream markdown formatter (``_format_image_output``) then produces a
+        compact ``![Generated image](/api/v1/files/.../content)`` link that OWUI
+        renders inline. Without the OWUI runtime context, ``message.images`` is
+        left untouched (formatter falls back to the original data URL — may not
+        render but never crashes). The ``emitter`` argument is accepted for
+        back-compat with prior wiring; no event is emitted.
 
-        Mutates ``message`` to clear ``images`` after a successful emit so the
-        markdown formatter doesn't double-render them. Returns True when at
-        least one image was emitted, False otherwise.
+        Returns True when at least one URL was materialized into an OWUI file.
         """
-        if not emitter or not isinstance(message, dict):
+        if not isinstance(message, dict):
             return False
         images = message.get("images") or []
         if not images:
             return False
+        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
+            return False
 
-        # Resolve a real Open WebUI user object once (upload_image expects
-        # attribute-style access, the __user__ kwarg is a dict).
-        owui_user = None
-        upload_image = None
-        if request is not None and isinstance(user, dict) and user.get("id") and metadata:
-            try:
-                from open_webui.routers.images import upload_image as _upload_image
-                from open_webui.models.users import Users as _Users
-                upload_image = _upload_image
-                _maybe_user = _Users.get_user_by_id(user["id"])
-                if inspect.isawaitable(_maybe_user):
-                    _maybe_user = await _maybe_user
-                owui_user = _maybe_user
-            except Exception as exc:
-                print(f"[OpenRouter Pipe] OWUI image-upload helpers unavailable: {exc}")
+        try:
+            from open_webui.routers.images import upload_image as _upload_image
+            from open_webui.models.users import Users as _Users
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI image-upload helpers unavailable: {exc}")
+            return False
+
+        try:
+            _maybe_user = _Users.get_user_by_id(user["id"])
+            if inspect.isawaitable(_maybe_user):
+                _maybe_user = await _maybe_user
+            owui_user = _maybe_user
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
+            return False
+        if owui_user is None:
+            return False
 
         _data_re = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
-        files = []
+        changed = False
         for img in images:
             if not isinstance(img, dict):
                 continue
-            url = (img.get("image_url") or {}).get("url", "")
-            if not isinstance(url, str) or not url:
+            image_url_obj = img.get("image_url")
+            url = image_url_obj.get("url", "") if isinstance(image_url_obj, dict) else ""
+            if not isinstance(url, str) or not url.lower().startswith("data:image/"):
                 continue
-            lower = url.lower()
-
-            # Convert a data: URL into a real OWUI file when we can
-            if upload_image is not None and owui_user is not None and lower.startswith("data:image/"):
-                m = _data_re.match(url)
-                if m:
-                    try:
-                        content_type = m.group(1)
-                        image_bytes = base64.b64decode(m.group(2))
-                        _item, new_url = await upload_image(
-                            request, image_bytes, content_type, metadata, owui_user
-                        )
-                        if new_url:
-                            url = str(new_url)
-                            lower = url.lower()
-                    except Exception as exc:
-                        print(f"[OpenRouter Pipe] Image upload to OWUI failed: {exc}")
-
-            if not (
-                lower.startswith(("http://", "https://"))
-                or url.startswith("/")  # path-only URL produced by upload_image
-                or lower.startswith("data:image/")
-            ):
+            m = _data_re.match(url)
+            if not m:
                 continue
-            files.append({"type": "image", "url": url})
-
-        if not files:
-            return False
-        try:
-            await emitter({"type": "files", "data": {"files": files}})
-        except Exception:
-            return False
-        message["images"] = []
-        return True
+            try:
+                content_type = m.group(1)
+                image_bytes = base64.b64decode(m.group(2))
+                _item, new_url = await _upload_image(
+                    request, image_bytes, content_type, metadata, owui_user
+                )
+            except Exception as exc:
+                print(f"[OpenRouter Pipe] Image upload to OWUI failed: {exc}")
+                continue
+            if not new_url:
+                continue
+            new_url_str = str(new_url)
+            if isinstance(image_url_obj, dict):
+                image_url_obj["url"] = new_url_str
+            else:
+                img["image_url"] = {"url": new_url_str}
+            changed = True
+        return changed
 
     async def _emit_citation_events(self, emitter, citations) -> None:
         """Emit one Open WebUI 'citation' event per URL when an emitter is provided.
