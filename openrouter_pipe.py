@@ -1209,7 +1209,8 @@ class Pipe:
             return agen
 
         if stream:
-            gen = self._stream_response(headers, payload, eff)
+            stream_state: dict = {}
+            gen = self._stream_response(headers, payload, eff, state=stream_state)
             it = iter(gen)
 
             async def _wrap_stream():
@@ -1219,6 +1220,18 @@ class Pipe:
                         if chunk is _STREAM_DONE:
                             break
                         yield chunk
+                    # After the SSE loop finishes, materialize any image-output
+                    # entries to OWUI internal file URLs and yield the markdown
+                    # so flux/gemini-image style responses render inline.
+                    images = stream_state.get("images") or []
+                    if images:
+                        fake_msg = {"images": images}
+                        await self._emit_image_files(
+                            __event_emitter__, fake_msg, __request__, __user__, __metadata__
+                        )
+                        image_md = _format_image_output(fake_msg.get("images") or [])
+                        if image_md:
+                            yield f"\n\n{image_md}\n"
                 finally:
                     if __event_emitter__:
                         await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
@@ -2442,14 +2455,22 @@ class Pipe:
         return "".join(parts)
 
     def _stream_response(
-        self, headers: dict, payload: dict, valves
+        self, headers: dict, payload: dict, valves, state: Optional[dict] = None
     ) -> Generator[str, None, None]:
-        """Stream SSE chunks with <think> block management and mid-stream error recovery."""
+        """Stream SSE chunks with <think> block management and mid-stream error recovery.
+
+        When ``state`` is provided, image-output payloads (``delta.images`` or
+        ``choices[0].message.images`` — emitted by image models like flux even
+        when ``stream=True``) are captured under ``state["images"]`` so the
+        async caller can materialize URLs + render markdown after the stream
+        completes.
+        """
         response = None
         in_think = False
         latest_citations: List[str] = []
         latest_usage: dict = {}
         latest_generation_id: Optional[str] = None
+        latest_images: Optional[list] = None
 
         def _close_think_tag():
             nonlocal in_think
@@ -2504,6 +2525,16 @@ class Pipe:
                 reasoning = delta.get("reasoning", "")
                 content = delta.get("content") or ""
 
+                # Image-output models (flux, gemini-image-preview, etc.) return
+                # raster data URLs in delta.images or the final chunk's
+                # message.images even when stream=True. Capture the latest list
+                # so the async caller can materialize OWUI internal URLs and
+                # render markdown after the stream completes.
+                _msg = first_choice.get("message") if isinstance(first_choice.get("message"), dict) else None
+                _imgs = delta.get("images") or (_msg.get("images") if isinstance(_msg, dict) else None)
+                if isinstance(_imgs, list) and _imgs:
+                    latest_images = _imgs
+
                 # Audio transcript fallback: stream the transcript when the model
                 # returns audio instead of text (e.g. openai/gpt-audio).
                 if not content:
@@ -2526,6 +2557,11 @@ class Pipe:
             close_tag = _close_think_tag()
             if close_tag:
                 yield close_tag
+            # Surface collected images to the async caller (if any) before
+            # emitting footers so the caller can materialize OWUI URLs and
+            # yield the image markdown next to the cost/credit footers.
+            if state is not None and latest_images:
+                state["images"] = latest_images
             rendered_citations = _format_citation_list(latest_citations)
             if rendered_citations:
                 yield rendered_citations
