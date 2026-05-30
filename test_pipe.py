@@ -4298,6 +4298,45 @@ _au_ok = asyncio.run(_p_au3._materialize_audio_output(
 _assert("<div><audio>/api/v1/files/aud-1/content</audio></div>" in _au_ok, "audio embed wraps URL in <div><audio>")
 _assert(_fake_upload_audio.last["ct"] == "audio/mpeg", "mp3 format → audio/mpeg content-type")
 
+# pcm16: raw PCM gets wrapped in a WAV container before upload so the
+# browser can play it. Verify the magic bytes (RIFF header) and that the
+# MIME bumps to audio/wav.
+_p_pcm = Pipe()
+_ct_pcm = {"ct": None, "bytes": None}
+async def _capture_pcm(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _ct_pcm["ct"] = content_type
+    _ct_pcm["bytes"] = audio_bytes
+    return ("pcm-1", "/api/v1/files/pcm-1/content")
+_p_pcm._upload_audio_to_owui = _capture_pcm.__get__(_p_pcm, Pipe)  # type: ignore
+_raw_pcm = bytes(range(48))  # arbitrary PCM samples
+_b64_pcm = _b64m.b64encode(_raw_pcm).decode()
+_pcm_out = asyncio.run(_p_pcm._materialize_audio_output(
+    _b64_pcm, _p_pcm.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="pcm16"
+))
+_assert(_ct_pcm["ct"] == "audio/wav", "pcm16 → MIME audio/wav")
+_assert(_ct_pcm["bytes"][:4] == b"RIFF" and _ct_pcm["bytes"][8:12] == b"WAVE",
+        "pcm16 bytes wrapped with RIFF/WAVE header")
+_assert(len(_ct_pcm["bytes"]) == 44 + len(_raw_pcm),
+        "WAV header is 44 bytes prepended to raw PCM payload")
+_assert("<div><audio>/api/v1/files/pcm-1/content</audio></div>" in _pcm_out,
+        "pcm16 path still emits block <div><audio> embed")
+
+# audio_format kwarg takes precedence over the valve default.
+_p_fmt = Pipe()
+_p_fmt.valves.AUDIO_OUTPUT_FORMAT = "mp3"
+_ct_fmt = {"ct": None}
+async def _capture_fmt(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _ct_fmt["ct"] = content_type
+    return ("f", "/api/v1/files/f/content")
+_p_fmt._upload_audio_to_owui = _capture_fmt.__get__(_p_fmt, Pipe)  # type: ignore
+asyncio.run(_p_fmt._materialize_audio_output(
+    _b64m.b64encode(b"\xff\xfb data").decode(),
+    _p_fmt.valves, object(), {"id": "u"}, {"chat_id": "c"},
+    audio_format="flac",
+))
+_assert(_ct_fmt["ct"] == "audio/flac",
+        "audio_format kwarg ('flac') beats valve default ('mp3')")
+
 # Different formats map to correct MIME types.
 for _fmt, _expected_ct in [("wav", "audio/wav"), ("flac", "audio/flac"), ("opus", "audio/ogg")]:
     _p = Pipe()

@@ -21,6 +21,7 @@ import json
 import os
 import random
 import re
+import struct
 import time
 import traceback
 from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
@@ -1253,15 +1254,23 @@ class Pipe:
         # /chat/completions BUT need explicit modalities=["text","audio"]
         # plus an audio config object plus stream=true; otherwise the
         # provider returns placeholder text ("<instrumental>") with no
-        # audio bytes. Inject those defaults before payload prep so the
-        # existing stream pipeline carries the bytes through and the async
-        # wrapper materializes them after the stream completes.
+        # audio bytes.
+        #
+        # Per-provider quirk: OpenAI's gpt-audio* family ONLY accepts
+        # ``format="pcm16"`` when stream=true and 400s on mp3/wav/flac/etc.
+        # ("Unsupported value: 'audio.format' does not support 'mp3' when
+        # stream=true. Supported values are: 'pcm16'."). Music models like
+        # Lyria accept mp3 fine. Pick the format based on the model owner;
+        # PCM bytes are wrapped in a WAV container after the stream
+        # finishes so the browser can play them.
         if model_id in self._audio_model_ids:
             if not body.get("modalities"):
                 body["modalities"] = ["text", "audio"]
             if not isinstance(body.get("audio"), dict):
-                cfg: dict = {"format": eff.AUDIO_OUTPUT_FORMAT or "mp3"}
-                if eff.AUDIO_OUTPUT_VOICE:
+                is_openai_audio = model_id.startswith("openai/")
+                fmt = "pcm16" if is_openai_audio else (eff.AUDIO_OUTPUT_FORMAT or "mp3")
+                cfg: dict = {"format": fmt}
+                if is_openai_audio and eff.AUDIO_OUTPUT_VOICE:
                     cfg["voice"] = eff.AUDIO_OUTPUT_VOICE
                 body["audio"] = cfg
             body["stream"] = True
@@ -2186,6 +2195,33 @@ class Pipe:
             return None
         return (str(file_id), str(new_url))
 
+    @staticmethod
+    def _wrap_pcm16_as_wav(pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
+        """Wrap raw signed-16-bit PCM audio in a minimal RIFF/WAVE container.
+
+        OpenAI gpt-audio streaming returns raw little-endian PCM samples
+        with no container; browsers cannot play that via ``<audio>`` so we
+        prepend a 44-byte WAV header. Defaults match OpenAI's spec
+        (24 kHz, mono).
+        """
+        byte_rate = sample_rate * channels * 2  # 16-bit = 2 bytes per sample
+        block_align = channels * 2
+        data_size = len(pcm_bytes)
+        # RIFF/WAVE header for PCM (format code 1), 16-bit samples.
+        header = b"RIFF"
+        header += struct.pack("<I", 36 + data_size)
+        header += b"WAVEfmt "
+        header += struct.pack("<I", 16)              # fmt chunk size
+        header += struct.pack("<H", 1)               # PCM
+        header += struct.pack("<H", channels)
+        header += struct.pack("<I", sample_rate)
+        header += struct.pack("<I", byte_rate)
+        header += struct.pack("<H", block_align)
+        header += struct.pack("<H", 16)              # bits per sample
+        header += b"data"
+        header += struct.pack("<I", data_size)
+        return header + pcm_bytes
+
     async def _materialize_audio_output(
         self,
         audio_b64: str,
@@ -2193,11 +2229,15 @@ class Pipe:
         request,
         user,
         metadata,
+        audio_format: Optional[str] = None,
     ) -> str:
         """Decode collected base64 audio, upload to OWUI, return the embed.
 
-        Returns an empty string if the bytes can't be decoded or the upload
-        fails — the stream caller treats that as "no embed to yield".
+        ``audio_format`` is what the caller requested in the upstream
+        payload (``payload.audio.format``). It overrides the valve default
+        because per-model overrides (e.g. forcing pcm16 for openai/gpt-audio)
+        change at request time. Returns ``""`` if bytes can't be decoded or
+        the upload fails — the stream caller treats that as "no embed".
         """
         try:
             padded = audio_b64 + "=" * (-len(audio_b64) % 4)
@@ -2207,15 +2247,19 @@ class Pipe:
             return ""
         if not audio_bytes:
             return ""
-        fmt = (valves.AUDIO_OUTPUT_FORMAT or "mp3").lower()
-        content_type = {
-            "mp3": "audio/mpeg",
-            "wav": "audio/wav",
-            "flac": "audio/flac",
-            "opus": "audio/ogg",
-            "pcm16": "audio/wav",
-            "ogg": "audio/ogg",
-        }.get(fmt, "audio/mpeg")
+        fmt = (audio_format or valves.AUDIO_OUTPUT_FORMAT or "mp3").lower()
+        # Raw PCM has no container; wrap in WAV so the browser can play it.
+        if fmt == "pcm16":
+            audio_bytes = self._wrap_pcm16_as_wav(audio_bytes)
+            content_type = "audio/wav"
+        else:
+            content_type = {
+                "mp3": "audio/mpeg",
+                "wav": "audio/wav",
+                "flac": "audio/flac",
+                "opus": "audio/ogg",
+                "ogg": "audio/ogg",
+            }.get(fmt, "audio/mpeg")
         upload = await self._upload_audio_to_owui(
             request, user, metadata, audio_bytes, content_type=content_type
         )
@@ -2866,6 +2910,10 @@ class Pipe:
                 state["images"] = latest_images
             if audio_b64_parts:
                 state["audio_b64"] = "".join(audio_b64_parts)
+            if isinstance(payload.get("audio"), dict):
+                _af = payload["audio"].get("format")
+                if isinstance(_af, str) and _af:
+                    state["audio_format"] = _af
             if response is not None:
                 response.close()
 
@@ -2888,7 +2936,12 @@ class Pipe:
         audio_b64 = state.get("audio_b64") or ""
         if audio_b64:
             audio_embed = await self._materialize_audio_output(
-                audio_b64, valves, request, user, metadata
+                audio_b64,
+                valves,
+                request,
+                user,
+                metadata,
+                audio_format=state.get("audio_format"),
             )
             if audio_embed:
                 parts.append(audio_embed)
@@ -3077,6 +3130,10 @@ class Pipe:
                 state["images"] = latest_images
             if state is not None and audio_b64_parts:
                 state["audio_b64"] = "".join(audio_b64_parts)
+            if state is not None and isinstance(payload.get("audio"), dict):
+                _af = payload["audio"].get("format")
+                if isinstance(_af, str) and _af:
+                    state["audio_format"] = _af
             rendered_citations = _format_citation_list(latest_citations)
             if rendered_citations:
                 yield rendered_citations
