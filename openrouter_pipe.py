@@ -2093,14 +2093,19 @@ class Pipe:
 
     async def _upload_video_to_owui(
         self, request, user, metadata, video_bytes: bytes, content_type: str = "video/mp4"
-    ) -> Optional[str]:
+    ) -> Optional[tuple]:
         """Store generated video bytes via OWUI's file-upload helper.
 
         Reuses ``open_webui.routers.images.upload_image`` (a thin wrapper
         around the generic ``upload_file_handler``) so the resulting URL is
-        OWUI-internal and renderable by the chat client. Returns the relative
-        ``/api/v1/files/{id}/content`` URL on success, or ``None`` if the OWUI
-        runtime context isn't available or the upload fails.
+        OWUI-internal and the file is linked to the chat message.
+
+        Returns ``(file_id, file_url)`` on success or ``None`` when the OWUI
+        runtime context is missing or the upload fails. The chat-message
+        formatter needs the bare ``file_id`` to emit the OWUI placeholder
+        token ``{{VIDEO_FILE_ID_<uuid>}}`` — OWUI's frontend replaces that
+        placeholder with a real ``<video>`` element AFTER markdown sanitizes
+        raw HTML (markdown-it runs with ``html: false``).
         """
         if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
             return None
@@ -2121,13 +2126,16 @@ class Pipe:
         if owui_user is None:
             return None
         try:
-            _item, new_url = await _upload_image(
+            file_item, new_url = await _upload_image(
                 request, video_bytes, content_type, metadata, owui_user
             )
         except Exception as exc:
             print(f"[OpenRouter Pipe] Video upload to OWUI failed: {exc}")
             return None
-        return str(new_url) if new_url else None
+        file_id = getattr(file_item, "id", None) if file_item is not None else None
+        if not file_id or not new_url:
+            return None
+        return (str(file_id), str(new_url))
 
     async def _run_video_generation(
         self,
@@ -2261,10 +2269,10 @@ class Pipe:
         if dl_ct.startswith("video/"):
             content_type = dl_ct.split(";", 1)[0].strip()
 
-        new_url = await self._upload_video_to_owui(
+        upload = await self._upload_video_to_owui(
             request, user, metadata, video_bytes, content_type=content_type
         )
-        if not new_url:
+        if not upload:
             # No OWUI runtime context (rare) — fall back to an explanatory
             # message rather than embedding a signed OpenRouter URL that
             # would 401 once the user's browser tries to load it.
@@ -2272,11 +2280,14 @@ class Pipe:
                 "OpenRouter Error: Video generated but could not be persisted to "
                 "Open WebUI storage. Re-run inside an active OWUI chat session."
             )
+        file_id, _new_url = upload
 
-        # Strip query string from the URL for cleaner persistence; the
-        # OWUI files endpoint serves the content based on the file id alone.
-        clean_url = new_url.split("?", 1)[0]
-        video_tag = f'<video controls src="{clean_url}" style="max-width:100%"></video>'
+        # OWUI's markdown renderer runs with html:false, so a raw <video>
+        # tag in message content is escaped to literal text. The frontend
+        # provides a placeholder token that the chat renderer substitutes
+        # AFTER markdown into a real <video> element pointing at the
+        # OWUI-internal file URL — emit that token instead.
+        video_tag = f"{{{{VIDEO_FILE_ID_{file_id}}}}}"
 
         footer = ""
         usage = final.get("usage") or {}

@@ -4164,7 +4164,7 @@ _p_vg4._session.plan[-1].content = b"\x00\x00\x00 ftypmp42"
 # Patch the upload helper to skip OWUI imports.
 async def _fake_upload(self, request, user, metadata, video_bytes, content_type="video/mp4"):
     _fake_upload.last = {"bytes_len": len(video_bytes), "ct": content_type}
-    return "/api/v1/files/vid-abc/content"
+    return ("vid-abc", "/api/v1/files/vid-abc/content")
 _p_vg4._upload_video_to_owui = _fake_upload.__get__(_p_vg4, Pipe)  # type: ignore
 
 _vg_ok = asyncio.run(_p_vg4._run_video_generation(
@@ -4172,7 +4172,7 @@ _vg_ok = asyncio.run(_p_vg4._run_video_generation(
     "google/veo-3.1-fast",
     _p_vg4.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
 ))
-_assert(_vg_ok.startswith('<video controls src="/api/v1/files/vid-abc/content"'), "success → <video> tag with materialized URL")
+_assert(_vg_ok.startswith("{{VIDEO_FILE_ID_vid-abc}}"), "success → OWUI {{VIDEO_FILE_ID_<id>}} placeholder")
 _assert("Video cost" not in _vg_ok, "cost footer hidden when SHOW_COST_INFO=False by default")
 
 # Cost footer appears when SHOW_COST_INFO is on.
@@ -4187,7 +4187,7 @@ _p_vg5._session = _FakeSession([
 ])
 _p_vg5._session.plan[-1].content = b"\x00bytes"
 async def _fake_upload2(self, request, user, metadata, video_bytes, content_type="video/mp4"):
-    return "/api/v1/files/vid-def/content"
+    return ("vid-def", "/api/v1/files/vid-def/content")
 _p_vg5._upload_video_to_owui = _fake_upload2.__get__(_p_vg5, Pipe)  # type: ignore
 _vg_cost = asyncio.run(_p_vg5._run_video_generation(
     {"messages": [{"role": "user", "content": "a blue car"}]},
