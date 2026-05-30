@@ -1,7 +1,9 @@
 # OpenRouter Pipe
 
 [![Build](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/sena-labs/Open-WebUI-Pipe-OpenRouter?label=release)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/releases/latest)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-868%20%E2%9C%93-brightgreen)](test_pipe.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio (input + generation),
@@ -18,13 +20,21 @@ control out of the box.
   - [Manual install](#manual-install)
   - [From source](#from-source)
 - [Usage](#usage)
+  - [Common valve combinations](#common-valve-combinations)
+  - [Reasoning tokens](#reasoning-tokens)
+  - [Citations](#citations)
 - [Configuration](#configuration)
   - [Core](#core)
   - [Reasoning](#reasoning)
   - [Display & Filtering](#display--filtering)
   - [Provider Routing](#provider-routing)
+  - [Media Generation](#media-generation)
   - [Advanced](#advanced)
   - [Network](#network)
+  - [Cost Display](#cost-display)
+  - [Per-user settings (UserValves)](#per-user-settings-uservalves)
+  - [API key encryption at rest](#api-key-encryption-at-rest)
+  - [Tool calling (native function calling)](#tool-calling-native-function-calling)
 - [Architecture](#architecture)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -113,6 +123,13 @@ an environment variable fallback (see [Configuration](#configuration)).
 | Use DeepSeek for reasoning | select `deepseek/deepseek-r1`, `INCLUDE_REASONING = true` |
 | Route cheapest provider first | `PROVIDER_SORT = price` |
 | Add a fallback model | `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` |
+| Generate an image (flux) | select `black-forest-labs/flux.2-klein-4b`, send any prompt — output renders inline |
+| Generate a video (cheap) | select `x-ai/grok-imagine-video` (~$0.05 / second, 480p) — output renders inline after polling |
+| Generate music (Lyria) | select `google/lyria-3-clip-preview` (~$0.04 / 30 s clip) — output renders inline as `<audio>` |
+| Generate speech (gpt-audio) | select `openai/gpt-audio-mini`, optionally set `AUDIO_OUTPUT_VOICE = nova` |
+| Surface remaining OpenRouter credit | `SHOW_REMAINING_CREDIT = true` |
+| Show cost + cached-token savings | `SHOW_COST_INFO = true`, `COST_CURRENCY = EUR` |
+| Enforce Zero Data Retention routing | `ZDR_ENFORCE = true`, optional `ZDR_MODELS_ONLY = true` to hide non-ZDR models |
 
 ### Reasoning tokens
 
@@ -159,7 +176,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `INVERT_PROVIDER_LIST` | `OPENROUTER_INVERT_PROVIDER_LIST` | `false` | Treat `MODEL_PROVIDERS` as an exclusion list |
 | `FREE_MODEL_FILTER` | `OPENROUTER_FREE_MODEL_FILTER` | `all` | Free-tier filter: `all` / `only` / `exclude` |
 | `TOOL_CALLING_FILTER` | `OPENROUTER_TOOL_CALLING_FILTER` | `all` | Tool-capable filter (reads `supported_parameters`): `all` / `only` / `exclude` |
-| `OUTPUT_MODALITIES` | `OPENROUTER_OUTPUT_MODALITIES` | `all` | Output modalities to fetch from `/models`. `all` (default) lists every model. Restrict with `text`, `image`, `audio`, `embeddings`, or a comma list (e.g. `text,audio`) |
+| `OUTPUT_MODALITIES` | `OPENROUTER_OUTPUT_MODALITIES` | `all` | Output modalities to fetch from `/models`. `all` (default) lists every model. Restrict with `text`, `image`, `audio`, `video`, `embeddings`, or a comma list (e.g. `text,image,video`) |
 | `MODEL_VARIANTS` | `OPENROUTER_MODEL_VARIANTS` | `""` | Comma-separated `base_id:tag` entries that surface virtual variant models (e.g. `openai/gpt-4o:nitro`). Tags: `free`, `thinking`, `online`, `nitro`, `exacto`, `extended` |
 | `MODEL_CATEGORY` | `OPENROUTER_MODEL_CATEGORY` | `""` | Server-side category filter (`?category=`). Common values: `programming`, `roleplay`, `marketing`, `science`, `legal`, `finance`, `health`, `academia` |
 | `HIDE_DEPRECATED_MODELS` | `OPENROUTER_HIDE_DEPRECATED_MODELS` | `false` | Hide models with a non-null `expiration_date`. When False, deprecated models are tagged `⚠ {name} (deprecated)` |
@@ -181,6 +198,18 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `REQUIRE_PARAMETERS` | `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Only use providers that support all request parameters |
 | `DATA_COLLECTION` | `OPENROUTER_DATA_COLLECTION` | `allow` | Data policy: `allow` or `deny` |
 | `ZDR_ENFORCE` | `OPENROUTER_ZDR_ENFORCE` | `false` | Send `provider.zdr=true` so OpenRouter routes only to ZDR endpoints (request fails if none available) |
+
+### Media Generation
+
+Tunes the new image / video / audio output flows. Defaults are tuned for OpenRouter's
+documented behaviour — most installs never need to change them.
+
+| Valve | Env Var | Default | Description |
+| --- | --- | --- | --- |
+| `VIDEO_GENERATION_TIMEOUT` | `OPENROUTER_VIDEO_GENERATION_TIMEOUT` | `600` | Hard timeout for a video job (seconds). Veo/Kling clips typically finish in 30 s – 5 min; raise for longer or higher-resolution outputs |
+| `VIDEO_POLL_INTERVAL` | `OPENROUTER_VIDEO_POLL_INTERVAL` | `5` | Seconds between `GET /videos/<id>` poll requests. 5 – 10 s is a good range |
+| `AUDIO_OUTPUT_FORMAT` | `OPENROUTER_AUDIO_OUTPUT_FORMAT` | `mp3` | Audio container the pipe requests from audio-output models. Common: `mp3`, `wav`, `flac`, `opus`, `pcm16`. Ignored for OpenAI `gpt-audio*` (forced to `pcm16` because that's the only format the upstream accepts with `stream=true`, then auto-wrapped in a WAV container) |
+| `AUDIO_OUTPUT_VOICE` | `OPENROUTER_AUDIO_OUTPUT_VOICE` | `alloy` | Voice for speech-synthesis audio models (`gpt-audio*`). Common: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`. Music models like Lyria ignore the field |
 
 ### Advanced
 
@@ -251,12 +280,17 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 
 | Layer | Files | Responsibility |
 | --- | --- | --- |
-| Entry points | `Pipe.pipes()`, `Pipe.pipe()` | Model listing and chat routing |
-| Payload | `_prepare_payload()` | Sanitize OWUI internals, inject routing and reasoning |
-| Transport | `_retryable_request()` | Retry wrapper with exponential backoff |
-| Streaming | `_stream_response()` | SSE parser, `<think>` management, mid-stream errors |
-| Non-streaming | `_non_stream_response()` | JSON response, body-level error detection |
-| Enrichment | `_inject_cache_control()`, `_insert_citations()` | Post-processing |
+| Entry points | `Pipe.pipes()`, `Pipe.pipe()` | Model listing (with atomic frozenset swap for the audio / video routing sets) and per-request routing |
+| Payload | `_prepare_payload()` | Sanitize OWUI internals, inject provider routing, reasoning, response format, fallbacks, web search, cache control |
+| Transport | `_retryable_request()` + `requests.Session` w/ `HTTPAdapter(pool_maxsize=64)` | Retry wrapper with exponential backoff + Retry-After awareness; one shared connection pool sized for concurrent users |
+| Streaming chat | `_stream_response()` + async `_wrap_stream` | SSE parser, `<think>` management, image/audio capture, final media materialization, mid-stream error sanitisation |
+| Non-streaming chat | `_non_stream_fetch()` + `_non_stream_with_events()` | Off-loop JSON request, image materialization, citation + credit events |
+| Tool loop | `_run_tools_stream()` / `_run_tools_nonstream()` + `_stream_one_round()` | Execute tools, feed results back, cap iterations; both paths now also capture image/audio output via `_stream_media_embeds` |
+| Video generation | `_run_video_generation()` | Submit to `/api/v1/videos`, poll, download with byte cap, embed via block-HTML `<video>` |
+| Audio generation | `_materialize_audio_output()` + `_wrap_pcm16_as_wav()` | Decode base64 audio chunks, wrap PCM in RIFF/WAVE for OpenAI, embed via block-HTML `<audio>` |
+| OWUI file upload | `_owui_upload_bytes()` | Single shared helper backing every image / video / audio re-host through OWUI |
+| Security guards | `_is_openrouter_url()`, MIME / size / scheme whitelists | SSRF + auth-leak protection on media downloads, citation URL filter |
+| Enrichment | `_inject_cache_control()`, `_insert_citations()`, `_format_credit_info()` | Anthropic prompt-cache breakpoints, `[n]` → markdown links, opt-in credit footer (pre-warmed off the event loop) |
 
 ```text
 Open-WebUI-Pipe-OpenRouter/
