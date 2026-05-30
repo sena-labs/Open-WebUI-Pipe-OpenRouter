@@ -4241,6 +4241,75 @@ _video_ids = _p_vg8._video_model_ids
 _assert("google/veo-3.1-fast" in _video_ids, "pipes() tracks video models from output_modalities")
 _assert("anthropic/claude-3.5-sonnet" not in _video_ids, "pipes() does NOT mark text-only models as video")
 
+# ── audio output: detection + materialize + block-HTML embed ──────────────────
+
+_section("audio output: model detection + materialize")
+
+# pipes() should populate _audio_model_ids for models whose architecture
+# reports output_modalities includes "audio".
+_p_au1 = Pipe()
+_fake_audio_data = [
+    {"id": "google/lyria-3-clip-preview", "name": "Lyria 3 Clip",
+     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "image"]}},
+    {"id": "openai/gpt-audio", "name": "GPT Audio",
+     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "audio"]}},
+    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+]
+class _AudioModelsResp:
+    status_code = 200
+    def json(self): return {"data": _fake_audio_data}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _AudioModelsSess:
+    def get(self, *a, **kw): return _AudioModelsResp()
+_p_au1._session = _AudioModelsSess()
+_p_au1.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_au1.valves.SYNC_PROVIDER_ICONS = False
+_p_au1.pipes()
+_assert("google/lyria-3-clip-preview" in _p_au1._audio_model_ids, "pipes() tracks lyria as audio")
+_assert("openai/gpt-audio" in _p_au1._audio_model_ids, "pipes() tracks gpt-audio as audio")
+_assert("anthropic/claude-3.5-sonnet" not in _p_au1._audio_model_ids, "pipes() does NOT mark text-only as audio")
+
+# _materialize_audio_output: no runtime context → "" (no crash, no embed).
+_p_au2 = Pipe()
+_p_au2.valves.AUDIO_OUTPUT_FORMAT = "mp3"
+_au_empty = asyncio.run(_p_au2._materialize_audio_output("aGVsbG8=", _p_au2.valves, None, None, None))
+_assert(_au_empty == "", "no runtime context → empty embed")
+
+# _materialize_audio_output: bad base64 → "" (logged + no crash).
+_au_badb64 = asyncio.run(_p_au2._materialize_audio_output("not!base64@@@", _p_au2.valves, object(), {"id": "u"}, {"chat_id": "c"}))
+_assert(_au_badb64 == "", "garbage base64 → empty embed")
+
+# _materialize_audio_output: success path with patched uploader → emits
+# block-level <div><audio>URL</audio></div> wrapper so marked produces an
+# html token (OWUI HtmlToken only renders audio for token.type==='html').
+_p_au3 = Pipe()
+_p_au3.valves.AUDIO_OUTPUT_FORMAT = "mp3"
+async def _fake_upload_audio(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _fake_upload_audio.last = {"len": len(audio_bytes), "ct": content_type}
+    return ("aud-1", "/api/v1/files/aud-1/content")
+_p_au3._upload_audio_to_owui = _fake_upload_audio.__get__(_p_au3, Pipe)  # type: ignore
+import base64 as _b64m
+_payload_b64 = _b64m.b64encode(b"\xff\xfb\x90\x00fake-mp3-bytes").decode()
+_au_ok = asyncio.run(_p_au3._materialize_audio_output(
+    _payload_b64, _p_au3.valves, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"}
+))
+_assert("<div><audio>/api/v1/files/aud-1/content</audio></div>" in _au_ok, "audio embed wraps URL in <div><audio>")
+_assert(_fake_upload_audio.last["ct"] == "audio/mpeg", "mp3 format → audio/mpeg content-type")
+
+# Different formats map to correct MIME types.
+for _fmt, _expected_ct in [("wav", "audio/wav"), ("flac", "audio/flac"), ("opus", "audio/ogg")]:
+    _p = Pipe()
+    _p.valves.AUDIO_OUTPUT_FORMAT = _fmt
+    _ct_seen = {"ct": None}
+    async def _capture_ct(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+        _ct_seen["ct"] = content_type
+        return ("f", "/api/v1/files/f/content")
+    _p._upload_audio_to_owui = _capture_ct.__get__(_p, Pipe)  # type: ignore
+    asyncio.run(_p._materialize_audio_output(_payload_b64, _p.valves, object(), {"id": "u"}, {"chat_id": "c"}))
+    _assert(_ct_seen["ct"] == _expected_ct, f"format {_fmt} → MIME {_expected_ct}")
+
 # ── citation events emit ───────────────────────────────────────────────────────
 
 _section("citation events emit (OWUI native)")

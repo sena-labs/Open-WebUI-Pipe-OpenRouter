@@ -719,6 +719,14 @@ class Pipe:
             gt=0,
             description="Seconds between status polls while a video generation job is in flight (5–10s recommended).",
         )
+        AUDIO_OUTPUT_FORMAT: str = Field(
+            default=os.getenv("OPENROUTER_AUDIO_OUTPUT_FORMAT", "mp3"),
+            description="Audio container requested from audio-output models (lyria, gpt-audio). Common: mp3, wav, flac, opus, pcm16.",
+        )
+        AUDIO_OUTPUT_VOICE: str = Field(
+            default=os.getenv("OPENROUTER_AUDIO_OUTPUT_VOICE", "alloy"),
+            description="Voice for speech-synthesis audio models (gpt-audio, gpt-audio-mini). Ignored by music models like Lyria. Common: alloy, echo, fable, onyx, nova, shimmer.",
+        )
         SHOW_COST_INFO: bool = Field(
             default=False,
             description="Append token usage and cost to each response",
@@ -847,6 +855,8 @@ class Pipe:
         MAX_RETRIES: Optional[int] = Field(default=None, ge=0)
         VIDEO_GENERATION_TIMEOUT: Optional[int] = Field(default=None, gt=0)
         VIDEO_POLL_INTERVAL: Optional[float] = Field(default=None, gt=0)
+        AUDIO_OUTPUT_FORMAT: Optional[str] = None
+        AUDIO_OUTPUT_VOICE: Optional[str] = None
         SHOW_COST_INFO: Optional[bool] = None
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
@@ -879,6 +889,13 @@ class Pipe:
         # to the asynchronous /videos endpoint instead of /chat/completions
         # (which returns HTTP 500 from upstream for video-output models).
         self._video_model_ids: set = set()
+        # Cleaned model IDs whose architecture.output_modalities includes
+        # "audio" (lyria, gpt-audio, ...). These need ``modalities=
+        # ["text","audio"]`` + ``audio={format:...}`` + ``stream=true`` in
+        # the chat/completions payload; without the modalities flag the
+        # provider responds with placeholder text like ``<instrumental>``
+        # and no audio bytes.
+        self._audio_model_ids: set = set()
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
         # Lazy-loaded mirror of OpenRouter's provider registry (slug → icon URL).
@@ -1027,6 +1044,7 @@ class Pipe:
         )
         models: List[dict] = []
         self._video_model_ids.clear()
+        self._audio_model_ids.clear()
 
         for model in data:
             model_id = model.get("id")
@@ -1095,12 +1113,16 @@ class Pipe:
                 "name": f"{prefix}{model_name}",
             }
 
-            # Track video-output models so pipe() can route them to the
-            # async /videos endpoint rather than /chat/completions.
+            # Track video- and audio-output models so pipe() can route /
+            # configure them correctly (video → async /videos endpoint;
+            # audio → /chat/completions with modalities=["text","audio"]).
             arch = model.get("architecture") or {}
             out_modalities = arch.get("output_modalities") or []
-            if isinstance(out_modalities, list) and "video" in out_modalities:
-                self._video_model_ids.add(model_id)
+            if isinstance(out_modalities, list):
+                if "video" in out_modalities:
+                    self._video_model_ids.add(model_id)
+                if "audio" in out_modalities:
+                    self._audio_model_ids.add(model_id)
 
             models.append(model_dict)
 
@@ -1213,6 +1235,23 @@ class Pipe:
                 }
             )
 
+        # Audio-output models (lyria, gpt-audio, ...) are served by
+        # /chat/completions BUT need explicit modalities=["text","audio"]
+        # plus an audio config object plus stream=true; otherwise the
+        # provider returns placeholder text ("<instrumental>") with no
+        # audio bytes. Inject those defaults before payload prep so the
+        # existing stream pipeline carries the bytes through and the async
+        # wrapper materializes them after the stream completes.
+        if model_id in self._audio_model_ids:
+            if not body.get("modalities"):
+                body["modalities"] = ["text", "audio"]
+            if not isinstance(body.get("audio"), dict):
+                cfg: dict = {"format": eff.AUDIO_OUTPUT_FORMAT or "mp3"}
+                if eff.AUDIO_OUTPUT_VOICE:
+                    cfg["voice"] = eff.AUDIO_OUTPUT_VOICE
+                body["audio"] = cfg
+            body["stream"] = True
+
         # Video-output models (veo, kling, sora, seedance, ...) are NOT
         # served by /chat/completions — that endpoint 500s for them.
         # Route to the async /videos flow instead.
@@ -1284,6 +1323,21 @@ class Pipe:
                         image_md = _format_image_output(fake_msg.get("images") or [])
                         if image_md:
                             yield f"\n\n{image_md}\n"
+                    # Same for audio (lyria, gpt-audio): decode the
+                    # accumulated base64 audio chunks, upload to OWUI,
+                    # and yield the block-HTML <audio> embed plus the
+                    # transcript (when the model emitted one).
+                    audio_b64 = stream_state.get("audio_b64") or ""
+                    if audio_b64:
+                        audio_embed = await self._materialize_audio_output(
+                            audio_b64,
+                            eff,
+                            __request__,
+                            __user__,
+                            __metadata__,
+                        )
+                        if audio_embed:
+                            yield audio_embed
                 finally:
                     if __event_emitter__:
                         await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
@@ -2091,6 +2145,93 @@ class Pipe:
                     return joined
         return ""
 
+    async def _upload_audio_to_owui(
+        self, request, user, metadata, audio_bytes: bytes, content_type: str = "audio/mpeg"
+    ) -> Optional[tuple]:
+        """Store generated audio bytes via OWUI's file-upload helper.
+
+        Mirrors ``_upload_video_to_owui`` — reuses
+        ``open_webui.routers.images.upload_image`` (a generic
+        ``upload_file_handler`` wrapper) so the bytes are stored in OWUI's
+        configured storage backend, a ``Files`` row is created, and the
+        file is linked to the originating chat message. Returns
+        ``(file_id, url)`` on success, ``None`` when the OWUI runtime
+        context (``request`` + ``user`` dict with ``id`` + ``metadata``) is
+        unavailable or the upload fails.
+        """
+        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
+            return None
+        try:
+            from open_webui.routers.images import upload_image as _upload_image
+            from open_webui.models.users import Users as _Users
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI file-upload helpers unavailable: {exc}")
+            return None
+        try:
+            _maybe_user = _Users.get_user_by_id(user["id"])
+            if inspect.isawaitable(_maybe_user):
+                _maybe_user = await _maybe_user
+            owui_user = _maybe_user
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
+            return None
+        if owui_user is None:
+            return None
+        try:
+            file_item, new_url = await _upload_image(
+                request, audio_bytes, content_type, metadata, owui_user
+            )
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] Audio upload to OWUI failed: {exc}")
+            return None
+        file_id = getattr(file_item, "id", None) if file_item is not None else None
+        if not file_id or not new_url:
+            return None
+        return (str(file_id), str(new_url))
+
+    async def _materialize_audio_output(
+        self,
+        audio_b64: str,
+        valves,
+        request,
+        user,
+        metadata,
+    ) -> str:
+        """Decode collected base64 audio, upload to OWUI, return the embed.
+
+        Returns an empty string if the bytes can't be decoded or the upload
+        fails — the stream caller treats that as "no embed to yield".
+        """
+        try:
+            padded = audio_b64 + "=" * (-len(audio_b64) % 4)
+            audio_bytes = base64.b64decode(padded)
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] Audio base64 decode failed: {exc}")
+            return ""
+        if not audio_bytes:
+            return ""
+        fmt = (valves.AUDIO_OUTPUT_FORMAT or "mp3").lower()
+        content_type = {
+            "mp3": "audio/mpeg",
+            "wav": "audio/wav",
+            "flac": "audio/flac",
+            "opus": "audio/ogg",
+            "pcm16": "audio/wav",
+            "ogg": "audio/ogg",
+        }.get(fmt, "audio/mpeg")
+        upload = await self._upload_audio_to_owui(
+            request, user, metadata, audio_bytes, content_type=content_type
+        )
+        if not upload:
+            return ""
+        _file_id, new_url = upload
+        clean_url = new_url.split("?", 1)[0]
+        # Same block-HTML pattern as video: wrap in <div> so marked emits a
+        # block html token; OWUI's HtmlToken.svelte then captures the inner
+        # URL text via /<audio[^>]*>([\\s\\S]*?)<\\/audio>/ and renders a
+        # real <audio controls> element.
+        return f"\n\n<div><audio>{clean_url}</audio></div>\n\n"
+
     async def _upload_video_to_owui(
         self, request, user, metadata, video_bytes: bytes, content_type: str = "video/mp4"
     ) -> Optional[tuple]:
@@ -2780,6 +2921,7 @@ class Pipe:
         latest_usage: dict = {}
         latest_generation_id: Optional[str] = None
         latest_images: Optional[list] = None
+        audio_b64_parts: List[str] = []
 
         def _close_think_tag():
             nonlocal in_think
@@ -2844,11 +2986,20 @@ class Pipe:
                 if isinstance(_imgs, list) and _imgs:
                     latest_images = _imgs
 
-                # Audio transcript fallback: stream the transcript when the model
-                # returns audio instead of text (e.g. openai/gpt-audio).
-                if not content:
-                    audio_delta = delta.get("audio") or {}
-                    content = audio_delta.get("transcript", "")
+                # Audio-output models (lyria, gpt-audio): the upstream
+                # provider streams base64 audio chunks in delta.audio.data
+                # which the async caller decodes + uploads + embeds after
+                # the stream completes.
+                audio_delta = delta.get("audio") or {}
+                if isinstance(audio_delta, dict):
+                    if isinstance(audio_delta.get("data"), str) and audio_delta["data"]:
+                        audio_b64_parts.append(audio_delta["data"])
+
+                # Audio transcript fallback: stream the transcript when
+                # the model returns audio instead of text (e.g. gpt-audio
+                # surfaces the spoken text via delta.audio.transcript).
+                if not content and isinstance(audio_delta, dict):
+                    content = audio_delta.get("transcript", "") or ""
 
                 if reasoning:
                     if not in_think:
@@ -2871,6 +3022,8 @@ class Pipe:
             # yield the image markdown next to the cost/credit footers.
             if state is not None and latest_images:
                 state["images"] = latest_images
+            if state is not None and audio_b64_parts:
+                state["audio_b64"] = "".join(audio_b64_parts)
             rendered_citations = _format_citation_list(latest_citations)
             if rendered_citations:
                 yield rendered_citations
