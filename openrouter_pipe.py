@@ -71,6 +71,19 @@ _AUDIO_MIME_WHITELIST = frozenset({
     "audio/ogg", "audio/opus", "audio/aac", "audio/mp4",
 })
 
+# Audio format → MIME content-type map. Centralised so the format table
+# stays in one place and the upload helpers can't drift apart.
+_AUDIO_FORMAT_TO_MIME = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "opus": "audio/ogg",
+    "ogg": "audio/ogg",
+    "pcm16": "audio/wav",   # PCM gets wrapped in a WAV container before upload
+    "aac": "audio/aac",
+    "m4a": "audio/mp4",
+}
+
 # Allowed citation URL schemes. OWUI emits citation events to the frontend
 # verbatim; ``javascript:``, ``data:``, ``vbscript:`` URLs would let an
 # attacker-controlled upstream citation execute script in the chat UI.
@@ -954,6 +967,12 @@ class Pipe:
         # Per-key remaining-credit cache: {key_hash: (remaining_float, ts)}.
         # Keyed by the decrypted key's hash because per-user keys have per-key balances.
         self._credit_cache: dict = {}
+        # Cache the decrypted API key + the pre-built Authorization header
+        # keyed by the encrypted ciphertext, so the EncryptedStr.decrypt()
+        # call (~100us Fernet) doesn't run on every chunk / poll / footer
+        # request. The cache invalidates automatically when the admin
+        # rotates the key (different ciphertext → cache miss → re-decrypt).
+        self._auth_header_cache: dict = {}
         # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
@@ -2081,8 +2100,19 @@ class Pipe:
         lets us inject provider-specific beta headers (e.g. Anthropic's
         interleaved-thinking) only when relevant.
         """
+        encrypted_key = valves.OPENROUTER_API_KEY or ""
+        cached_auth = self._auth_header_cache.get(encrypted_key)
+        if cached_auth is None:
+            cached_auth = f"Bearer {EncryptedStr.decrypt(encrypted_key)}"
+            # Bound the cache to a handful of entries so user-valve key
+            # overrides (different ciphertext per user) don't grow it
+            # unboundedly. 32 is well above any realistic per-pipe
+            # workload — kick the cache out wholesale if we exceed it.
+            if len(self._auth_header_cache) >= 32:
+                self._auth_header_cache.clear()
+            self._auth_header_cache[encrypted_key] = cached_auth
         headers = {
-            "Authorization": f"Bearer {EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or '')}",
+            "Authorization": cached_auth,
             "HTTP-Referer": self._resolve_referer(valves),
             "X-Title": self._title,
         }
@@ -2398,15 +2428,7 @@ class Pipe:
         # Raw PCM has no container; wrap in WAV so the browser can play it.
         if fmt == "pcm16":
             audio_bytes = self._wrap_pcm16_as_wav(audio_bytes)
-            content_type = "audio/wav"
-        else:
-            content_type = {
-                "mp3": "audio/mpeg",
-                "wav": "audio/wav",
-                "flac": "audio/flac",
-                "opus": "audio/ogg",
-                "ogg": "audio/ogg",
-            }.get(fmt, "audio/mpeg")
+        content_type = _AUDIO_FORMAT_TO_MIME.get(fmt, "audio/mpeg")
         # Defence-in-depth: the format string came from the per-request
         # payload, but reject anything that resolved to a non-whitelisted
         # MIME so a future format-table edit can't accidentally let
@@ -2970,6 +2992,10 @@ class Pipe:
             payload["messages"].extend(tool_msgs)
 
         # Cap reached while still requesting tools: one last call, then a note.
+        # Mirror the per-iteration try/except so Timeout and HTTPError get
+        # the same friendly wrappers — previously this branch caught only
+        # ``Exception`` and dropped to a generic message even for plain
+        # network timeouts.
         try:
             resp = await self._call_request_async(False, headers, payload, valves)
             try:
@@ -2977,6 +3003,10 @@ class Pipe:
             finally:
                 if hasattr(resp, "close"):
                     resp.close()
+        except requests.exceptions.Timeout:
+            return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
+        except requests.exceptions.HTTPError as exc:
+            return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
         _choices = res.get("choices") or []

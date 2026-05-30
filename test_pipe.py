@@ -4472,6 +4472,225 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
 
+# ── sprint E MED/LOW finishing: MIME map + key cache + tool cap branch ────────
+
+_section("sprint E MED/LOW: MIME table + auth cache + tool cap branch + remaining gaps")
+
+# _AUDIO_FORMAT_TO_MIME table is the single source of truth for audio MIME.
+import openrouter_pipe as _mod_e
+for _fmt, _expected in [("mp3", "audio/mpeg"), ("wav", "audio/wav"),
+                        ("flac", "audio/flac"), ("opus", "audio/ogg"),
+                        ("ogg", "audio/ogg"), ("pcm16", "audio/wav"),
+                        ("aac", "audio/aac"), ("m4a", "audio/mp4")]:
+    _assert(_mod_e._AUDIO_FORMAT_TO_MIME[_fmt] == _expected,
+            f"_AUDIO_FORMAT_TO_MIME[{_fmt}] = {_expected}")
+
+# Auth-header cache: EncryptedStr.decrypt() is called only on the first
+# build, subsequent builds with the same ciphertext reuse the cached
+# Authorization string.
+_p_cache = Pipe()
+_p_cache.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "k" * 50
+_decrypt_calls = {"n": 0}
+from openrouter_pipe import EncryptedStr as _ES
+_orig_decrypt = _ES.decrypt
+def _counting_decrypt(s):
+    _decrypt_calls["n"] += 1
+    return _orig_decrypt(s)
+_ES.decrypt = staticmethod(_counting_decrypt)  # type: ignore
+try:
+    _h1 = _p_cache._build_headers(valves=_p_cache.valves)
+    _h2 = _p_cache._build_headers(valves=_p_cache.valves)
+    _h3 = _p_cache._build_headers(valves=_p_cache.valves)
+    _h4 = _p_cache._build_headers(valves=_p_cache.valves)
+finally:
+    _ES.decrypt = staticmethod(_orig_decrypt)  # type: ignore
+_assert(_decrypt_calls["n"] == 1,
+        f"EncryptedStr.decrypt called exactly once across 4 _build_headers calls (got {_decrypt_calls['n']})")
+_assert(_h1["Authorization"] == _h2["Authorization"] == _h3["Authorization"] == _h4["Authorization"],
+        "cached Authorization header is stable across rebuilds")
+
+# Auth cache invalidation on key change
+_p_cache.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "Z" * 50
+_decrypt_calls["n"] = 0
+_ES.decrypt = staticmethod(_counting_decrypt)  # type: ignore
+try:
+    _p_cache._build_headers(valves=_p_cache.valves)
+finally:
+    _ES.decrypt = staticmethod(_orig_decrypt)  # type: ignore
+_assert(_decrypt_calls["n"] == 1,
+        "key rotation → cache miss → decrypt re-runs exactly once")
+
+# Auth cache eviction at 32 entries: simulate by adding 33 distinct ciphertexts
+_p_evict = Pipe()
+for i in range(33):
+    _p_evict._auth_header_cache[f"ciphertext-{i}"] = f"Bearer key-{i}"
+_assert(len(_p_evict._auth_header_cache) == 33, "cache holds 33 entries before _build_headers")
+_p_evict.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "n" * 50
+_p_evict._build_headers(valves=_p_evict.valves)
+# After the 34th entry triggers, cache cleared and only the new one re-added
+_assert(len(_p_evict._auth_header_cache) == 1,
+        "cache evicted wholesale when >= 32 entries before insert")
+
+# User-supplied body["audio"] dict is preserved (no auto-override) when
+# the audio routing block runs. Tests the 'if not isinstance(body.get("audio"), dict)' guard.
+_p_audio_keep = Pipe()
+_p_audio_keep._audio_model_ids = frozenset({"google/lyria-3-clip-preview"})  # type: ignore
+_p_audio_keep._lazy_populated = True
+_p_audio_keep.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "u" * 50
+_obs_audio = {}
+def _capture_payload_audio(self, headers, payload, valves, state=None):
+    _obs_audio.update(payload)
+    return iter(())
+_p_audio_keep._stream_response = _capture_payload_audio.__get__(_p_audio_keep, Pipe)  # type: ignore
+_user_audio_body = {
+    "model": "google/lyria-3-clip-preview",
+    "messages": [{"role": "user", "content": "a melody"}],
+    "audio": {"format": "wav", "voice": "custom"},
+    "stream": True,
+}
+_gen_au = asyncio.run(_p_audio_keep.pipe(_user_audio_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
+async def _drain_au():
+    async for _ in _gen_au: pass
+asyncio.run(_drain_au())
+_assert(_obs_audio["audio"]["format"] == "wav",
+        "user-supplied audio.format preserved (not overridden to mp3/pcm16)")
+_assert(_obs_audio["audio"].get("voice") == "custom",
+        "user-supplied audio.voice preserved")
+
+# User-supplied modalities preserved
+_p_mod_keep = Pipe()
+_p_mod_keep._audio_model_ids = frozenset({"openai/gpt-audio"})  # type: ignore
+_p_mod_keep._lazy_populated = True
+_p_mod_keep.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "v" * 50
+_obs_mod = {}
+def _capture_mod(self, headers, payload, valves, state=None):
+    _obs_mod.update(payload)
+    return iter(())
+_p_mod_keep._stream_response = _capture_mod.__get__(_p_mod_keep, Pipe)  # type: ignore
+_user_mod_body = {
+    "model": "openai/gpt-audio",
+    "messages": [{"role": "user", "content": "test"}],
+    "modalities": ["audio"],  # user said audio-only
+    "stream": True,
+}
+asyncio.run(_p_mod_keep.pipe(_user_mod_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
+async def _no_op_drain(): pass
+asyncio.run(_no_op_drain())
+_assert(_obs_mod["modalities"] == ["audio"],
+        "user-supplied modalities preserved (not auto-overridden to ['text','audio'])")
+
+# _stream_one_round records state["audio_format"] from payload
+_p_af = Pipe()
+def _fake_retry_af(headers, payload, stream, valves):
+    chunk = {"id": "g", "choices": [{"delta": {"audio": {"data": "QUJD"}},
+                                       "finish_reason": "stop"}],
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+    return _FakeSSEResp([b"data: " + json.dumps(chunk).encode(), b"data: [DONE]"])
+_p_af._retryable_request = _fake_retry_af  # type: ignore
+_state_af = {}
+list(_p_af._stream_one_round({}, {"audio": {"format": "pcm16"}}, _p_af.valves, _state_af))
+_assert(_state_af.get("audio_format") == "pcm16",
+        "_stream_one_round records payload.audio.format into state")
+
+# Base64 padding fix: stripped-of-padding length mod 4 in {2, 3} decodes
+# correctly (length mod 4 == 1 is not a valid base64 length even with
+# padding restored — that would imply 6 bits of data, not a whole byte).
+import base64 as _b64_d
+for _missing in (1, 2):
+    _raw = b"Hello world " * 5
+    _b64 = _b64_d.b64encode(_raw).decode().rstrip("=")
+    # Trim further to force the padding mismatch we want
+    while len(_b64) % 4 not in (2, 3):
+        _b64 = _b64[:-1]
+    while -(len(_b64) % 4) % 4 != _missing:
+        _b64 = _b64[:-1]
+    _p_pad = Pipe()
+    _padded_bytes = {"v": None}
+    async def _cap_pad(self, request, user, metadata, raw_bytes, content_type, modality_label):
+        _padded_bytes["v"] = raw_bytes
+        return ("f", "/api/v1/files/f/content")
+    _p_pad._owui_upload_bytes = _cap_pad.__get__(_p_pad, Pipe)  # type: ignore
+    _out_pad = asyncio.run(_p_pad._materialize_audio_output(
+        _b64, _p_pad.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="mp3"
+    ))
+    _assert(_out_pad != "" and _padded_bytes["v"],
+            f"base64 length {len(_b64)} (missing {_missing} padding chars) decodes without error")
+
+# Emitter exception inside video polling loop is swallowed; polling continues
+_p_em = Pipe()
+_p_em.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_em._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j", "status": "pending"}),
+    _FakeResp(200, {"id": "j", "status": "completed",
+                     "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]}),
+    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+])
+# Patch download response bytes
+_p_em._session.plan[-1].content = b"\x00fake-mp4"
+async def _raising_emitter(_ev):
+    raise RuntimeError("emitter consumer down")
+async def _fake_upload_em(self, request, user, metadata, video_bytes, content_type="video/mp4"):
+    return ("vid-em", "/api/v1/files/vid-em/content")
+_p_em._upload_video_to_owui = _fake_upload_em.__get__(_p_em, Pipe)  # type: ignore
+_vg_em = asyncio.run(_p_em._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_em.valves, _raising_emitter, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"},
+))
+_assert("<div><video>" in _vg_em,
+        "raising emitter in polling loop is swallowed; flow completes with video embed")
+
+# Submit 2xx non-JSON body → wrapped error
+_p_njs = Pipe()
+class _NonJSONResp(_FakeResp):
+    def json(self):
+        raise ValueError("not JSON")
+_p_njs._session = _FakeSession([_NonJSONResp(202, text="<html>oops</html>")])
+_vg_njs = asyncio.run(_p_njs._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_njs.valves, None, None, None, None,
+))
+_assert("non-JSON" in _vg_njs,
+        "submit 2xx but body fails JSON parse → wrapped 'non-JSON' error")
+
+# Tool nonstream cap branch: Timeout in the final call yields the friendly
+# timeout message instead of dropping into the generic 'Internal error'
+async def _raise_timeout(self, stream, headers, payload, valves):
+    import requests as _rq
+    raise _rq.exceptions.Timeout("dead")
+_p_cap = Pipe()
+_p_cap.valves.MAX_TOOL_ITERATIONS = 1
+_round_with_tool = {
+    "choices": [{"message": {"role": "assistant", "content": None,
+                              "tool_calls": [{"id": "c1", "type": "function",
+                                                "function": {"name": "t",
+                                                             "arguments": "{}"}}]}}]
+}
+class _Resp1:
+    def json(self): return _round_with_tool
+    def close(self): pass
+_responses = [_Resp1()]
+async def _first_then_timeout(self, stream, headers, payload, valves):
+    if _responses:
+        return _responses.pop(0)
+    import requests as _rq
+    raise _rq.exceptions.Timeout("final call timed out")
+_p_cap._call_request_async = _first_then_timeout.__get__(_p_cap, Pipe)  # type: ignore
+async def _fake_exec_cap(self, calls, tools, emitter):
+    return [{"role": "tool", "tool_call_id": "c1", "content": "result"}]
+_p_cap._execute_tool_calls = _fake_exec_cap.__get__(_p_cap, Pipe)  # type: ignore
+async def _noop_em(*a, **kw): return None
+_p_cap._emit_image_files = _noop_em  # type: ignore
+_p_cap._emit_citation_events = _noop_em  # type: ignore
+_p_cap._prefetch_credit_if_enabled = _noop_em  # type: ignore
+_cap_result = asyncio.run(_p_cap._run_tools_nonstream(
+    {}, {"model": "x", "messages": [{"role": "user", "content": "go"}]},
+    _p_cap.valves, {"t": object()}, None, None, {"id": "u"}, {"chat_id": "c"},
+))
+_assert("timed out" in _cap_result.lower(),
+        "tool-nonstream cap branch surfaces Timeout with the friendly message")
+
 # ── sprint A/B/C audit follow-ups: shared upload + size cap + MIME + perf ─────
 
 _section("sprint A/B/C: shared upload helper + MIME whitelist + size cap + perf")
