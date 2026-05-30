@@ -1235,6 +1235,20 @@ class Pipe:
                 }
             )
 
+        # Lazy populate the audio/video model-id sets if pipes() never
+        # ran in this Pipe instance (happens on direct API calls and the
+        # first request after a container restart). Skip when there's no
+        # API key — pipes() would just return the error pseudo-model.
+        if (
+            not self._audio_model_ids
+            and not self._video_model_ids
+            and eff.OPENROUTER_API_KEY
+        ):
+            try:
+                self.pipes()
+            except Exception as exc:
+                print(f"[OpenRouter Pipe] Lazy model-list fetch failed: {exc}")
+
         # Audio-output models (lyria, gpt-audio, ...) are served by
         # /chat/completions BUT need explicit modalities=["text","audio"]
         # plus an audio config object plus stream=true; otherwise the
