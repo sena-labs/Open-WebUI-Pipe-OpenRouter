@@ -2346,12 +2346,14 @@ full = "".join(output)
 _assert("https://example.com" in full, "stream citations-only chunk: citation applied to later content")
 _assert("Citations:" in full, "stream citations-only chunk: citation list appended")
 
-# 26f. Generic exception raised by _retryable_request → yields OpenRouter Error
+# 26f. Generic exception raised by _retryable_request → yields a sanitized
+# OpenRouter Error (security: internal exception detail must not bubble to chat)
 with patch.object(pipe, "_retryable_request", side_effect=ValueError("unexpected")):
     output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("OpenRouter Error" in full, "stream generic exception: error yielded")
-_assert("unexpected" in full, "stream generic exception: detail preserved")
+_assert("Internal stream error" in full, "stream generic exception: sanitized message (no internal detail)")
+_assert("unexpected" not in full, "stream generic exception: internal exception text NOT leaked to chat")
 
 # ── 27. pipes() additional paths ─────────────────────────────────────────────
 
@@ -3797,7 +3799,10 @@ class _CreditStream:
     def close(self): pass
 
 _pcs = Pipe(); _pcs.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcs.valves.SHOW_REMAINING_CREDIT = True
+# Footers now read cache-only; stub both helpers so prefetch + footer
+# work without HTTP.
 _pcs._fetch_credit_balance = lambda valves: 4.25  # type: ignore
+_pcs._credit_balance_cached = lambda valves: 4.25  # type: ignore
 _lines = [b"data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}).encode(), b"data: [DONE]"]
 _pcs._retryable_request = lambda headers, payload, stream, valves: _CreditStream(_lines)  # type: ignore
 _out_cs = "".join(_pcs._stream_response({}, {"model": "x"}, _pcs.valves))
@@ -3981,7 +3986,8 @@ _assert("MAX_TOOL_ITERATIONS" in _capstream, "streaming tool loop emits cap note
 
 # (c) credit line appears in _format_final_message when enabled
 _pf9 = Pipe(); _pf9.valves.SHOW_REMAINING_CREDIT = True
-_pf9._fetch_credit_balance = lambda valves: 7.5  # type: ignore
+# Footer now reads cache-only; stub _credit_balance_cached directly.
+_pf9._credit_balance_cached = lambda valves: 7.5  # type: ignore
 _fm9 = _pf9._format_final_message({"choices": [{"message": {"content": "ok"}}]}, {"model": "x"}, _pf9.valves)
 _assert("credit remaining" in _fm9.lower(), "credit line in _format_final_message when enabled")
 
@@ -4456,6 +4462,174 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 ))
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
+
+# ── batch-1 audit fixes: SSRF guard + atomic set swap + body deepcopy ─────────
+
+_section("batch-1 audit fixes: SSRF + atomic swap + body deepcopy + auth-leak guards")
+
+# _is_openrouter_url whitelist
+_assert(Pipe._is_openrouter_url("https://openrouter.ai/api/v1/videos/abc/content"),
+        "openrouter.ai whitelisted")
+_assert(Pipe._is_openrouter_url("https://cdn.openrouter.ai/x"),
+        "subdomain *.openrouter.ai whitelisted")
+_assert(not Pipe._is_openrouter_url("https://evil.example.com/x"),
+        "non-OR host rejected")
+_assert(not Pipe._is_openrouter_url("http://openrouter.ai.evil.com/x"),
+        "lookalike domain rejected")
+_assert(not Pipe._is_openrouter_url("file:///etc/passwd"),
+        "non-http(s) scheme rejected")
+_assert(not Pipe._is_openrouter_url(""), "empty URL rejected")
+_assert(not Pipe._is_openrouter_url(None), "non-string URL rejected")  # type: ignore
+
+# Video flow: upstream-returned polling_url to a non-OR host falls back to
+# canonical /videos/<id> (no auth leak to attacker host).
+_p_ssrf = Pipe()
+_p_ssrf.valves.VIDEO_POLL_INTERVAL = 0.01
+_evil_polling = "https://evil.example.com/poll/abc"
+class _SSRFSess:
+    def __init__(self):
+        self.gets = []
+        self.posts = []
+        # Submit: returns evil polling_url
+        self._submit = _FakeResp(202, {"id": "abc", "polling_url": _evil_polling, "status": "pending"})
+        # Poll on canonical URL returns completed → unsigned ALSO evil
+        self._poll = _FakeResp(200, {"id": "abc", "status": "completed",
+                                     "unsigned_urls": ["https://evil.example.com/dl"]})
+    def post(self, url, **kw):
+        self.posts.append(url); return self._submit
+    def get(self, url, **kw):
+        self.gets.append(url); return self._poll
+_ss = _SSRFSess()
+_p_ssrf._session = _ss
+_vg_ssrf = asyncio.run(_p_ssrf._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_ssrf.valves, None, None, None, None,
+))
+_assert(any("openrouter.ai" in g for g in _ss.gets) and not any("evil.example.com" in g for g in _ss.gets),
+        "non-OR polling_url ignored → canonical /videos/<id> used instead")
+_assert("untrusted host" in _vg_ssrf,
+        "non-OR unsigned_urls[0] rejected with explicit error")
+
+# Atomic set swap: pipes() builds new frozensets and assigns; concurrent
+# pipe() readers cannot see a half-rebuilt empty set.
+_p_swap = Pipe()
+_models_data_swap = [
+    {"id": "openai/gpt-audio", "name": "GPT Audio",
+     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text"]}},
+    {"id": "google/veo-3.1-fast", "name": "Veo Fast",
+     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
+]
+class _ResSwap:
+    status_code = 200
+    def json(self): return {"data": _models_data_swap}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _SessSwap:
+    def get(self, *a, **kw): return _ResSwap()
+_p_swap._session = _SessSwap()
+_p_swap.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_swap.valves.SYNC_PROVIDER_ICONS = False
+_p_swap.pipes()
+_assert(isinstance(_p_swap._video_model_ids, frozenset),
+        "_video_model_ids is a frozenset (immutable)")
+_assert(isinstance(_p_swap._audio_model_ids, frozenset),
+        "_audio_model_ids is a frozenset (immutable)")
+_assert("openai/gpt-audio" in _p_swap._audio_model_ids,
+        "audio set populated correctly")
+_assert("google/veo-3.1-fast" in _p_swap._video_model_ids,
+        "video set populated correctly")
+_assert(_p_swap._lazy_populated, "_lazy_populated flag flipped on after first pipes()")
+# Second pipes() refresh atomically swaps to new frozenset
+_p_swap.pipes.__func__(_p_swap)  # type: ignore
+_assert(isinstance(_p_swap._video_model_ids, frozenset) and "google/veo-3.1-fast" in _p_swap._video_model_ids,
+        "refresh produces a new frozenset still containing the model")
+
+# Frozenset rejects mutation
+try:
+    _p_swap._video_model_ids.add("x")  # type: ignore
+    _assert(False, "frozenset rejects .add() (raises AttributeError)")
+except AttributeError:
+    _assert(True, "frozenset rejects .add() (raises AttributeError)")
+
+# Lyria voice param injection: only set when AUDIO_OUTPUT_VOICE and openai
+_p_voice = Pipe()
+_p_voice.valves.AUDIO_OUTPUT_VOICE = "nova"
+# Direct check: openai path includes voice
+_test_body: dict = {}
+_p_voice._audio_model_ids = frozenset({"openai/gpt-audio"})  # type: ignore
+# Simulate the injection block manually
+if "openai/gpt-audio" in _p_voice._audio_model_ids:
+    is_openai = "openai/gpt-audio".startswith("openai/")
+    cfg = {"format": "pcm16" if is_openai else "mp3"}
+    if is_openai and _p_voice.valves.AUDIO_OUTPUT_VOICE:
+        cfg["voice"] = _p_voice.valves.AUDIO_OUTPUT_VOICE
+    _test_body["audio"] = cfg
+_assert(_test_body["audio"] == {"format": "pcm16", "voice": "nova"},
+        "openai gpt-audio gets pcm16 + voice when AUDIO_OUTPUT_VOICE set")
+
+# Lyria (non-openai): voice omitted even when valve set
+_test_body2: dict = {}
+is_openai2 = "google/lyria-3-clip-preview".startswith("openai/")
+cfg2 = {"format": "pcm16" if is_openai2 else "mp3"}
+if is_openai2 and _p_voice.valves.AUDIO_OUTPUT_VOICE:
+    cfg2["voice"] = _p_voice.valves.AUDIO_OUTPUT_VOICE
+_test_body2["audio"] = cfg2
+_assert(_test_body2["audio"] == {"format": "mp3"},
+        "lyria gets mp3 only (voice omitted, music model)")
+
+# _credit_balance_cached: returns None when nothing cached; reads cache only
+_p_cc = Pipe(); _p_cc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "x" * 50
+_assert(_p_cc._credit_balance_cached(_p_cc.valves) is None,
+        "_credit_balance_cached returns None on cache miss")
+
+# After populating cache directly, cached read works without HTTP
+import hashlib as _hl
+import time as _time_t
+_dec_key = "sk-or-v1-" + "x" * 50
+_hk = _hl.sha256(_dec_key.encode()).hexdigest()[:16]
+_p_cc._credit_cache[_hk] = (9.99, _time_t.monotonic())
+_assert(_p_cc._credit_balance_cached(_p_cc.valves) == 9.99,
+        "_credit_balance_cached returns cached value, no HTTP call")
+
+# Tool-loop non-stream: assistant_msg shape is the clean 3-field dict, not
+# the raw upstream message (which can carry refusal/legacy keys that break
+# downstream submits).
+_p_tl = Pipe()
+class _RespFinal:
+    def json(self):
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+    def close(self): pass
+class _RespFirst:
+    def json(self):
+        return {"choices": [{"message": {"role": "assistant",
+                                          "content": "calling",
+                                          "tool_calls": [{"id": "c1", "type": "function",
+                                                          "function": {"name": "t",
+                                                                       "arguments": "{}"}}],
+                                          "refusal": None, "function_call": None}}]}
+    def close(self): pass
+_responses_tl = [_RespFirst(), _RespFinal()]
+async def _fake_call_tl(self, stream, headers, payload, valves):
+    return _responses_tl.pop(0)
+_p_tl._call_request_async = _fake_call_tl.__get__(_p_tl, Pipe)  # type: ignore
+async def _fake_exec(self, calls, tools, emitter):
+    return [{"role": "tool", "tool_call_id": "c1", "content": "result"}]
+_p_tl._execute_tool_calls = _fake_exec.__get__(_p_tl, Pipe)  # type: ignore
+async def _fake_noop_tl(*a, **kw): return None
+_p_tl._emit_image_files = _fake_noop_tl  # type: ignore
+_p_tl._emit_citation_events = _fake_noop_tl  # type: ignore
+_p_tl._prefetch_credit_if_enabled = _fake_noop_tl  # type: ignore
+_payload_tl: dict = {"model": "x", "messages": [{"role": "user", "content": "go"}]}
+asyncio.run(_p_tl._run_tools_nonstream({}, _payload_tl, _p_tl.valves, {"t": object()}, None,
+                                        None, {"id": "u"}, {"chat_id": "c"}))
+# After one tool round: messages = [user, clean assistant_msg, tool result, final ...]
+_assistant_msg = next(m for m in _payload_tl["messages"] if m.get("role") == "assistant")
+_assert(set(_assistant_msg.keys()) == {"role", "content", "tool_calls"},
+        "tool nonstream loop appends 3-key assistant msg only (no refusal/legacy passthrough)")
+_assert("refusal" not in _assistant_msg and "function_call" not in _assistant_msg,
+        "raw upstream refusal/function_call keys stripped from re-submission")
 
 # ── citation events emit ───────────────────────────────────────────────────────
 

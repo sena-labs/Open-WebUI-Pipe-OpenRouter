@@ -25,6 +25,7 @@ import struct
 import time
 import traceback
 from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
+from urllib.parse import urlsplit
 
 import requests
 from pydantic import BaseModel, Field, field_validator
@@ -841,7 +842,10 @@ class Pipe:
         PROVIDER_MAX_PRICE_COMPLETION: Optional[str] = None
         REQUIRE_PARAMETERS: Optional[bool] = None
         DATA_COLLECTION: Optional[str] = None
-        ZDR_ENFORCE: Optional[bool] = None
+        # ZDR_ENFORCE is intentionally admin-only: privacy policy is set
+        # by the operator, not the end user. Letting a regular user flip
+        # it off through UserValves would silently disable Zero Data
+        # Retention routing.
         FALLBACK_MODELS: Optional[str] = None
         ENABLE_MIDDLE_OUT: Optional[bool] = None
         ENABLE_WEB_SEARCH: Optional[bool] = None
@@ -886,17 +890,18 @@ class Pipe:
         self._models_cache_ts: float = 0.0
         self._models_cache_key: str = ""
         # Cleaned model IDs whose architecture.output_modalities includes
-        # "video". Populated during pipes() so pipe() can route these models
-        # to the asynchronous /videos endpoint instead of /chat/completions
-        # (which returns HTTP 500 from upstream for video-output models).
-        self._video_model_ids: set = set()
-        # Cleaned model IDs whose architecture.output_modalities includes
-        # "audio" (lyria, gpt-audio, ...). These need ``modalities=
-        # ["text","audio"]`` + ``audio={format:...}`` + ``stream=true`` in
-        # the chat/completions payload; without the modalities flag the
-        # provider responds with placeholder text like ``<instrumental>``
-        # and no audio bytes.
-        self._audio_model_ids: set = set()
+        # "video". Populated during pipes(). These attribute names hold
+        # frozenset instances that are SWAPPED atomically (a fresh
+        # frozenset is built locally during pipes() and assigned in one
+        # statement); concurrent pipe() readers see either the old set or
+        # the new set, never a half-rebuilt mid-clear state.
+        self._video_model_ids: frozenset = frozenset()
+        # Same for audio-output models (lyria, gpt-audio, ...).
+        self._audio_model_ids: frozenset = frozenset()
+        # Flip on after pipes() has run at least once for this Pipe
+        # instance so pipe() doesn't keep lazy-triggering it on every
+        # request when the user happens to have zero audio/video models.
+        self._lazy_populated: bool = False
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
         # Lazy-loaded mirror of OpenRouter's provider registry (slug → icon URL).
@@ -1044,8 +1049,12 @@ class Pipe:
             self._load_zdr_model_ids() if zdr_only else None
         )
         models: List[dict] = []
-        self._video_model_ids.clear()
-        self._audio_model_ids.clear()
+        # Build the routing sets locally during this pass and swap them in
+        # atomically at the end — never `clear()` the live attributes, or
+        # a concurrent pipe() call between clear and re-population would
+        # see an empty set and skip audio/video routing silently.
+        video_ids: set = set()
+        audio_ids: set = set()
 
         for model in data:
             model_id = model.get("id")
@@ -1121,9 +1130,9 @@ class Pipe:
             out_modalities = arch.get("output_modalities") or []
             if isinstance(out_modalities, list):
                 if "video" in out_modalities:
-                    self._video_model_ids.add(model_id)
+                    video_ids.add(model_id)
                 if "audio" in out_modalities:
-                    self._audio_model_ids.add(model_id)
+                    audio_ids.add(model_id)
 
             models.append(model_dict)
 
@@ -1145,6 +1154,13 @@ class Pipe:
             else:
                 error_text = "No models found. Check your OpenRouter account and API key."
             return [{"id": "error", "name": error_text}]
+
+        # Atomically swap the routing sets so concurrent readers either
+        # see the previous frozenset or the new one — never a half-built
+        # transient state.
+        self._video_model_ids = frozenset(video_ids)
+        self._audio_model_ids = frozenset(audio_ids)
+        self._lazy_populated = True
 
         # Store in cache
         self._models_cache = models
@@ -1237,18 +1253,33 @@ class Pipe:
             )
 
         # Lazy populate the audio/video model-id sets if pipes() never
-        # ran in this Pipe instance (happens on direct API calls and the
+        # ran for this Pipe instance (happens on direct API calls and the
         # first request after a container restart). Skip when there's no
         # API key — pipes() would just return the error pseudo-model.
+        # Run off-loop because pipes() does sync HTTP + DB work; otherwise
+        # we'd block the entire event loop for up to REQUEST_TIMEOUT s on
+        # the very first chat request after a restart.
         if (
-            not self._audio_model_ids
-            and not self._video_model_ids
+            not self._lazy_populated
             and eff.OPENROUTER_API_KEY
         ):
+            self._lazy_populated = True
             try:
-                self.pipes()
+                await asyncio.to_thread(self.pipes)
             except Exception as exc:
                 print(f"[OpenRouter Pipe] Lazy model-list fetch failed: {exc}")
+
+        # Snapshot the routing sets atomically so a concurrent pipes()
+        # refresh (which clears and rebuilds them) can't make us miss the
+        # audio-modality injection mid-rebuild.
+        audio_models = self._audio_model_ids
+        video_models = self._video_model_ids
+
+        # All downstream mutations target a per-request copy; never mutate
+        # the OWUI-owned body — that dict is reused by OWUI for history,
+        # title generation, etc., and stale injected keys would re-leak
+        # on a subsequent non-audio request through the same chat.
+        body = copy.deepcopy(body)
 
         # Audio-output models (lyria, gpt-audio, ...) are served by
         # /chat/completions BUT need explicit modalities=["text","audio"]
@@ -1263,7 +1294,7 @@ class Pipe:
         # Lyria accept mp3 fine. Pick the format based on the model owner;
         # PCM bytes are wrapped in a WAV container after the stream
         # finishes so the browser can play them.
-        if model_id in self._audio_model_ids:
+        if model_id in audio_models:
             if not body.get("modalities"):
                 body["modalities"] = ["text", "audio"]
             if not isinstance(body.get("audio"), dict):
@@ -1278,7 +1309,7 @@ class Pipe:
         # Video-output models (veo, kling, sora, seedance, ...) are NOT
         # served by /chat/completions — that endpoint 500s for them.
         # Route to the async /videos flow instead.
-        if model_id in self._video_model_ids:
+        if model_id in video_models:
             try:
                 result = await self._run_video_generation(
                     body,
@@ -2116,6 +2147,24 @@ class Pipe:
         self._credit_cache[key_hash] = (remaining, time.monotonic())
         return remaining
 
+    def _credit_balance_cached(self, valves) -> Optional[float]:
+        """Read the credit balance from cache ONLY — never trigger an HTTP
+        fetch. Used by stream/non-stream/tool footer builders that run in
+        sync-generator paths or inside ``asyncio.to_thread`` workers,
+        where doing a fresh blocking GET would either stall the SSE
+        stream or block the event loop. Callers should pre-warm the
+        cache via ``_prefetch_credit_if_enabled`` before yielding the
+        footer.
+        """
+        key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
+        if not key:
+            return None
+        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        cached = self._credit_cache.get(key_hash)
+        if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
+            return cached[0]
+        return None
+
     @staticmethod
     def _format_credit_info(remaining: Optional[float], currency: str = "USD") -> str:
         """Format the remaining-credit footer line."""
@@ -2123,6 +2172,26 @@ class Pipe:
             return ""
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
+
+    @staticmethod
+    def _is_openrouter_url(url: str) -> bool:
+        """Return True only if ``url`` is an http(s) URL on the openrouter.ai
+        domain. Used as the SSRF / auth-leak guard before we send the
+        Authorization bearer to a URL the upstream JSON dictates (the
+        polling_url returned by POST /videos and the unsigned_urls[] in
+        the completed job body)."""
+        if not isinstance(url, str):
+            return False
+        try:
+            parsed = urlsplit(url)
+        except Exception:
+            return False
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return False
+        return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
     @staticmethod
     def _extract_video_prompt(body: dict) -> str:
@@ -2352,72 +2421,105 @@ class Pipe:
             if key in body and body[key] is not None:
                 payload[key] = body[key]
 
+        submit_resp = None
         try:
-            submit_resp = self._session.post(
-                self.videos_url,
-                headers=headers,
-                json=payload,
-                timeout=valves.REQUEST_TIMEOUT,
-            )
-        except requests.exceptions.Timeout:
-            return f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s."
-        except requests.exceptions.RequestException as exc:
-            return f"OpenRouter Error: Video submit failed: {exc}"
-
-        if submit_resp.status_code in (401, 403):
-            return f"OpenRouter Error: Authentication failed (HTTP {submit_resp.status_code}). Check OPENROUTER_API_KEY."
-        if submit_resp.status_code == 402:
-            return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model."
-        if submit_resp.status_code == 429:
-            return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
-        if submit_resp.status_code >= 400:
-            detail = ""
             try:
-                err = submit_resp.json().get("error", {})
-                detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-            except Exception:
-                detail = (submit_resp.text or "")[:300]
-            return f"OpenRouter Error: Failed to start video job (HTTP {submit_resp.status_code}). {detail}"
+                submit_resp = self._session.post(
+                    self.videos_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=valves.REQUEST_TIMEOUT,
+                )
+            except requests.exceptions.Timeout:
+                return f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s."
+            except requests.exceptions.RequestException as exc:
+                return f"OpenRouter Error: Video submit failed: {exc}"
 
-        try:
-            job = submit_resp.json()
-        except Exception as exc:
-            return f"OpenRouter Error: Video submit returned non-JSON response: {exc}"
+            if submit_resp.status_code in (401, 403):
+                return f"OpenRouter Error: Authentication failed (HTTP {submit_resp.status_code}). Check OPENROUTER_API_KEY."
+            if submit_resp.status_code == 402:
+                return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model."
+            if submit_resp.status_code == 429:
+                return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
+            if submit_resp.status_code >= 400:
+                detail = ""
+                try:
+                    err = submit_resp.json().get("error", {})
+                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                except Exception:
+                    detail = (submit_resp.text or "")[:300]
+                return f"OpenRouter Error: Failed to start video job (HTTP {submit_resp.status_code}). {detail}"
+
+            try:
+                job = submit_resp.json()
+            except Exception as exc:
+                return f"OpenRouter Error: Video submit returned non-JSON response: {exc}"
+        finally:
+            if submit_resp is not None:
+                try:
+                    submit_resp.close()
+                except Exception:
+                    pass
 
         job_id = job.get("id")
-        polling_url = job.get("polling_url") or (f"{self.videos_url}/{job_id}" if job_id else None)
+        upstream_polling = job.get("polling_url")
+        if upstream_polling is not None and not self._is_openrouter_url(upstream_polling):
+            # Refuse to send the Authorization bearer to a host the upstream
+            # JSON dictates — protects against SSRF / key exfiltration if
+            # the OpenRouter relay (or a downstream provider) is ever
+            # compromised. Fall back to the canonical id-based URL.
+            print(
+                "[OpenRouter Pipe] Ignoring non-OpenRouter polling_url; falling back to canonical /videos/<id>"
+            )
+            upstream_polling = None
+        polling_url = upstream_polling or (f"{self.videos_url}/{job_id}" if job_id else None)
         if not polling_url:
             return "OpenRouter Error: Video submit returned no polling URL."
 
         deadline = time.monotonic() + max(30, int(valves.VIDEO_GENERATION_TIMEOUT))
         poll_interval = max(2.0, float(valves.VIDEO_POLL_INTERVAL))
         final = None
+        last_status_label: Optional[str] = None
         while time.monotonic() < deadline:
             if emitter:
                 status_label = job.get("status") or "pending"
-                try:
-                    await emitter(
-                        {
-                            "type": "status",
-                            "data": {
-                                "description": f"Generating video ({status_label})...",
-                                "done": False,
-                            },
-                        }
-                    )
-                except Exception:
-                    pass
+                # Skip the emit when nothing changed — frontend re-renders
+                # cost ~free, but it avoids polluting the status history
+                # with hundreds of identical "pending..." lines on long
+                # jobs.
+                if status_label != last_status_label:
+                    last_status_label = status_label
+                    try:
+                        await emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": f"Generating video ({status_label})...",
+                                    "done": False,
+                                },
+                            }
+                        )
+                    except Exception:
+                        pass
             await asyncio.sleep(poll_interval)
+            poll_resp = None
             try:
-                poll_resp = self._session.get(
-                    polling_url, headers=headers, timeout=valves.REQUEST_TIMEOUT
-                )
-                poll_resp.raise_for_status()
-                job = poll_resp.json()
-            except requests.exceptions.RequestException as exc:
-                return f"OpenRouter Error: Video polling failed: {exc}"
-            except ValueError as exc:
-                return f"OpenRouter Error: Video polling returned non-JSON response: {exc}"
+                try:
+                    poll_resp = self._session.get(
+                        polling_url, headers=headers, timeout=valves.REQUEST_TIMEOUT
+                    )
+                    poll_resp.raise_for_status()
+                    job = poll_resp.json()
+                except requests.exceptions.RequestException as exc:
+                    return f"OpenRouter Error: Video polling failed: {exc}"
+                except ValueError as exc:
+                    return f"OpenRouter Error: Video polling returned non-JSON response: {exc}"
+            finally:
+                if poll_resp is not None:
+                    try:
+                        poll_resp.close()
+                    except Exception:
+                        pass
 
             status = (job.get("status") or "").lower()
             if status == "completed":
@@ -2429,15 +2531,21 @@ class Pipe:
                 return f"OpenRouter Error: Video generation failed: {msg}"
 
         if final is None:
+            # Don't leak the upstream polling URL to the chat bubble; the
+            # job id alone is enough for the operator to look it up.
             return (
                 f"OpenRouter Error: Video generation timed out after "
-                f"{valves.VIDEO_GENERATION_TIMEOUT}s. The job may still be running on "
-                f"OpenRouter — check job id {job_id} via GET {polling_url}."
+                f"{valves.VIDEO_GENERATION_TIMEOUT}s (job id {job_id})."
             )
 
         unsigned = final.get("unsigned_urls") or []
         if not unsigned or not isinstance(unsigned[0], str):
             return "OpenRouter Error: Video completed but no download URL was returned."
+        # Refuse to send our bearer to a non-OpenRouter host — same SSRF
+        # guard as the polling step above.
+        if not self._is_openrouter_url(unsigned[0]):
+            print("[OpenRouter Pipe] Refusing to download video from non-OpenRouter host.")
+            return "OpenRouter Error: Video download URL rejected (untrusted host)."
 
         try:
             dl_resp = self._session.get(
@@ -2500,7 +2608,7 @@ class Pipe:
 
         if valves.SHOW_REMAINING_CREDIT:
             credit_line = self._format_credit_info(
-                self._fetch_credit_balance(valves), valves.COST_CURRENCY
+                self._credit_balance_cached(valves), valves.COST_CURRENCY
             )
             if credit_line:
                 footer += credit_line
@@ -2661,7 +2769,7 @@ class Pipe:
                 final_parts.append(gen_footer)
 
         if valves.SHOW_REMAINING_CREDIT:
-            credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+            credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
             if credit_line:
                 final_parts.append(credit_line)
 
@@ -2689,9 +2797,12 @@ class Pipe:
         except requests.exceptions.HTTPError as exc:
             return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Non-stream fetch error: {exc}")
+            # Log raw detail to operator stdout only; surface a generic
+            # message to the client so internal Python error text doesn't
+            # leak into chat history.
+            print(f"[OpenRouter Pipe] Non-stream fetch error: {exc!r}")
             traceback.print_exc()
-            return f"OpenRouter Error: {exc}"
+            return "OpenRouter Error: Internal request error (see server logs)."
 
     async def _non_stream_with_events(self, headers: dict, payload: dict, valves, emitter, request=None, user=None, metadata=None) -> str:
         """Wrap _non_stream_fetch with image-files + citation event emits and
@@ -2770,7 +2881,18 @@ class Pipe:
                 return self._format_final_message(res, payload, valves)
 
             tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
-            payload.setdefault("messages", []).append(message)
+            # Build a clean assistant message instead of forwarding the
+            # raw upstream dict: it can carry provider-specific keys
+            # (``refusal``, legacy ``function_call``, ``annotations``,
+            # vendor reasoning blobs) that some downstream models reject
+            # on re-submission. The stream-tool path already builds the
+            # message this way (see _run_tools_stream).
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.get("content") if isinstance(message.get("content"), str) else None,
+                "tool_calls": tool_calls,
+            }
+            payload.setdefault("messages", []).append(assistant_msg)
             payload["messages"].extend(tool_msgs)
 
         # Cap reached while still requesting tools: one last call, then a note.
@@ -3005,7 +3127,7 @@ class Pipe:
             if gf:
                 parts.append(gf)
         if valves.SHOW_REMAINING_CREDIT:
-            credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+            credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
             if credit_line:
                 parts.append(credit_line)
         return "".join(parts)
@@ -3149,7 +3271,7 @@ class Pipe:
                     yield gen_footer
 
             if valves.SHOW_REMAINING_CREDIT:
-                credit_line = self._format_credit_info(self._fetch_credit_balance(valves), valves.COST_CURRENCY)
+                credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
                 if credit_line:
                     yield credit_line
         except requests.exceptions.Timeout:
@@ -3171,13 +3293,27 @@ class Pipe:
                 except Exception:
                     pass
             yield self._format_http_error(exc)
+        except requests.exceptions.RequestException as exc:
+            # Network-layer errors (ConnectionError, ChunkedEncodingError,
+            # etc.) are safe to surface verbatim — the message is
+            # operator-oriented ("connection lost", "EOF") and doesn't
+            # contain stack frames or upstream response bodies.
+            close_tag = _close_think_tag()
+            if close_tag:
+                yield close_tag
+            yield f"OpenRouter Error: {exc}"
         except Exception as exc:
             close_tag = _close_think_tag()
             if close_tag:
                 yield close_tag
-            print(f"[OpenRouter Pipe] Stream error: {exc}")
+            # Log full detail to the operator (server stdout) but only
+            # surface a generic message to the chat client — internal
+            # exceptions can carry stack frames, file paths, or pieces of
+            # upstream response bodies that should never reach the end
+            # user.
+            print(f"[OpenRouter Pipe] Stream error: {exc!r}")
             traceback.print_exc()
-            yield f"OpenRouter Error: {exc}"
+            yield "OpenRouter Error: Internal stream error (see server logs)."
         finally:
             # Clean up resources — do NOT yield here because
             # GeneratorExit (consumer break) would cause RuntimeError.
