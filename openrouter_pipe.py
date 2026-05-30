@@ -1146,6 +1146,8 @@ class Pipe:
         __user__: Optional[dict] = None,
         __event_emitter__: Optional[Callable] = None,
         __tools__: Optional[dict] = None,
+        __request__=None,
+        __metadata__: Optional[dict] = None,
     ) -> Union[str, Generator[str, None, None], AsyncGenerator[str, None]]:
         """Route a chat completion request to OpenRouter (stream or non-stream).
 
@@ -1186,7 +1188,7 @@ class Pipe:
             payload["tools"] = tools_payload
 
         if tools_payload and not stream:
-            result = await self._run_tools_nonstream(headers, payload, eff, __tools__, __event_emitter__)
+            result = await self._run_tools_nonstream(headers, payload, eff, __tools__, __event_emitter__, __request__, __user__, __metadata__)
             if __event_emitter__:
                 await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return result
@@ -1219,7 +1221,7 @@ class Pipe:
                         await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return _wrap_stream()
 
-        result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__)
+        result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__, __request__, __user__, __metadata__)
 
         if __event_emitter__:
             await __event_emitter__(
@@ -1994,14 +1996,17 @@ class Pipe:
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
-    async def _emit_image_files(self, emitter, message) -> bool:
+    async def _emit_image_files(self, emitter, message, request=None, user=None, metadata=None) -> bool:
         """Emit a native Open WebUI ``files`` event for generated images.
 
         Image-output models (e.g. flux, gemini-image-preview) return raster
-        data URLs in ``message.images`` — inlining them as markdown links
-        works for small payloads but breaks for 500 KB+ base64 URLs that
-        OWUI's markdown renderer truncates or refuses. The native files event
-        attaches them as proper image previews instead.
+        data URLs in ``message.images``. Open WebUI's chat client only renders
+        image attachments fetched from its own ``/api/v1/files/{id}/content``
+        endpoint, so inline ``data:`` URLs never appear in the UI. When the
+        Open WebUI runtime context is available (``request`` + ``user`` +
+        ``metadata`` with chat_id/message_id), we upload each base64 image
+        through OWUI's ``upload_image`` helper and emit the resulting file URL
+        instead. Without that context the data URL is emitted as a fallback.
 
         Mutates ``message`` to clear ``images`` after a successful emit so the
         markdown formatter doesn't double-render them. Returns True when at
@@ -2012,6 +2017,21 @@ class Pipe:
         images = message.get("images") or []
         if not images:
             return False
+
+        # Resolve a real Open WebUI user object once (upload_image expects
+        # attribute-style access, the __user__ kwarg is a dict).
+        owui_user = None
+        upload_image = None
+        if request is not None and isinstance(user, dict) and user.get("id") and metadata:
+            try:
+                from open_webui.routers.images import upload_image as _upload_image
+                from open_webui.models.users import Users as _Users
+                upload_image = _upload_image
+                owui_user = _Users.get_user_by_id(user["id"])
+            except Exception as exc:
+                print(f"[OpenRouter Pipe] OWUI image-upload helpers unavailable: {exc}")
+
+        _data_re = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
         files = []
         for img in images:
             if not isinstance(img, dict):
@@ -2020,9 +2040,31 @@ class Pipe:
             if not isinstance(url, str) or not url:
                 continue
             lower = url.lower()
-            if not (lower.startswith(("http://", "https://")) or lower.startswith("data:image/")):
+
+            # Convert a data: URL into a real OWUI file when we can
+            if upload_image is not None and owui_user is not None and lower.startswith("data:image/"):
+                m = _data_re.match(url)
+                if m:
+                    try:
+                        content_type = m.group(1)
+                        image_bytes = base64.b64decode(m.group(2))
+                        _item, new_url = await upload_image(
+                            request, image_bytes, content_type, metadata, owui_user
+                        )
+                        if new_url:
+                            url = str(new_url)
+                            lower = url.lower()
+                    except Exception as exc:
+                        print(f"[OpenRouter Pipe] Image upload to OWUI failed: {exc}")
+
+            if not (
+                lower.startswith(("http://", "https://"))
+                or url.startswith("/")  # path-only URL produced by upload_image
+                or lower.startswith("data:image/")
+            ):
                 continue
             files.append({"type": "image", "url": url})
+
         if not files:
             return False
         try:
@@ -2143,7 +2185,7 @@ class Pipe:
             traceback.print_exc()
             return f"OpenRouter Error: {exc}"
 
-    async def _non_stream_with_events(self, headers: dict, payload: dict, valves, emitter) -> str:
+    async def _non_stream_with_events(self, headers: dict, payload: dict, valves, emitter, request=None, user=None, metadata=None) -> str:
         """Wrap _non_stream_fetch with image-files + citation event emits and
         credit prefetch, then format. Used by pipe()'s no-tools non-stream
         path so generated images render as native OWUI attachments rather
@@ -2154,7 +2196,7 @@ class Pipe:
             return res
         choices = res.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
-        await self._emit_image_files(emitter, message)
+        await self._emit_image_files(emitter, message, request, user, metadata)
         await self._emit_citation_events(emitter, res.get("citations") or [])
         await self._prefetch_credit_if_enabled(valves)
         return self._format_final_message(res, payload, valves)
@@ -2187,7 +2229,7 @@ class Pipe:
             traceback.print_exc()
             return f"OpenRouter Error: {exc}"
 
-    async def _run_tools_nonstream(self, headers, payload, valves, __tools__, __event_emitter__) -> str:
+    async def _run_tools_nonstream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None) -> str:
         """Drive the non-streaming native-tool loop: request → execute → repeat."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         for _ in range(max_iter):
@@ -2214,7 +2256,7 @@ class Pipe:
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
-                await self._emit_image_files(__event_emitter__, message)
+                await self._emit_image_files(__event_emitter__, message, __request__, __user__, __metadata__)
                 await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
                 await self._prefetch_credit_if_enabled(valves)
                 return self._format_final_message(res, payload, valves)
@@ -2235,7 +2277,7 @@ class Pipe:
             return f"OpenRouter Error: {exc}"
         _choices = res.get("choices") or []
         _msg = _choices[0].get("message", {}) if _choices else {}
-        await self._emit_image_files(__event_emitter__, _msg)
+        await self._emit_image_files(__event_emitter__, _msg, __request__, __user__, __metadata__)
         await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
         await self._prefetch_credit_if_enabled(valves)
         final = self._format_final_message(res, payload, valves)
