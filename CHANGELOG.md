@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-05-30
+
+### Added
+
+- **Image generation rendering (flux, gemini-image-preview, ...)** — `choices[0].message.images` and `delta.images` data-URL payloads are decoded, uploaded through Open WebUI's file-upload helper, and the message content is rewritten to `![Generated image](/api/v1/files/<id>/content)` so the chat client embeds them inline. Works for both the streaming path (`_wrap_stream` materializes after the SSE loop) and the non-streaming path (`_emit_image_files`); also wired into the native-tool loop so flux+tools no longer drops the image.
+- **Video generation routing (veo, kling, sora, seedance, hailuo, wan, grok-imagine)** — video-output models from OpenRouter's catalog (architecture `output_modalities=["video"]`) are routed to the asynchronous `POST /api/v1/videos` endpoint instead of `/chat/completions` (which 500s for them). The pipe submits the job, polls the returned `polling_url` every `VIDEO_POLL_INTERVAL` (default 5 s) up to `VIDEO_GENERATION_TIMEOUT` (default 600 s), downloads the MP4 from `unsigned_urls[0]`, re-hosts it through OWUI, and embeds via the block-HTML token `<div><video>URL</video></div>` — the only emission shape OWUI's `Markdown.svelte` HTML-token renderer accepts for inline video. Forwards `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed` from the body. Status emits dedupe on identical labels so long jobs don't pollute the status history.
+- **Audio generation routing (lyria, gpt-audio, gpt-audio-mini)** — audio-output models are served via `/chat/completions` with `modalities=["text","audio"]` + `audio={format,voice}` + `stream=true` (the only combination that actually returns audio bytes). For OpenAI's gpt-audio family the format is forced to `pcm16` (the upstream only accepts pcm16 with stream=true) and the raw PCM bytes are wrapped in a minimal RIFF/WAVE container (24 kHz mono) before upload so the browser can play them via `<audio>`. Other providers (Lyria etc.) get mp3 by default; the format flows through `state["audio_format"]` so the materializer picks the correct MIME per request. Embedded as `<div><audio>URL</audio></div>` (same block-HTML token trick as video).
+- **`VIDEO_GENERATION_TIMEOUT` + `VIDEO_POLL_INTERVAL` valves** — bound the async polling loop; both per-user-overridable via UserValves.
+- **`AUDIO_OUTPUT_FORMAT` + `AUDIO_OUTPUT_VOICE` valves** — admin default for the audio container (mp3 / wav / flac / opus / ogg / aac / m4a / pcm16) and the voice id (gpt-audio family only; music models ignore it). Both per-user-overridable.
+- **SSRF / auth-leak guard for media downloads** — new `_is_openrouter_url` helper restricts the polling URL and the unsigned download URL to `openrouter.ai` (or `*.openrouter.ai`); a compromised relay or malicious upstream JSON can no longer redirect the bearer-bearing GET to an attacker-controlled host. The polling URL falls back to the canonical `/videos/<id>` form; the download is refused outright if the host isn't OpenRouter.
+- **Byte-size caps + MIME whitelists for media** — `_VIDEO_MAX_BYTES=100 MiB` / `_AUDIO_MAX_BYTES=50 MiB`. Video downloads use streaming `iter_content` with a Content-Length early-reject and a mid-stream cap so a hostile upstream cannot exhaust OWUI worker memory with a multi-GB blob. The post-download MIME is restricted to a per-modality whitelist (mp4/webm/mov/mkv for video, mpeg/wav/flac/ogg/opus/aac/mp4 for audio) so a spoofed `Content-Type` can't coerce OWUI's renderer.
+- **Citation URL scheme filter** — `_emit_citation_events` refuses to emit events for non-`http(s)` URLs, closing the `javascript:` / `data:` / `vbscript:` XSS surface through citation-card rendering.
+
+### Changed
+
+- **Body never mutated** — `pipe()` now deep-copies the incoming body before injecting audio-modality flags, so the OWUI-owned dict (reused for history, title generation, etc.) is never touched by the pipe's per-request payload prep. Closes a CRIT correctness bug where a subsequent non-audio chat in the same OWUI session would inherit stale `modalities=["text","audio"]`.
+- **Atomic routing-set swap** — `pipes()` now builds the audio/video `frozenset`s locally during a refresh and assigns them in one statement, instead of `.clear()` + re-populate. A concurrent `pipe()` call mid-refresh sees either the old set or the new one, never an empty intermediate state.
+- **Lazy populate runs off the event loop** — first request after a container restart triggers `self.pipes()` via `asyncio.to_thread`, gated by a `_lazy_populated` flag so it doesn't repeat on every subsequent request when the user happens to have zero audio/video models.
+- **Cached credit footer** — stream / non-stream / tool-stream / tool-nonstream footers now read the credit balance from cache only (`_credit_balance_cached`); a pre-warm coroutine (`_prefetch_credit_if_enabled`) runs the HTTP fetch via `asyncio.to_thread` BEFORE the footer is yielded. Previously a cold `SHOW_REMAINING_CREDIT` fetch could stall the SSE stream finalize.
+- **Cached Authorization header** — `_build_headers` no longer runs `EncryptedStr.decrypt()` (Fernet, ~100 µs) on every chunk send / poll / footer. The decrypted `Bearer …` line is cached keyed on the encrypted ciphertext and auto-invalidates on key rotation. Bounded to 32 entries.
+- **HTTP connection pool sized for concurrent users** — the shared `requests.Session` now mounts an `HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)`. Default urllib3 pool of 10 was a hard limit on concurrent streamed chats; `max_retries=0` because `_retryable_request` already drives Retry-After-aware retries.
+- **`_effective_valves` fast path** — when `__user__` has no UserValves attached (the overwhelmingly common case), return `self.valves` directly instead of pydantic-copying + per-key validating. Admin valves are treated as read-only by the rest of the pipe.
+- **`_models_cache_valid` short-circuit** — compare the cheap presence + TTL first, only pay the Fernet-decrypt + SHA256 cost of `_build_cache_key` when both match and we're about to serve from cache.
+- **Shared `_owui_upload_bytes` helper** — image, video, and audio uploads now share one helper with consistent error logging (`Image upload / Video upload / Audio upload to OWUI failed`), replacing three duplicated 30-line copies of the OWUI helper import + user-resolve + upload-image dance.
+- **Module-level constants** — `_DATA_IMAGE_RE`, `_VIDEO_MAX_BYTES`, `_AUDIO_MAX_BYTES`, `_VIDEO_MIME_WHITELIST`, `_AUDIO_MIME_WHITELIST`, `_AUDIO_FORMAT_TO_MIME`, `_CITATION_ALLOWED_SCHEMES` — hoisted from per-call locals so the hot path doesn't pay re-compile / re-allocate costs.
+- **SSE reads use `iter_lines(chunk_size=8192)`** — fewer syscalls on high-throughput streams than the default 512.
+- **Tool-loop non-stream cap-reached branch** — now catches `Timeout` and `HTTPError` explicitly before the generic `Exception`, so a network timeout on the very last call surfaces the friendly `Request timed out after Xs` wrap instead of the sanitized `Internal request error` message. Also builds a clean `{role, content, tool_calls}` assistant message instead of forwarding the raw upstream dict (which can carry `refusal` / legacy `function_call` / vendor reasoning blobs that some downstream models reject on re-submission).
+- **Video polling status emit dedupe** — repeated `Generating video (pending)…` labels are suppressed; the operator only sees a new status line when the upstream `status` field changes.
+
+### Fixed
+
+- **`_run_video_generation` resource leaks** — `submit_resp` and per-iteration `poll_resp` are wrapped in `try/finally` with explicit `close()`; previously each unhappy branch leaked a socket and a long-running job could leak up to 120 connections.
+- **Video error mapping** — 402 maps to `Insufficient credits (HTTP 402)`, 429 to `Rate limited (HTTP 429)`; previously both fell through to a generic `Failed to start video job` that hid the cause.
+- **Non-stream `status: done` event always emitted** — `_non_stream_with_events` call now wrapped in `try/finally` so the shimmer line clears even on an unhandled exception (matches the stream and video paths).
+- **`ZDR_ENFORCE` removed from `UserValves`** — privacy policy is admin-only; a regular user can no longer flip it off through the per-user override.
+- **Generic exception sanitization** — `_stream_response` and `_non_stream_fetch` no longer surface raw Python exception text to the chat client on a non-`requests.RequestException` failure. Detail goes to server stdout, client gets `Internal stream/request error (see server logs)`. Network-level `RequestException` messages still surface verbatim (operator-safe, useful debug).
+- **Audio payload regression** — when `_stream_one_round` enters the tool loop with an audio-output model, captured `delta.audio.data` is now surfaced via `state["audio_b64"]` so `_run_tools_stream` can materialize and embed it. Previously a flux / lyria / gpt-audio model with tools enabled would silently drop the media.
+
+### Security
+
+- All four media-related changes above are also security-relevant: SSRF whitelist, byte-size caps, MIME whitelists, citation URL scheme filter, sanitized internal exceptions, admin-only ZDR.
+
+### Tests
+
+- Suite grew from 727 to **868 tests**: +141 tests covering image / video / audio routing, the SSRF whitelist, atomic frozenset swap, body deepcopy isolation, ZDR + media combo, generic-exception sanitization, the auth-header cache (decrypt-once + key rotation + 32-cap eviction), the `_AUDIO_FORMAT_TO_MIME` table, user-supplied `audio` and `modalities` preservation, base64 padding edge cases, video error branches (Timeout / ConnectionError / mid-poll RequestException / deadline expiry / malformed `unsigned_urls` / non-dict failed-status error / forwarded knobs / Content-Type fallback), and the tool-nonstream cap-branch Timeout path. All green on Python 3.10–3.13.
+
 ## [1.9.0] — 2026-05-29
 
 ### Added

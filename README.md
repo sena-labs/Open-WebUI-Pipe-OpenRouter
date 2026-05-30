@@ -4,9 +4,10 @@
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio, image-generation, and
-embedding models — directly inside Open WebUI, with provider routing, reasoning tokens, streaming,
-fallbacks, and cache control out of the box.
+Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio (input + generation),
+image-generation, video-generation, and embedding models — directly inside Open WebUI, with
+provider routing, reasoning tokens, streaming, fallbacks, native media rendering, and cache
+control out of the box.
 
 ## Table of Contents
 
@@ -35,7 +36,11 @@ fallbacks, and cache control out of the box.
 
 ## Features
 
-- **Manifold pipe** — exposes the full OpenRouter catalog (chat, TTS, audio, image, embeddings) as native Open WebUI models in the model selector. Configurable via `OUTPUT_MODALITIES` and `MODEL_CATEGORY`.
+- **Manifold pipe** — exposes the full OpenRouter catalog (chat, TTS, audio, image, video, embeddings) as native Open WebUI models in the model selector. Configurable via `OUTPUT_MODALITIES` and `MODEL_CATEGORY`.
+- **Image generation** — `flux`, `gemini-image-preview`, and other image-output models work out of the box: returned `data:` URLs are uploaded to OWUI storage and embedded inline as `![Generated image](/api/v1/files/.../content)` so the chat client renders them natively.
+- **Video generation** — `google/veo-3.1*`, `kwaivgi/kling*`, `openai/sora*`, `bytedance/seedance*`, `minimax/hailuo*`, `alibaba/wan*`, `x-ai/grok-imagine-video` are routed to OpenRouter's asynchronous `/api/v1/videos` endpoint (auto-polling, configurable `VIDEO_POLL_INTERVAL` / `VIDEO_GENERATION_TIMEOUT`), then re-hosted as OWUI files and embedded inline.
+- **Audio generation** — `google/lyria-3-*-preview` (music) and `openai/gpt-audio*` (speech, auto pcm16 → WAV wrap for streaming) inject the required `modalities=["text","audio"]` + `audio={format,voice}` payload automatically, capture the base64 chunks, decode, upload, and embed as inline `<audio controls>`.
+- **SSRF-guarded media downloads** — polling URLs and signed download URLs are restricted to `openrouter.ai`; downloads are byte-capped (100 MiB video / 50 MiB audio) and MIME-whitelisted post-fetch.
 - **Web search plugin** — attach OpenRouter's `web` plugin to any model with domain allow/deny lists, custom search prompt, and result-count limits.
 - **Variant routing** — surface virtual `:nitro`/`:exacto`/`:thinking`/`:online`/`:free`/`:extended` model entries that route to OpenRouter's specialized profiles.
 - **Service tier hint** — forward `flex` (cheaper/slower) or `priority` (faster) tiers to compatible providers.
@@ -91,7 +96,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 727 tests — verify everything is green
+python test_pipe.py        # 868 tests — verify everything is green
 ```
 
 ## Usage
@@ -257,7 +262,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (727 tests)
+├── test_pipe.py            # Unit test suite (868 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -287,7 +292,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (727 tests)
+python test_pipe.py                       # Unit tests (868 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
@@ -383,14 +388,43 @@ A: `FALLBACK_MODELS` adds extra model IDs to the `models` array in the OpenRoute
 primary model fails, OpenRouter automatically tries the next one. Non-streaming responses include
 a "Responded by: model-id" attribution when a fallback handled the request.
 
-**Q: I selected a TTS / embeddings / image-generation model and got an error — why?**
+**Q: How do image / video / audio generation models work in the pipe?**
 
-A: The pipe routes every request through OpenRouter's `/chat/completions` endpoint. Models that
-only expose a non-chat endpoint (e.g. pure TTS models served via `/audio/speech`) return an
-"endpoint not supported" error from OpenRouter. The pipe surfaces that error verbatim. Chat
-completion models that *output* audio or images (e.g. `openai/gpt-audio`) work normally — their
-audio transcript and generated images are rendered inline. To hide non-chat models from the
-selector entirely, set `OUTPUT_MODALITIES = text`.
+A: The pipe inspects each model's `architecture.output_modalities` (from OpenRouter's `/models`
+catalog) and routes accordingly:
+
+- **Image-output models** (`flux`, `gemini-image-preview`, ...) — served via the standard
+  `/chat/completions` endpoint. The returned base64 `data:` URLs in `choices[0].message.images`
+  are uploaded through Open WebUI's file-upload helper and the message content is rewritten to
+  `![Generated image](/api/v1/files/<id>/content)` so the OWUI chat renders them inline.
+- **Video-output models** (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine`)
+  — NOT served by `/chat/completions` (that endpoint 500s for them). The pipe submits to
+  `POST /api/v1/videos`, polls the returned `polling_url` every `VIDEO_POLL_INTERVAL`
+  (default 5 s) up to `VIDEO_GENERATION_TIMEOUT` (default 600 s), downloads the MP4 once the
+  job is `completed`, re-hosts it through OWUI, and embeds as a native `<video controls>`
+  element. Status updates appear in the OWUI status shimmer during polling.
+- **Audio-output models** (`google/lyria-3-clip-preview`, `google/lyria-3-pro-preview`,
+  `openai/gpt-audio`, `openai/gpt-audio-mini`) — served by `/chat/completions` but only
+  emit audio when the request includes `modalities=["text","audio"]` + an `audio={format,voice}`
+  object + `stream=true`. The pipe injects all three automatically. For OpenAI's `gpt-audio*`
+  the format is forced to `pcm16` (the upstream's only supported format with `stream=true`)
+  and the raw PCM is wrapped in a WAV container before upload so the browser can play it.
+  For Lyria the default is mp3.
+
+Bytes are downloaded with hard caps (100 MiB video / 50 MiB audio), the post-fetch MIME is
+checked against a per-modality whitelist, and the `polling_url` + `unsigned_urls[0]` are
+restricted to `openrouter.ai` (or `*.openrouter.ai`) so a compromised upstream cannot redirect
+the Authorization bearer to an attacker-controlled host.
+
+To hide non-chat models from the selector entirely, set `OUTPUT_MODALITIES = text`.
+
+**Q: I selected a pure-embeddings or pure-TTS model and got an error — why?**
+
+A: The pipe routes those through `/chat/completions` (the same endpoint that backs every other
+chat). Models that only expose a non-chat endpoint (e.g. pure TTS models served via
+`/audio/speech`) return an "endpoint not supported" error from OpenRouter; the pipe surfaces
+that error verbatim. Use `OUTPUT_MODALITIES = text,image,audio,video` (or `all`) in the valves
+to control which modalities appear in the selector.
 
 ## License
 

@@ -52,3 +52,26 @@ nul
 .worktrees/
 .security-key
 logs/security/
+
+# Claude Code / claude-flow / swarm CLI per-project state
+.claude/
+.claude-flow/
+.swarm/
+
+# Remember plugin history
+.remember/
+
+# mypy cache
+.mypy_cache/
+
+# RuVector runtime DB (built locally by analysis agents, never committed)
+ruvector.db
+
+# Browser-driven smoke-test artifacts (Chrome MCP saves screenshots/HTML
+# captures keyed by frame number — purely local debug output)
+[0-9][0-9][0-9]-*.html
+[0-9][0-9][0-9]-*.png
+[0-9][0-9][0-9]-*.md
+[0-9][0-9][0-9]-*.txt
+[0-9][0-9][0-9]-rendered
+[0-9][0-9][0-9]-loaded
