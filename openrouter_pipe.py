@@ -50,6 +50,31 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 # Pre-compiled at module load time so the image-materialize hot path
 # doesn't pay re.compile() cost on every stream finalize.
 _DATA_IMAGE_RE = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTALL)
+
+# Hard caps on the bytes we accept from upstream media downloads. OpenRouter
+# CDN-served video/audio is bounded in practice (Veo 4K ~50 MB, Lyria full
+# song ~5 MB), so 100 MB / 50 MB give us comfortable headroom while still
+# preventing a malicious upstream from exhausting OWUI worker memory by
+# streaming an oversize blob.
+_VIDEO_MAX_BYTES = 100 * 1024 * 1024
+_AUDIO_MAX_BYTES = 50 * 1024 * 1024
+
+# MIME whitelists used post-download. The pipe always knows what modality
+# it just generated, so it doesn't need to trust the upstream Content-Type
+# header (a compromised relay could spoof it to coerce OWUI to render the
+# bytes as a different type).
+_VIDEO_MIME_WHITELIST = frozenset({
+    "video/mp4", "video/webm", "video/quicktime", "video/x-matroska",
+})
+_AUDIO_MIME_WHITELIST = frozenset({
+    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/flac",
+    "audio/ogg", "audio/opus", "audio/aac", "audio/mp4",
+})
+
+# Allowed citation URL schemes. OWUI emits citation events to the frontend
+# verbatim; ``javascript:``, ``data:``, ``vbscript:`` URLs would let an
+# attacker-controlled upstream citation execute script in the chat UI.
+_CITATION_ALLOWED_SCHEMES = frozenset({"http", "https"})
 _MAX_RETRY_AFTER = 60.0  # cap (seconds) — a huge Retry-After must not hang the request
 
 # Sentinel used with asyncio.to_thread(next, it, _STREAM_DONE) to detect
@@ -1222,12 +1247,19 @@ class Pipe:
 
         Never mutates self.valves (shared across users/requests). A user field
         of None means "inherit the admin value".
+
+        Fast path: when the user has no UserValves attached, skip the
+        pydantic ``model_copy`` + per-key validation entirely and hand
+        back ``self.valves`` directly. The caller treats this as
+        read-only; any in-place mutation through the returned object
+        would already have been a bug because admin valves are shared
+        across users and requests.
         """
-        eff = self.valves.model_copy()
         user = __user__ or {}
         uv = user.get("valves") if isinstance(user, dict) else None
         if uv is None:
-            return eff
+            return self.valves
+        eff = self.valves.model_copy()
         data = uv.model_dump() if hasattr(uv, "model_dump") else dict(uv)
         for key, val in data.items():
             if val is not None and hasattr(eff, key):
@@ -2241,19 +2273,29 @@ class Pipe:
                     return joined
         return ""
 
-    async def _upload_audio_to_owui(
-        self, request, user, metadata, audio_bytes: bytes, content_type: str = "audio/mpeg"
+    async def _owui_upload_bytes(
+        self,
+        request,
+        user,
+        metadata,
+        raw_bytes: bytes,
+        content_type: str,
+        modality_label: str,
     ) -> Optional[tuple]:
-        """Store generated audio bytes via OWUI's file-upload helper.
+        """Generic 'persist bytes through OWUI's file system' helper.
 
-        Mirrors ``_upload_video_to_owui`` — reuses
-        ``open_webui.routers.images.upload_image`` (a generic
-        ``upload_file_handler`` wrapper) so the bytes are stored in OWUI's
-        configured storage backend, a ``Files`` row is created, and the
-        file is linked to the originating chat message. Returns
-        ``(file_id, url)`` on success, ``None`` when the OWUI runtime
-        context (``request`` + ``user`` dict with ``id`` + ``metadata``) is
-        unavailable or the upload fails.
+        All three media flows (image rewrite, video gen, audio gen) go
+        through the same OWUI-side path: import ``upload_image`` from
+        ``open_webui.routers.images`` (which despite the name accepts any
+        MIME — it's a thin wrapper around the generic ``upload_file_handler``),
+        resolve the user (sync on old OWUI, async on new), then upload.
+        This helper centralises the boilerplate + error logging so the
+        per-modality wrappers stay one-liners.
+
+        Returns ``(file_id, url)`` on success and ``None`` when the OWUI
+        runtime context is missing or the upload itself fails. The
+        ``modality_label`` is used only in the error log so the operator
+        can tell which path failed.
         """
         if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
             return None
@@ -2275,15 +2317,23 @@ class Pipe:
             return None
         try:
             file_item, new_url = await _upload_image(
-                request, audio_bytes, content_type, metadata, owui_user
+                request, raw_bytes, content_type, metadata, owui_user
             )
         except Exception as exc:
-            print(f"[OpenRouter Pipe] Audio upload to OWUI failed: {exc}")
+            print(f"[OpenRouter Pipe] {modality_label} upload to OWUI failed: {exc}")
             return None
         file_id = getattr(file_item, "id", None) if file_item is not None else None
         if not file_id or not new_url:
             return None
         return (str(file_id), str(new_url))
+
+    async def _upload_audio_to_owui(
+        self, request, user, metadata, audio_bytes: bytes, content_type: str = "audio/mpeg"
+    ) -> Optional[tuple]:
+        """Store generated audio bytes via OWUI's file-upload helper."""
+        return await self._owui_upload_bytes(
+            request, user, metadata, audio_bytes, content_type, "Audio"
+        )
 
     @staticmethod
     def _wrap_pcm16_as_wav(pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1) -> bytes:
@@ -2337,6 +2387,13 @@ class Pipe:
             return ""
         if not audio_bytes:
             return ""
+        # Enforce the audio byte cap symmetrically with the video path.
+        if len(audio_bytes) > _AUDIO_MAX_BYTES:
+            print(
+                f"[OpenRouter Pipe] Audio payload {len(audio_bytes)} bytes "
+                f"exceeds cap {_AUDIO_MAX_BYTES} — rejected."
+            )
+            return ""
         fmt = (audio_format or valves.AUDIO_OUTPUT_FORMAT or "mp3").lower()
         # Raw PCM has no container; wrap in WAV so the browser can play it.
         if fmt == "pcm16":
@@ -2350,6 +2407,16 @@ class Pipe:
                 "opus": "audio/ogg",
                 "ogg": "audio/ogg",
             }.get(fmt, "audio/mpeg")
+        # Defence-in-depth: the format string came from the per-request
+        # payload, but reject anything that resolved to a non-whitelisted
+        # MIME so a future format-table edit can't accidentally let
+        # text/* or image/* leak through.
+        if content_type not in _AUDIO_MIME_WHITELIST:
+            print(
+                f"[OpenRouter Pipe] Audio content_type {content_type!r} not in "
+                "whitelist — rejected."
+            )
+            return ""
         upload = await self._upload_audio_to_owui(
             request, user, metadata, audio_bytes, content_type=content_type
         )
@@ -2366,48 +2433,10 @@ class Pipe:
     async def _upload_video_to_owui(
         self, request, user, metadata, video_bytes: bytes, content_type: str = "video/mp4"
     ) -> Optional[tuple]:
-        """Store generated video bytes via OWUI's file-upload helper.
-
-        Reuses ``open_webui.routers.images.upload_image`` (a thin wrapper
-        around the generic ``upload_file_handler``) so the resulting URL is
-        OWUI-internal and the file is linked to the chat message.
-
-        Returns ``(file_id, file_url)`` on success or ``None`` when the OWUI
-        runtime context is missing or the upload fails. The chat-message
-        formatter needs the bare ``file_id`` to emit the OWUI placeholder
-        token ``{{VIDEO_FILE_ID_<uuid>}}`` — OWUI's frontend replaces that
-        placeholder with a real ``<video>`` element AFTER markdown sanitizes
-        raw HTML (markdown-it runs with ``html: false``).
-        """
-        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
-            return None
-        try:
-            from open_webui.routers.images import upload_image as _upload_image
-            from open_webui.models.users import Users as _Users
-        except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI file-upload helpers unavailable: {exc}")
-            return None
-        try:
-            _maybe_user = _Users.get_user_by_id(user["id"])
-            if inspect.isawaitable(_maybe_user):
-                _maybe_user = await _maybe_user
-            owui_user = _maybe_user
-        except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
-            return None
-        if owui_user is None:
-            return None
-        try:
-            file_item, new_url = await _upload_image(
-                request, video_bytes, content_type, metadata, owui_user
-            )
-        except Exception as exc:
-            print(f"[OpenRouter Pipe] Video upload to OWUI failed: {exc}")
-            return None
-        file_id = getattr(file_item, "id", None) if file_item is not None else None
-        if not file_id or not new_url:
-            return None
-        return (str(file_id), str(new_url))
+        """Store generated video bytes via OWUI's file-upload helper."""
+        return await self._owui_upload_bytes(
+            request, user, metadata, video_bytes, content_type, "Video"
+        )
 
     async def _run_video_generation(
         self,
@@ -2570,19 +2599,55 @@ class Pipe:
 
         try:
             dl_resp = self._session.get(
-                unsigned[0], headers=headers, timeout=valves.REQUEST_TIMEOUT
+                unsigned[0],
+                headers=headers,
+                timeout=valves.REQUEST_TIMEOUT,
+                stream=True,
             )
             dl_resp.raise_for_status()
-            video_bytes = dl_resp.content
+            # Enforce a hard byte cap BEFORE materializing the full body.
+            # Streamed reads with an explicit limit prevent a malicious or
+            # compromised upstream from exhausting OWUI memory by serving
+            # a multi-GB blob. Content-Length, when present, gives us an
+            # early reject path.
+            try:
+                _declared_len = int(dl_resp.headers.get("Content-Length") or "0")
+            except (TypeError, ValueError):
+                _declared_len = 0
+            if _declared_len > _VIDEO_MAX_BYTES:
+                return (
+                    "OpenRouter Error: Video download rejected — declared size "
+                    f"{_declared_len} bytes exceeds {_VIDEO_MAX_BYTES} byte cap."
+                )
+            buf = bytearray()
+            for chunk in dl_resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                buf.extend(chunk)
+                if len(buf) > _VIDEO_MAX_BYTES:
+                    return (
+                        "OpenRouter Error: Video download exceeded "
+                        f"{_VIDEO_MAX_BYTES} byte cap mid-stream."
+                    )
+            video_bytes = bytes(buf)
         except requests.exceptions.RequestException as exc:
             return f"OpenRouter Error: Video download failed: {exc}"
+        finally:
+            try:
+                dl_resp.close()
+            except Exception:
+                pass
         if not video_bytes:
             return "OpenRouter Error: Video download returned 0 bytes."
 
+        # Don't trust the upstream Content-Type for the file we persist.
+        # If the server reports a video MIME from our whitelist, use it;
+        # otherwise fall back to the canonical video/mp4 — never let a
+        # spoofed image/* or text/html slip through to OWUI's renderer.
         content_type = "video/mp4"
-        dl_ct = dl_resp.headers.get("Content-Type", "")
-        if dl_ct.startswith("video/"):
-            content_type = dl_ct.split(";", 1)[0].strip()
+        dl_ct = (dl_resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if dl_ct in _VIDEO_MIME_WHITELIST:
+            content_type = dl_ct
 
         upload = await self._upload_video_to_owui(
             request, user, metadata, video_bytes, content_type=content_type
@@ -2636,21 +2701,20 @@ class Pipe:
 
         return f"{video_tag}{footer}"
 
-    async def _emit_image_files(self, emitter, message, request=None, user=None, metadata=None) -> bool:
+    async def _emit_image_files(self, _emitter, message, request=None, user=None, metadata=None) -> bool:
         """Materialize generated image ``data:`` URLs into Open WebUI internal file URLs.
 
-        Open WebUI's chat client renders ``![](/api/v1/files/{id}/content)`` inline
-        from message content, but does not reliably render multi-hundred-KB inline
-        ``data:`` URLs. When the OWUI runtime context is available (``request`` +
-        ``user`` dict with id + ``metadata`` with chat_id/message_id), each base64
-        image in ``message.images`` is uploaded via OWUI's ``upload_image`` helper
-        and the entry is rewritten in place with the resulting file URL. The
-        downstream markdown formatter (``_format_image_output``) then produces a
-        compact ``![Generated image](/api/v1/files/.../content)`` link that OWUI
-        renders inline. Without the OWUI runtime context, ``message.images`` is
-        left untouched (formatter falls back to the original data URL — may not
-        render but never crashes). The ``emitter`` argument is accepted for
-        back-compat with prior wiring; no event is emitted.
+        Each base64 image in ``message.images`` is uploaded via the shared
+        ``_owui_upload_bytes`` helper and the entry is rewritten in place
+        with the resulting OWUI internal URL. The downstream markdown
+        formatter (``_format_image_output``) then produces a compact
+        ``![Generated image](/api/v1/files/.../content)`` link that OWUI
+        renders inline. Without the OWUI runtime context, ``message.images``
+        is left untouched (formatter falls back to the original data URL —
+        may not render but never crashes).
+
+        ``_emitter`` is accepted (and ignored) for back-compat with prior
+        wiring; no event is emitted.
 
         Returns True when at least one URL was materialized into an OWUI file.
         """
@@ -2659,27 +2723,6 @@ class Pipe:
         images = message.get("images") or []
         if not images:
             return False
-        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
-            return False
-
-        try:
-            from open_webui.routers.images import upload_image as _upload_image
-            from open_webui.models.users import Users as _Users
-        except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI image-upload helpers unavailable: {exc}")
-            return False
-
-        try:
-            _maybe_user = _Users.get_user_by_id(user["id"])
-            if inspect.isawaitable(_maybe_user):
-                _maybe_user = await _maybe_user
-            owui_user = _maybe_user
-        except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
-            return False
-        if owui_user is None:
-            return False
-
         changed = False
         for img in images:
             if not isinstance(img, dict):
@@ -2694,19 +2737,19 @@ class Pipe:
             try:
                 content_type = m.group(1)
                 image_bytes = base64.b64decode(m.group(2))
-                _item, new_url = await _upload_image(
-                    request, image_bytes, content_type, metadata, owui_user
-                )
             except Exception as exc:
-                print(f"[OpenRouter Pipe] Image upload to OWUI failed: {exc}")
+                print(f"[OpenRouter Pipe] Image decode failed: {exc}")
                 continue
-            if not new_url:
+            upload = await self._owui_upload_bytes(
+                request, user, metadata, image_bytes, content_type, "Image"
+            )
+            if upload is None:
                 continue
-            new_url_str = str(new_url)
+            _file_id, new_url = upload
             if isinstance(image_url_obj, dict):
-                image_url_obj["url"] = new_url_str
+                image_url_obj["url"] = new_url
             else:
-                img["image_url"] = {"url": new_url_str}
+                img["image_url"] = {"url": new_url}
             changed = True
         return changed
 
@@ -2722,6 +2765,17 @@ class Pipe:
             return
         for url in citations:
             if not isinstance(url, str) or not url:
+                continue
+            # Defence-in-depth: refuse to emit citation events for URLs
+            # whose scheme isn't http(s). OWUI renders citation URLs as
+            # native links — letting ``javascript:``, ``data:``, or
+            # ``vbscript:`` through would let an attacker-controlled
+            # upstream citation execute script in the chat UI.
+            try:
+                _scheme = urlsplit(url).scheme.lower()
+            except Exception:
+                continue
+            if _scheme not in _CITATION_ALLOWED_SCHEMES:
                 continue
             try:
                 await emitter({
@@ -2958,7 +3012,7 @@ class Pipe:
         response = None
         try:
             response = self._retryable_request(headers, payload, stream=True, valves=valves)
-            for raw_line in response.iter_lines():
+            for raw_line in response.iter_lines(chunk_size=8192):
                 if not raw_line or not raw_line.startswith(b"data: "):
                     continue
                 data = raw_line[len(b"data: "):].decode("utf-8")
@@ -3180,7 +3234,7 @@ class Pipe:
 
         try:
             response = self._retryable_request(headers, payload, stream=True, valves=valves)
-            for raw_line in response.iter_lines():
+            for raw_line in response.iter_lines(chunk_size=8192):
                 if not raw_line or not raw_line.startswith(b"data: "):
                     continue
                 data = raw_line[len(b"data: ") :].decode("utf-8")

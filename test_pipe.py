@@ -3598,7 +3598,7 @@ _section("streaming tool loop")
 
 class _FakeStream:
     def __init__(self, lines): self._lines = lines
-    def iter_lines(self): return iter(self._lines)
+    def iter_lines(self, **_kw): return iter(self._lines)
     def close(self): pass
 
 def _sse(d):
@@ -3795,7 +3795,7 @@ _section("plain-stream credit footer + cap-note guard")
 # (A) plain streaming emits credit footer when SHOW_REMAINING_CREDIT on
 class _CreditStream:
     def __init__(self, lines): self._lines = lines
-    def iter_lines(self): return iter(self._lines)
+    def iter_lines(self, **_kw): return iter(self._lines)
     def close(self): pass
 
 _pcs = Pipe(); _pcs.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcs.valves.SHOW_REMAINING_CREDIT = True
@@ -4121,6 +4121,15 @@ class _FakeResp:
         if self.status_code >= 400:
             import requests as _rq
             raise _rq.exceptions.HTTPError(f"{self.status_code}", response=self)
+    # iter_content mirrors requests.Response so tests can stand in for the
+    # streaming video download path added by the security batch.
+    def iter_content(self, chunk_size=8192):
+        if not self.content:
+            return iter(())
+        return iter([self.content[i:i + chunk_size]
+                     for i in range(0, len(self.content), chunk_size)])
+    def close(self):
+        pass
 
 class _FakeSession:
     def __init__(self, plan):
@@ -4365,7 +4374,7 @@ _section("audit fixes: tool-stream media + video 402 + non-stream status finaliz
 class _FakeSSEResp:
     def __init__(self, lines):
         self._lines = [l.encode() if isinstance(l, str) else l for l in lines]
-    def iter_lines(self):
+    def iter_lines(self, **_kw):
         for ln in self._lines:
             yield ln
     def close(self): pass
@@ -4462,6 +4471,167 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 ))
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
+
+# ── sprint A/B/C audit follow-ups: shared upload + size cap + MIME + perf ─────
+
+_section("sprint A/B/C: shared upload helper + MIME whitelist + size cap + perf")
+
+# _owui_upload_bytes: no runtime context → None (no crash). Verifies the
+# helper short-circuits the same way all three callers used to inline.
+_p_oh = Pipe()
+_uo1 = asyncio.run(_p_oh._owui_upload_bytes(None, None, None, b"x", "video/mp4", "Test"))
+_assert(_uo1 is None, "_owui_upload_bytes: no request → None")
+_uo2 = asyncio.run(_p_oh._owui_upload_bytes(object(), None, None, b"x", "video/mp4", "Test"))
+_assert(_uo2 is None, "_owui_upload_bytes: no user dict → None")
+_uo3 = asyncio.run(_p_oh._owui_upload_bytes(object(), {"id": "u"}, {"chat_id": "c"}, b"x", "video/mp4", "Test"))
+_assert(_uo3 is None, "_owui_upload_bytes: OWUI helpers missing locally → None, no crash")
+
+# Audio MIME whitelist: a rogue format that resolves to a non-allowed
+# content_type yields '' (rejected) instead of materializing the embed.
+_p_mw = Pipe()
+async def _capture_mw(self, request, user, metadata, raw_bytes, content_type, modality_label):
+    _capture_mw.last = content_type
+    return ("f", "/api/v1/files/f/content")
+_p_mw._owui_upload_bytes = _capture_mw.__get__(_p_mw, Pipe)  # type: ignore
+# Sneaky: force a format string that maps to nothing (lands at audio/mpeg
+# fallback) — whitelist still accepts audio/mpeg.
+_b64_mw = _b64m.b64encode(b"\xff\xfb data").decode()
+_mw_ok = asyncio.run(_p_mw._materialize_audio_output(
+    _b64_mw, _p_mw.valves, object(), {"id": "u"}, {"chat_id": "c"},
+    audio_format="something-weird",
+))
+_assert(_mw_ok != "" and "audio" in _mw_ok,
+        "audio fallback format defaults to audio/mpeg (whitelisted)")
+
+# Audio size cap: 51 MB synthetic blob rejected pre-upload
+import os as _os_d
+_huge_audio_b64 = _b64m.b64encode(_os_d.urandom(1024 * 1024) * 51).decode()
+_p_sz = Pipe()
+_called = {"upload": False}
+async def _no_call(*a, **kw):
+    _called["upload"] = True
+    return ("f", "/api/v1/files/f/content")
+_p_sz._owui_upload_bytes = _no_call  # type: ignore
+_sz_out = asyncio.run(_p_sz._materialize_audio_output(
+    _huge_audio_b64, _p_sz.valves, object(), {"id": "u"}, {"chat_id": "c"},
+    audio_format="mp3",
+))
+_assert(_sz_out == "" and not _called["upload"],
+        "audio > 50MB cap → '' returned, upload helper never called")
+
+# Citation URL scheme filter (defence-in-depth: javascript:, data: refused)
+_p_cit = Pipe()
+_cit_events = []
+async def _capture_cit(ev):
+    _cit_events.append(ev)
+asyncio.run(_p_cit._emit_citation_events(_capture_cit,
+    ["https://safe.example.com/a",
+     "javascript:alert(1)",
+     "data:text/html,<script>x</script>",
+     "vbscript:msgbox",
+     "http://still-safe.org/x"]))
+_emitted_urls = [e["data"]["source"]["url"] for e in _cit_events]
+_assert("https://safe.example.com/a" in _emitted_urls,
+        "https citation emitted")
+_assert("http://still-safe.org/x" in _emitted_urls,
+        "http citation emitted")
+_assert(not any(u.startswith(("javascript:", "data:", "vbscript:")) for u in _emitted_urls),
+        "javascript:/data:/vbscript: citations filtered")
+
+# _effective_valves fast path: no UserValves attached → returns self.valves
+# directly (not a copy).
+_p_ev = Pipe()
+_ev_no_user = _p_ev._effective_valves(None)
+_assert(_ev_no_user is _p_ev.valves,
+        "_effective_valves(None) returns self.valves directly (no model_copy)")
+_ev_empty_user = _p_ev._effective_valves({})
+_assert(_ev_empty_user is _p_ev.valves,
+        "_effective_valves(no 'valves' key) returns self.valves directly")
+_ev_none_valves = _p_ev._effective_valves({"valves": None})
+_assert(_ev_none_valves is _p_ev.valves,
+        "_effective_valves(valves=None) returns self.valves directly")
+
+# When UserValves present and at least one override is set → returns a copy
+class _UV:
+    def model_dump(self): return {"COST_CURRENCY": "EUR"}
+_ev_override = _p_ev._effective_valves({"valves": _UV()})
+_assert(_ev_override is not _p_ev.valves,
+        "_effective_valves with overrides returns a fresh copy")
+_assert(_ev_override.COST_CURRENCY == "EUR",
+        "UserValves override flows into the copy")
+_assert(_p_ev.valves.COST_CURRENCY != "EUR",
+        "self.valves NOT mutated by per-request override (isolation)")
+
+# Lazy populate exception path: pipes() raising must not crash pipe(),
+# and the _lazy_populated flag must still flip so the next request doesn't
+# retry the failing fetch (no retry storm under upstream outage).
+_p_le = Pipe()
+_p_le.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "p" * 50
+def _raise_pipes(self):
+    raise RuntimeError("network down at startup")
+_p_le.pipes = _raise_pipes.__get__(_p_le, Pipe)  # type: ignore
+# Stub the stream path so pipe() reaches the lazy block then returns
+def _noop_sync_le(self, headers, payload, valves, state=None):
+    return iter(())
+_p_le._stream_response = _noop_sync_le.__get__(_p_le, Pipe)  # type: ignore
+_le_gen = asyncio.run(_p_le.pipe(
+    {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "x"}],
+     "stream": True},
+    {"id": "u"}, None, None, object(), {"chat_id": "c"},
+))
+async def _drain_le():
+    out = []
+    async for c in _le_gen:
+        out.append(c)
+    return out
+asyncio.run(_drain_le())
+_assert(_p_le._lazy_populated is True,
+        "_lazy_populated flag set even when pipes() raised (no retry storm)")
+
+# Anthropic interleaved-thinking header: when valve on + model is Anthropic
+_p_an = Pipe()
+_p_an.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "k" * 50
+_p_an.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = True
+_h_anthr = _p_an._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=_p_an.valves)
+_assert(_h_anthr.get("anthropic-beta") and "interleaved-thinking" in _h_anthr.get("anthropic-beta", ""),
+        "anthropic-beta header set for Anthropic model with valve on")
+_h_non = _p_an._build_headers(model_id="openai/gpt-4o", valves=_p_an.valves)
+_assert("anthropic-beta" not in _h_non,
+        "anthropic-beta header NOT set for non-Anthropic model")
+_p_an.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = False
+_h_off = _p_an._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=_p_an.valves)
+_assert("anthropic-beta" not in _h_off,
+        "anthropic-beta header NOT set when valve off")
+
+# HTTP_REFERER_OVERRIDE without scheme → silently falls back to default
+_p_rf = Pipe()
+_p_rf.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "r" * 50
+_p_rf.valves.HTTP_REFERER_OVERRIDE = "noscheme.example.com"
+_h_rf_bad = _p_rf._build_headers(valves=_p_rf.valves)
+_assert(_h_rf_bad["HTTP-Referer"] != "noscheme.example.com",
+        "schemeless referer override rejected, falls back to default")
+_p_rf.valves.HTTP_REFERER_OVERRIDE = "https://my.app/x"
+_h_rf_ok = _p_rf._build_headers(valves=_p_rf.valves)
+_assert(_h_rf_ok["HTTP-Referer"] == "https://my.app/x",
+        "valid https referer override used verbatim")
+# CRLF injection in referer override → rejected
+_p_rf.valves.HTTP_REFERER_OVERRIDE = "https://my.app/x\r\nX-Injected: 1"
+_h_rf_crlf = _p_rf._build_headers(valves=_p_rf.valves)
+_assert("\r" not in _h_rf_crlf["HTTP-Referer"] and "\n" not in _h_rf_crlf["HTTP-Referer"],
+        "CRLF in referer override rejected")
+
+# Module-level constants exposed for asserting via Pipe class
+import openrouter_pipe as _mod_oo
+_assert(_mod_oo._VIDEO_MAX_BYTES == 100 * 1024 * 1024,
+        "_VIDEO_MAX_BYTES = 100 MiB")
+_assert(_mod_oo._AUDIO_MAX_BYTES == 50 * 1024 * 1024,
+        "_AUDIO_MAX_BYTES = 50 MiB")
+_assert("video/mp4" in _mod_oo._VIDEO_MIME_WHITELIST,
+        "video/mp4 in MIME whitelist")
+_assert("audio/wav" in _mod_oo._AUDIO_MIME_WHITELIST,
+        "audio/wav in MIME whitelist")
+_assert(_mod_oo._CITATION_ALLOWED_SCHEMES == frozenset({"http", "https"}),
+        "citation schemes restricted to http(s)")
 
 # ── batch-3 audit gaps: video error branches + ZDR + media combo ──────────────
 
