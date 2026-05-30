@@ -2280,14 +2280,20 @@ class Pipe:
                 "OpenRouter Error: Video generated but could not be persisted to "
                 "Open WebUI storage. Re-run inside an active OWUI chat session."
             )
-        file_id, _new_url = upload
+        file_id, new_url = upload
 
-        # OWUI's markdown renderer runs with html:false, so a raw <video>
-        # tag in message content is escaped to literal text. The frontend
-        # provides a placeholder token that the chat renderer substitutes
-        # AFTER markdown into a real <video> element pointing at the
-        # OWUI-internal file URL — emit that token instead.
-        video_tag = f"{{{{VIDEO_FILE_ID_{file_id}}}}}"
+        # OWUI's Markdown component has a custom html-token renderer that
+        # turns ``<video>URL</video>`` into a real <video> element pointing
+        # at URL. The regex captures whatever sits BETWEEN the tags as the
+        # video ``src`` (see ``Markdown.svelte`` upstream: it does
+        # ``html.match(/<video[^>]*>([\\s\\S]*?)<\\/video>/)`` then uses the
+        # first capture group). The previous ``<video src=...></video>``
+        # emission produced an empty capture group and fell through to
+        # printing the raw HTML as text. Put the URL between the tags and
+        # surround with blank lines so marked emits a block-level html
+        # token (not inline html embedded in a paragraph).
+        clean_url = new_url.split("?", 1)[0]
+        video_tag = f"\n\n<video>{clean_url}</video>\n\n"
 
         footer = ""
         usage = final.get("usage") or {}

@@ -4172,7 +4172,7 @@ _vg_ok = asyncio.run(_p_vg4._run_video_generation(
     "google/veo-3.1-fast",
     _p_vg4.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
 ))
-_assert(_vg_ok.startswith("{{VIDEO_FILE_ID_vid-abc}}"), "success → OWUI {{VIDEO_FILE_ID_<id>}} placeholder")
+_assert("<video>/api/v1/files/vid-abc/content</video>" in _vg_ok, "success → OWUI <video>URL</video> token (URL between tags)")
 _assert("Video cost" not in _vg_ok, "cost footer hidden when SHOW_COST_INFO=False by default")
 
 # Cost footer appears when SHOW_COST_INFO is on.
