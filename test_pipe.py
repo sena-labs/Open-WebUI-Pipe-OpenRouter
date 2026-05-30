@@ -4310,6 +4310,114 @@ for _fmt, _expected_ct in [("wav", "audio/wav"), ("flac", "audio/flac"), ("opus"
     asyncio.run(_p._materialize_audio_output(_payload_b64, _p.valves, object(), {"id": "u"}, {"chat_id": "c"}))
     _assert(_ct_seen["ct"] == _expected_ct, f"format {_fmt} → MIME {_expected_ct}")
 
+# ── audit fixes: tool-stream media + video 402 + non-stream finalize ─────────
+
+_section("audit fixes: tool-stream media + video 402 + non-stream status finalize")
+
+# Tool-stream + image: _stream_one_round captures message.images so the
+# tool-loop caller can materialize them. Drive the generator manually with
+# a fake SSE response that includes a completed message containing images.
+class _FakeSSEResp:
+    def __init__(self, lines):
+        self._lines = [l.encode() if isinstance(l, str) else l for l in lines]
+    def iter_lines(self):
+        for ln in self._lines:
+            yield ln
+    def close(self): pass
+    @property
+    def status_code(self): return 200
+    def raise_for_status(self): pass
+
+_p_aud_img = Pipe()
+def _fake_retry_img(headers, payload, stream, valves):
+    chunk = {
+        "id": "gen-1",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "delta": {"content": ""},
+            "message": {"role": "assistant", "content": "",
+                        "images": [{"image_url": {"url": "data:image/png;base64,aGVsbG8="}}]},
+        }],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    return _FakeSSEResp([b"data: " + _b64m.b64encode(b"x").decode().encode()[:0] + json.dumps(chunk).encode(), b"data: [DONE]"])
+_p_aud_img._retryable_request = _fake_retry_img  # type: ignore
+_state_img = {}
+_chunks = list(_p_aud_img._stream_one_round({}, {"messages": []}, _p_aud_img.valves, _state_img))
+_assert("images" in _state_img and len(_state_img["images"]) == 1,
+        "_stream_one_round captures message.images into state")
+
+# Tool-stream + audio: _stream_one_round captures delta.audio.data.
+_p_aud = Pipe()
+def _fake_retry_audio(headers, payload, stream, valves):
+    chunk1 = {"id": "gen-a", "choices": [{"index": 0, "delta": {"audio": {"data": "QUJD"}}}]}
+    chunk2 = {"id": "gen-a", "choices": [{"index": 0, "delta": {"audio": {"data": "REVG"}}, "finish_reason": "stop"}],
+              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+    return _FakeSSEResp([b"data: " + json.dumps(chunk1).encode(),
+                         b"data: " + json.dumps(chunk2).encode(),
+                         b"data: [DONE]"])
+_p_aud._retryable_request = _fake_retry_audio  # type: ignore
+_state_aud = {}
+list(_p_aud._stream_one_round({}, {"messages": []}, _p_aud.valves, _state_aud))
+_assert(_state_aud.get("audio_b64") == "QUJDREVG", "_stream_one_round accumulates delta.audio.data parts")
+
+# _stream_media_embeds: composes image markdown + audio embed from state.
+_p_mm = Pipe()
+async def _fake_upload_a(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    return ("aud-x", "/api/v1/files/aud-x/content")
+_p_mm._upload_audio_to_owui = _fake_upload_a.__get__(_p_mm, Pipe)  # type: ignore
+# emit_image_files no-op without OWUI runtime context → image_md falls back to
+# the data URL inside fake_msg (no rewrite). To verify the helper combines
+# both sources, we override _emit_image_files to rewrite directly.
+async def _fake_emit(self, emitter, message, request=None, user=None, metadata=None):
+    if message and isinstance(message.get("images"), list) and message["images"]:
+        message["images"][0]["image_url"]["url"] = "/api/v1/files/img-y/content"
+        return True
+    return False
+_p_mm._emit_image_files = _fake_emit.__get__(_p_mm, Pipe)  # type: ignore
+_state_mm = {
+    "images": [{"image_url": {"url": "data:image/png;base64,aGVsbG8="}}],
+    "audio_b64": _b64m.b64encode(b"ID3 audio").decode(),
+}
+_out = asyncio.run(_p_mm._stream_media_embeds(_state_mm, _p_mm.valves, object(), {"id": "u"}, {"chat_id": "c"}))
+_assert("![Generated image](/api/v1/files/img-y/content)" in _out, "_stream_media_embeds yields image markdown")
+_assert("<div><audio>/api/v1/files/aud-x/content</audio></div>" in _out, "_stream_media_embeds yields audio embed")
+
+# Empty state → empty string (no crash).
+_assert(asyncio.run(_p_mm._stream_media_embeds({}, _p_mm.valves, None, None, None)) == "",
+        "_stream_media_embeds returns '' for empty state")
+
+# Video 402 → friendly insufficient-credits message (not generic "Failed to start").
+_p_402 = Pipe()
+class _FakeSession402:
+    def __init__(self):
+        self.posts = 0
+    def post(self, *a, **kw):
+        self.posts += 1
+        return _FakeResp(402, {"error": {"message": "Insufficient credits"}})
+_p_402._session = _FakeSession402()
+_vg_402 = asyncio.run(_p_402._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_402.valves, None, None, None, None,
+))
+_assert("Insufficient credits" in _vg_402 and "402" in _vg_402,
+        "video 402 maps to Insufficient credits message")
+
+# Video 429 → friendly rate-limit message.
+_p_429 = Pipe()
+class _FakeSession429:
+    def post(self, *a, **kw): return _FakeResp(429, {"error": {"message": "Too many"}})
+_p_429._session = _FakeSession429()
+_vg_429 = asyncio.run(_p_429._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_429.valves, None, None, None, None,
+))
+_assert("Rate limited" in _vg_429 and "429" in _vg_429,
+        "video 429 maps to Rate limited message")
+
 # ── citation events emit ───────────────────────────────────────────────────────
 
 _section("citation events emit (OWUI native)")

@@ -1302,7 +1302,7 @@ class Pipe:
             return result
 
         if stream and tools_payload:
-            agen = self._run_tools_stream(headers, payload, eff, __tools__, __event_emitter__)
+            agen = self._run_tools_stream(headers, payload, eff, __tools__, __event_emitter__, __request__, __user__, __metadata__)
             if __event_emitter__:
                 async def _wrap_tool_stream():
                     try:
@@ -1325,44 +1325,27 @@ class Pipe:
                         if chunk is _STREAM_DONE:
                             break
                         yield chunk
-                    # After the SSE loop finishes, materialize any image-output
-                    # entries to OWUI internal file URLs and yield the markdown
-                    # so flux/gemini-image style responses render inline.
-                    images = stream_state.get("images") or []
-                    if images:
-                        fake_msg = {"images": images}
-                        await self._emit_image_files(
-                            __event_emitter__, fake_msg, __request__, __user__, __metadata__
-                        )
-                        image_md = _format_image_output(fake_msg.get("images") or [])
-                        if image_md:
-                            yield f"\n\n{image_md}\n"
-                    # Same for audio (lyria, gpt-audio): decode the
-                    # accumulated base64 audio chunks, upload to OWUI,
-                    # and yield the block-HTML <audio> embed plus the
-                    # transcript (when the model emitted one).
-                    audio_b64 = stream_state.get("audio_b64") or ""
-                    if audio_b64:
-                        audio_embed = await self._materialize_audio_output(
-                            audio_b64,
-                            eff,
-                            __request__,
-                            __user__,
-                            __metadata__,
-                        )
-                        if audio_embed:
-                            yield audio_embed
+                    # After the SSE loop finishes, materialize any image /
+                    # audio media collected from the stream into OWUI file
+                    # URLs and yield the embeds so flux/gemini-image and
+                    # lyria/gpt-audio responses render inline.
+                    media_md = await self._stream_media_embeds(
+                        stream_state, eff, __request__, __user__, __metadata__
+                    )
+                    if media_md:
+                        yield media_md
                 finally:
                     if __event_emitter__:
                         await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return _wrap_stream()
 
-        result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__, __request__, __user__, __metadata__)
-
-        if __event_emitter__:
-            await __event_emitter__(
-                {"type": "status", "data": {"description": "", "done": True}}
-            )
+        try:
+            result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__, __request__, __user__, __metadata__)
+        finally:
+            if __event_emitter__:
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
 
         return result
 
@@ -2339,6 +2322,10 @@ class Pipe:
 
         if submit_resp.status_code in (401, 403):
             return f"OpenRouter Error: Authentication failed (HTTP {submit_resp.status_code}). Check OPENROUTER_API_KEY."
+        if submit_resp.status_code == 402:
+            return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model."
+        if submit_resp.status_code == 429:
+            return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
         if submit_resp.status_code >= 400:
             detail = ""
             try:
@@ -2765,10 +2752,15 @@ class Pipe:
     def _stream_one_round(self, headers, payload, valves, state: dict):
         """Stream ONE model round. Yield user-facing content; record into `state`:
         tool_calls (assembled by index), usage, generation_id, citations,
-        finish_reason. <think> handling mirrors _stream_response.
+        finish_reason, plus any image/audio bytes the upstream model emits
+        (so the tool-loop caller can materialize them after the round
+        finishes — without this, tool-stream + image/audio models lose
+        their generated media). <think> handling mirrors _stream_response.
         """
         in_think = False
         tool_acc: dict = {}
+        latest_images: Optional[list] = None
+        audio_b64_parts: List[str] = []
 
         def _close_think():
             nonlocal in_think
@@ -2829,8 +2821,20 @@ class Pipe:
 
                 reasoning = delta.get("reasoning", "")
                 content = delta.get("content") or ""
-                if not content:
-                    content = (delta.get("audio") or {}).get("transcript", "")
+
+                # Capture media-output payloads (image data URLs, audio
+                # base64 chunks) so the tool-loop caller can materialize
+                # them after the round completes. Same shape as
+                # _stream_response uses for the plain-stream path.
+                _msg_obj = first.get("message") if isinstance(first.get("message"), dict) else None
+                _imgs = delta.get("images") or (_msg_obj.get("images") if isinstance(_msg_obj, dict) else None)
+                if isinstance(_imgs, list) and _imgs:
+                    latest_images = _imgs
+                audio_delta = delta.get("audio") or {}
+                if isinstance(audio_delta, dict) and isinstance(audio_delta.get("data"), str) and audio_delta["data"]:
+                    audio_b64_parts.append(audio_delta["data"])
+                if not content and isinstance(audio_delta, dict):
+                    content = audio_delta.get("transcript", "") or ""
 
                 if reasoning:
                     if not in_think:
@@ -2858,10 +2862,39 @@ class Pipe:
         finally:
             if tool_acc:
                 state["tool_calls"] = [tool_acc[k] for k in sorted(tool_acc)]
+            if latest_images:
+                state["images"] = latest_images
+            if audio_b64_parts:
+                state["audio_b64"] = "".join(audio_b64_parts)
             if response is not None:
                 response.close()
 
-    async def _run_tools_stream(self, headers, payload, valves, __tools__, __event_emitter__):
+    async def _stream_media_embeds(self, state: dict, valves, request, user, metadata) -> str:
+        """Materialize captured stream media (images, audio) and return their
+        markdown/HTML embeds as a single string. Used by both ``_wrap_stream``
+        (plain-stream path) and ``_run_tools_stream`` (tool-loop path) so
+        image- and audio-output models render correctly in both flows.
+        Returns ``""`` when ``state`` has no media or the OWUI runtime
+        context is missing.
+        """
+        parts: List[str] = []
+        images = state.get("images") or []
+        if images:
+            fake_msg = {"images": images}
+            await self._emit_image_files(None, fake_msg, request, user, metadata)
+            image_md = _format_image_output(fake_msg.get("images") or [])
+            if image_md:
+                parts.append(f"\n\n{image_md}\n")
+        audio_b64 = state.get("audio_b64") or ""
+        if audio_b64:
+            audio_embed = await self._materialize_audio_output(
+                audio_b64, valves, request, user, metadata
+            )
+            if audio_embed:
+                parts.append(audio_embed)
+        return "".join(parts)
+
+    async def _run_tools_stream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None):
         """Async generator: stream rounds, executing tools between them."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         for _ in range(max_iter):
@@ -2876,6 +2909,9 @@ class Pipe:
                 return
             tool_calls = state.get("tool_calls")
             if not tool_calls:
+                media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
+                if media_md:
+                    yield media_md
                 await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
                 await self._prefetch_credit_if_enabled(valves)
                 yield self._stream_footer(state, valves)
@@ -2893,6 +2929,9 @@ class Pipe:
                 break
             yield piece
         if not state.get("error"):
+            media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
+            if media_md:
+                yield media_md
             await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
             await self._prefetch_credit_if_enabled(valves)
             yield self._stream_footer(state, valves)
