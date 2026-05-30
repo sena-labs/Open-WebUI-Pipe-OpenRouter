@@ -2282,18 +2282,20 @@ class Pipe:
             )
         file_id, new_url = upload
 
-        # OWUI's Markdown component has a custom html-token renderer that
-        # turns ``<video>URL</video>`` into a real <video> element pointing
-        # at URL. The regex captures whatever sits BETWEEN the tags as the
-        # video ``src`` (see ``Markdown.svelte`` upstream: it does
-        # ``html.match(/<video[^>]*>([\\s\\S]*?)<\\/video>/)`` then uses the
-        # first capture group). The previous ``<video src=...></video>``
-        # emission produced an empty capture group and fell through to
-        # printing the raw HTML as text. Put the URL between the tags and
-        # surround with blank lines so marked emits a block-level html
-        # token (not inline html embedded in a paragraph).
+        # OWUI's Markdown component (HtmlToken.svelte) only handles
+        # ``token.type === 'html'``. Marked produces that token type ONLY
+        # for block-level HTML — and per CommonMark rule 7, ``<video>`` is
+        # in the inline tag list, so a bare ``<video>...</video>`` paragraph
+        # is tokenised as a plain text paragraph and shows up escaped
+        # (``&lt;video&gt;...``). Wrapping in ``<div>`` (which IS a
+        # block-level tag in marked's HTML detection) flips the line to a
+        # block ``html`` token. HtmlToken then sees ``<video`` inside the
+        # html string, regex-matches ``<video[^>]*>([\\s\\S]*?)<\\/video>``,
+        # and uses capture group 1 (whatever sits between the tags) as the
+        # final video ``src``. Surround with blank lines so marked closes
+        # the surrounding paragraph cleanly before the html block starts.
         clean_url = new_url.split("?", 1)[0]
-        video_tag = f"\n\n<video>{clean_url}</video>\n\n"
+        video_tag = f"\n\n<div><video>{clean_url}</video></div>\n\n"
 
         footer = ""
         usage = final.get("usage") or {}
