@@ -4064,6 +4064,183 @@ _md_bad = mod._format_image_output([
 ])
 _assert(_md_bad == "", "_format_image_output rejects javascript: and non-/api/v1/files/ relative URLs")
 
+# ── video generation: detection + submit/poll/upload flow ──────────────────────
+
+_section("video generation: detection + async /videos flow")
+
+# _extract_video_prompt: latest user message wins; flattens list-of-parts.
+_vp1 = Pipe._extract_video_prompt({"messages": [
+    {"role": "user", "content": "old prompt"},
+    {"role": "assistant", "content": "hi"},
+    {"role": "user", "content": "a red car driving"},
+]})
+_assert(_vp1 == "a red car driving", "_extract_video_prompt picks latest user message")
+
+_vp2 = Pipe._extract_video_prompt({"messages": [
+    {"role": "user", "content": [
+        {"type": "text", "text": "a red"},
+        {"type": "text", "text": "car driving"},
+    ]},
+]})
+_assert(_vp2 == "a red car driving", "_extract_video_prompt flattens text parts")
+
+_vp3 = Pipe._extract_video_prompt({"messages": []})
+_assert(_vp3 == "", "_extract_video_prompt returns empty when no user message")
+
+_vp4 = Pipe._extract_video_prompt({"messages": [{"role": "user", "content": [
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}
+]}]})
+_assert(_vp4 == "", "_extract_video_prompt returns empty when only non-text parts")
+
+# Empty prompt → friendly error, no HTTP call
+_p_vg = Pipe()
+_vg_empty = asyncio.run(_p_vg._run_video_generation(
+    {"messages": []}, "google/veo-3.1-fast", _p_vg.valves, None, None, None, None
+))
+_assert("non-empty text prompt" in _vg_empty, "empty prompt → friendly error")
+
+# Submit returns 500 → wrapped error, no polling
+class _FakeResp:
+    def __init__(self, status, data=None, headers=None, text=""):
+        self.status_code = status
+        self._data = data or {}
+        self.headers = headers or {}
+        self.text = text
+        self.content = b""
+    def json(self):
+        if isinstance(self._data, Exception):
+            raise self._data
+        return self._data
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests as _rq
+            raise _rq.exceptions.HTTPError(f"{self.status_code}", response=self)
+
+class _FakeSession:
+    def __init__(self, plan):
+        self.plan = list(plan)
+        self.calls = []
+    def post(self, url, **kw):
+        self.calls.append(("POST", url, kw))
+        return self.plan.pop(0)
+    def get(self, url, **kw):
+        self.calls.append(("GET", url, kw))
+        return self.plan.pop(0)
+
+_p_vg2 = Pipe()
+_p_vg2._session = _FakeSession([
+    _FakeResp(500, {"error": {"message": "upstream down"}}),
+])
+_vg_500 = asyncio.run(_p_vg2._run_video_generation(
+    {"messages": [{"role": "user", "content": "a red car"}]},
+    "google/veo-3.1-fast",
+    _p_vg2.valves, None, None, None, None,
+))
+_assert("Failed to start video job" in _vg_500 and "upstream down" in _vg_500, "submit 500 → wrapped error with detail")
+
+# Submit returns 401 → auth message
+_p_vg3 = Pipe()
+_p_vg3._session = _FakeSession([_FakeResp(401, {"error": {"message": "no key"}})])
+_vg_401 = asyncio.run(_p_vg3._run_video_generation(
+    {"messages": [{"role": "user", "content": "a red car"}]},
+    "google/veo-3.1-fast",
+    _p_vg3.valves, None, None, None, None,
+))
+_assert("Authentication failed" in _vg_401, "submit 401 → auth error")
+
+# Success path: submit accepted → poll completed → upload (mock) → <video> tag.
+# Use small poll interval so the test doesn't block.
+_p_vg4 = Pipe()
+_p_vg4.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_vg4.valves.VIDEO_GENERATION_TIMEOUT = 30
+_p_vg4._session = _FakeSession([
+    _FakeResp(202, {"id": "job-1", "polling_url": "https://openrouter.ai/api/v1/videos/job-1", "status": "pending"}),
+    _FakeResp(200, {"id": "job-1", "status": "in_progress"}),
+    _FakeResp(200, {"id": "job-1", "status": "completed", "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-1/content?index=0"], "usage": {"cost": 0.25}}),
+    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+])
+# Patch the download response to carry bytes (FakeResp.content is b"" by default).
+_p_vg4._session.plan[-1].content = b"\x00\x00\x00 ftypmp42"
+# Patch the upload helper to skip OWUI imports.
+async def _fake_upload(self, request, user, metadata, video_bytes, content_type="video/mp4"):
+    _fake_upload.last = {"bytes_len": len(video_bytes), "ct": content_type}
+    return "/api/v1/files/vid-abc/content"
+_p_vg4._upload_video_to_owui = _fake_upload.__get__(_p_vg4, Pipe)  # type: ignore
+
+_vg_ok = asyncio.run(_p_vg4._run_video_generation(
+    {"messages": [{"role": "user", "content": "a red car"}]},
+    "google/veo-3.1-fast",
+    _p_vg4.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
+))
+_assert(_vg_ok.startswith('<video controls src="/api/v1/files/vid-abc/content"'), "success → <video> tag with materialized URL")
+_assert("Video cost" not in _vg_ok, "cost footer hidden when SHOW_COST_INFO=False by default")
+
+# Cost footer appears when SHOW_COST_INFO is on.
+_p_vg5 = Pipe()
+_p_vg5.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_vg5.valves.VIDEO_GENERATION_TIMEOUT = 30
+_p_vg5.valves.SHOW_COST_INFO = True
+_p_vg5._session = _FakeSession([
+    _FakeResp(202, {"id": "job-2", "polling_url": "https://openrouter.ai/api/v1/videos/job-2", "status": "pending"}),
+    _FakeResp(200, {"id": "job-2", "status": "completed", "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-2/content?index=0"], "usage": {"cost": 0.25}}),
+    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+])
+_p_vg5._session.plan[-1].content = b"\x00bytes"
+async def _fake_upload2(self, request, user, metadata, video_bytes, content_type="video/mp4"):
+    return "/api/v1/files/vid-def/content"
+_p_vg5._upload_video_to_owui = _fake_upload2.__get__(_p_vg5, Pipe)  # type: ignore
+_vg_cost = asyncio.run(_p_vg5._run_video_generation(
+    {"messages": [{"role": "user", "content": "a blue car"}]},
+    "google/veo-3.1-fast",
+    _p_vg5.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
+))
+_assert("Video cost" in _vg_cost and "0.2500" in _vg_cost, "cost footer rendered with USD value")
+
+# Failed job → wrapped error
+_p_vg6 = Pipe()
+_p_vg6.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_vg6._session = _FakeSession([
+    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+    _FakeResp(200, {"id": "j", "status": "failed", "error": {"message": "content policy block"}}),
+])
+_vg_fail = asyncio.run(_p_vg6._run_video_generation(
+    {"messages": [{"role": "user", "content": "x"}]},
+    "google/veo-3.1-fast",
+    _p_vg6.valves, None, None, None, None,
+))
+_assert("Video generation failed" in _vg_fail and "content policy block" in _vg_fail, "polled status=failed → wrapped error")
+
+# _upload_video_to_owui: no runtime context → None (no crash)
+_p_vg7 = Pipe()
+_uv1 = asyncio.run(_p_vg7._upload_video_to_owui(None, None, None, b"x"))
+_assert(_uv1 is None, "upload helper: no request/user/metadata → None")
+_uv2 = asyncio.run(_p_vg7._upload_video_to_owui(object(), {"id": "u1"}, {"chat_id": "c"}, b"x"))
+_assert(_uv2 is None, "upload helper: OWUI helpers missing locally → None, no crash")
+
+# pipes() should populate _video_model_ids for models whose architecture
+# reports output_modalities=["video"], so pipe() can route them.
+_p_vg8 = Pipe()
+_fake_models_data = [
+    {"id": "google/veo-3.1-fast", "name": "Veo 3.1 Fast",
+     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
+    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5 Sonnet",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+]
+class _FakeModelResp:
+    status_code = 200
+    def json(self): return {"data": _fake_models_data}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _ModelsSess:
+    def get(self, *a, **kw): return _FakeModelResp()
+_p_vg8._session = _ModelsSess()
+_p_vg8.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_vg8.valves.SYNC_PROVIDER_ICONS = False
+_models = _p_vg8.pipes()
+_video_ids = _p_vg8._video_model_ids
+_assert("google/veo-3.1-fast" in _video_ids, "pipes() tracks video models from output_modalities")
+_assert("anthropic/claude-3.5-sonnet" not in _video_ids, "pipes() does NOT mark text-only models as video")
+
 # ── citation events emit ───────────────────────────────────────────────────────
 
 _section("citation events emit (OWUI native)")

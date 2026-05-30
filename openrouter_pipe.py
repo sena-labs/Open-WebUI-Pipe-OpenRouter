@@ -39,6 +39,7 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 # API path constants
 _API_PATH_MODELS = "/models"
 _API_PATH_CHAT = "/chat/completions"
+_API_PATH_VIDEOS = "/videos"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
 
@@ -708,6 +709,16 @@ class Pipe:
         MAX_RETRIES: int = Field(
             default=2, ge=0, description="Auto-retries on transient errors (with exponential backoff)"
         )
+        VIDEO_GENERATION_TIMEOUT: int = Field(
+            default=int(os.getenv("OPENROUTER_VIDEO_GENERATION_TIMEOUT", "600")),
+            gt=0,
+            description="Max seconds to wait for an async video generation job to complete before giving up. Typical video models take 30s–5min; raise for longer clips.",
+        )
+        VIDEO_POLL_INTERVAL: float = Field(
+            default=float(os.getenv("OPENROUTER_VIDEO_POLL_INTERVAL", "5")),
+            gt=0,
+            description="Seconds between status polls while a video generation job is in flight (5–10s recommended).",
+        )
         SHOW_COST_INFO: bool = Field(
             default=False,
             description="Append token usage and cost to each response",
@@ -834,6 +845,8 @@ class Pipe:
         HTTP_REFERER_OVERRIDE: Optional[str] = None
         REQUEST_TIMEOUT: Optional[int] = Field(default=None, gt=0)
         MAX_RETRIES: Optional[int] = Field(default=None, ge=0)
+        VIDEO_GENERATION_TIMEOUT: Optional[int] = Field(default=None, gt=0)
+        VIDEO_POLL_INTERVAL: Optional[float] = Field(default=None, gt=0)
         SHOW_COST_INFO: Optional[bool] = None
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
@@ -861,6 +874,11 @@ class Pipe:
         self._models_cache: Optional[List[dict]] = None
         self._models_cache_ts: float = 0.0
         self._models_cache_key: str = ""
+        # Cleaned model IDs whose architecture.output_modalities includes
+        # "video". Populated during pipes() so pipe() can route these models
+        # to the asynchronous /videos endpoint instead of /chat/completions
+        # (which returns HTTP 500 from upstream for video-output models).
+        self._video_model_ids: set = set()
         # Track which model IDs already have icons synced (avoids repeated DB writes)
         self._icons_synced: set = set()
         # Lazy-loaded mirror of OpenRouter's provider registry (slug → icon URL).
@@ -896,6 +914,11 @@ class Pipe:
     def chat_url(self) -> str:
         """Return the full URL for the chat completions endpoint."""
         return f"{self._base}{_API_PATH_CHAT}"
+
+    @property
+    def videos_url(self) -> str:
+        """Return the full URL for the video generation endpoint."""
+        return f"{self._base}{_API_PATH_VIDEOS}"
 
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
@@ -1003,6 +1026,7 @@ class Pipe:
             self._load_zdr_model_ids() if zdr_only else None
         )
         models: List[dict] = []
+        self._video_model_ids.clear()
 
         for model in data:
             model_id = model.get("id")
@@ -1070,6 +1094,13 @@ class Pipe:
                 "id": model_id,
                 "name": f"{prefix}{model_name}",
             }
+
+            # Track video-output models so pipe() can route them to the
+            # async /videos endpoint rather than /chat/completions.
+            arch = model.get("architecture") or {}
+            out_modalities = arch.get("output_modalities") or []
+            if isinstance(out_modalities, list) and "video" in out_modalities:
+                self._video_model_ids.add(model_id)
 
             models.append(model_dict)
 
@@ -1181,6 +1212,27 @@ class Pipe:
                     },
                 }
             )
+
+        # Video-output models (veo, kling, sora, seedance, ...) are NOT
+        # served by /chat/completions — that endpoint 500s for them.
+        # Route to the async /videos flow instead.
+        if model_id in self._video_model_ids:
+            try:
+                result = await self._run_video_generation(
+                    body,
+                    model_id,
+                    eff,
+                    __event_emitter__,
+                    __request__,
+                    __user__,
+                    __metadata__,
+                )
+            finally:
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": "", "done": True}}
+                    )
+            return result
 
         payload = self._prepare_payload(body, eff)
         headers = self._build_headers(model_id=payload.get("model"), valves=eff)
@@ -2011,6 +2063,244 @@ class Pipe:
             return ""
         symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
+
+    @staticmethod
+    def _extract_video_prompt(body: dict) -> str:
+        """Pull the latest user-message text out of an OpenAI-style ``body``.
+
+        Video generation models take a flat ``prompt`` string, not a chat
+        history. We grab the most recent ``role=="user"`` message and flatten
+        ``[{"type":"text","text":...}]`` parts to a single string.
+        """
+        msgs = body.get("messages") or []
+        for m in reversed(msgs):
+            if not isinstance(m, dict) or m.get("role") != "user":
+                continue
+            content = m.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        t = p.get("text")
+                        if isinstance(t, str):
+                            parts.append(t)
+                joined = " ".join(parts).strip()
+                if joined:
+                    return joined
+        return ""
+
+    async def _upload_video_to_owui(
+        self, request, user, metadata, video_bytes: bytes, content_type: str = "video/mp4"
+    ) -> Optional[str]:
+        """Store generated video bytes via OWUI's file-upload helper.
+
+        Reuses ``open_webui.routers.images.upload_image`` (a thin wrapper
+        around the generic ``upload_file_handler``) so the resulting URL is
+        OWUI-internal and renderable by the chat client. Returns the relative
+        ``/api/v1/files/{id}/content`` URL on success, or ``None`` if the OWUI
+        runtime context isn't available or the upload fails.
+        """
+        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
+            return None
+        try:
+            from open_webui.routers.images import upload_image as _upload_image
+            from open_webui.models.users import Users as _Users
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI file-upload helpers unavailable: {exc}")
+            return None
+        try:
+            _maybe_user = _Users.get_user_by_id(user["id"])
+            if inspect.isawaitable(_maybe_user):
+                _maybe_user = await _maybe_user
+            owui_user = _maybe_user
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
+            return None
+        if owui_user is None:
+            return None
+        try:
+            _item, new_url = await _upload_image(
+                request, video_bytes, content_type, metadata, owui_user
+            )
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] Video upload to OWUI failed: {exc}")
+            return None
+        return str(new_url) if new_url else None
+
+    async def _run_video_generation(
+        self,
+        body: dict,
+        model_id: str,
+        valves,
+        emitter,
+        request,
+        user,
+        metadata,
+    ) -> str:
+        """Submit + poll an OpenRouter video generation job, return chat content.
+
+        OpenRouter video-output models (veo, kling, sora, seedance, etc.) are
+        NOT served via /chat/completions — that endpoint returns HTTP 500 for
+        them. Instead, video gen uses an async POST /videos endpoint that
+        returns a job id and a polling URL; the caller polls until the job
+        finishes and then downloads the resulting MP4 from a signed content
+        URL. This method drives that flow and returns chat-message content
+        ready to be persisted (an HTML ``<video>`` tag pointing at the
+        re-hosted OWUI file URL, optionally followed by a cost footer).
+        """
+        prompt = self._extract_video_prompt(body)
+        if not prompt:
+            return "OpenRouter Error: Video generation requires a non-empty text prompt."
+
+        headers = self._build_headers(model_id=model_id, valves=valves)
+        # /videos expects flat params, not chat messages. Forward only the
+        # video-specific knobs OpenRouter recognizes if the caller set them.
+        payload: dict = {"model": model_id, "prompt": prompt}
+        for key in ("duration", "resolution", "aspect_ratio", "generate_audio", "seed"):
+            if key in body and body[key] is not None:
+                payload[key] = body[key]
+
+        try:
+            submit_resp = self._session.post(
+                self.videos_url,
+                headers=headers,
+                json=payload,
+                timeout=valves.REQUEST_TIMEOUT,
+            )
+        except requests.exceptions.Timeout:
+            return f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s."
+        except requests.exceptions.RequestException as exc:
+            return f"OpenRouter Error: Video submit failed: {exc}"
+
+        if submit_resp.status_code in (401, 403):
+            return f"OpenRouter Error: Authentication failed (HTTP {submit_resp.status_code}). Check OPENROUTER_API_KEY."
+        if submit_resp.status_code >= 400:
+            detail = ""
+            try:
+                err = submit_resp.json().get("error", {})
+                detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            except Exception:
+                detail = (submit_resp.text or "")[:300]
+            return f"OpenRouter Error: Failed to start video job (HTTP {submit_resp.status_code}). {detail}"
+
+        try:
+            job = submit_resp.json()
+        except Exception as exc:
+            return f"OpenRouter Error: Video submit returned non-JSON response: {exc}"
+
+        job_id = job.get("id")
+        polling_url = job.get("polling_url") or (f"{self.videos_url}/{job_id}" if job_id else None)
+        if not polling_url:
+            return "OpenRouter Error: Video submit returned no polling URL."
+
+        deadline = time.monotonic() + max(30, int(valves.VIDEO_GENERATION_TIMEOUT))
+        poll_interval = max(2.0, float(valves.VIDEO_POLL_INTERVAL))
+        final = None
+        while time.monotonic() < deadline:
+            if emitter:
+                status_label = job.get("status") or "pending"
+                try:
+                    await emitter(
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Generating video ({status_label})...",
+                                "done": False,
+                            },
+                        }
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(poll_interval)
+            try:
+                poll_resp = self._session.get(
+                    polling_url, headers=headers, timeout=valves.REQUEST_TIMEOUT
+                )
+                poll_resp.raise_for_status()
+                job = poll_resp.json()
+            except requests.exceptions.RequestException as exc:
+                return f"OpenRouter Error: Video polling failed: {exc}"
+            except ValueError as exc:
+                return f"OpenRouter Error: Video polling returned non-JSON response: {exc}"
+
+            status = (job.get("status") or "").lower()
+            if status == "completed":
+                final = job
+                break
+            if status == "failed":
+                err = job.get("error") or {}
+                msg = err.get("message", "unknown") if isinstance(err, dict) else str(err)
+                return f"OpenRouter Error: Video generation failed: {msg}"
+
+        if final is None:
+            return (
+                f"OpenRouter Error: Video generation timed out after "
+                f"{valves.VIDEO_GENERATION_TIMEOUT}s. The job may still be running on "
+                f"OpenRouter — check job id {job_id} via GET {polling_url}."
+            )
+
+        unsigned = final.get("unsigned_urls") or []
+        if not unsigned or not isinstance(unsigned[0], str):
+            return "OpenRouter Error: Video completed but no download URL was returned."
+
+        try:
+            dl_resp = self._session.get(
+                unsigned[0], headers=headers, timeout=valves.REQUEST_TIMEOUT
+            )
+            dl_resp.raise_for_status()
+            video_bytes = dl_resp.content
+        except requests.exceptions.RequestException as exc:
+            return f"OpenRouter Error: Video download failed: {exc}"
+        if not video_bytes:
+            return "OpenRouter Error: Video download returned 0 bytes."
+
+        content_type = "video/mp4"
+        dl_ct = dl_resp.headers.get("Content-Type", "")
+        if dl_ct.startswith("video/"):
+            content_type = dl_ct.split(";", 1)[0].strip()
+
+        new_url = await self._upload_video_to_owui(
+            request, user, metadata, video_bytes, content_type=content_type
+        )
+        if not new_url:
+            # No OWUI runtime context (rare) — fall back to an explanatory
+            # message rather than embedding a signed OpenRouter URL that
+            # would 401 once the user's browser tries to load it.
+            return (
+                "OpenRouter Error: Video generated but could not be persisted to "
+                "Open WebUI storage. Re-run inside an active OWUI chat session."
+            )
+
+        # Strip query string from the URL for cleaner persistence; the
+        # OWUI files endpoint serves the content based on the file id alone.
+        clean_url = new_url.split("?", 1)[0]
+        video_tag = f'<video controls src="{clean_url}" style="max-width:100%"></video>'
+
+        footer = ""
+        usage = final.get("usage") or {}
+        cost = usage.get("cost") if isinstance(usage, dict) else None
+        if valves.SHOW_COST_INFO and cost is not None:
+            try:
+                cost_val = float(cost)
+                symbol = _CURRENCY_SYMBOLS.get(valves.COST_CURRENCY, f"{valves.COST_CURRENCY} ")
+                if cost_val < 0.0001:
+                    cost_str = f"{symbol}{cost_val:.6f}"
+                else:
+                    cost_str = f"{symbol}{cost_val:.4f}"
+                footer = f"\n\n---\n***Video cost:** {cost_str}*"
+            except (TypeError, ValueError):
+                pass
+
+        if valves.SHOW_REMAINING_CREDIT:
+            credit_line = self._format_credit_info(
+                self._fetch_credit_balance(valves), valves.COST_CURRENCY
+            )
+            if credit_line:
+                footer += credit_line
+
+        return f"{video_tag}{footer}"
 
     async def _emit_image_files(self, emitter, message, request=None, user=None, metadata=None) -> bool:
         """Materialize generated image ``data:`` URLs into Open WebUI internal file URLs.
