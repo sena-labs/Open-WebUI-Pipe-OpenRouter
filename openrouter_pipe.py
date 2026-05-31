@@ -142,6 +142,23 @@ _PROVIDER_ICONS = {
     "microsoft": "https://openrouter.ai/images/icons/Microsoft.svg",
     "fireworks": "https://openrouter.ai/images/icons/Fireworks.png",
     "moonshotai": "https://openrouter.ai/images/icons/MoonshotAI.png",
+    # Verified May 2026 — additional OpenRouter-hosted provider icons.
+    "thedrummer": "https://openrouter.ai/images/icons/TheDrummer.png",
+    "ibm-granite": "https://openrouter.ai/images/icons/IBMGranite.svg",
+    "nex-agi": "https://openrouter.ai/images/icons/NexAGI.svg",
+}
+
+# Alias map: maps a model-author slug to a registry / hardcoded slug when
+# OpenRouter splits the author into ``<base>-<suffix>`` namespaces but only
+# the base appears in the icon registry. Looked up after the exact-match and
+# hyphen-stripped attempts in _get_provider_icon.
+_PROVIDER_SLUG_ALIASES = {
+    "bytedance-seed": "bytedance",
+    "rekaai": "reka",
+    "google-vertex": "google",
+    "gemini": "google",
+    "claude": "anthropic",
+    "grok": "x-ai",
 }
 
 
@@ -1690,14 +1707,52 @@ class Pipe:
             )
         return self._provider_registry
 
+    @staticmethod
+    def _generate_letter_icon(provider_key: str) -> str:
+        """Build a deterministic letter-based SVG icon as a ``data:`` URL.
+
+        Used as the FINAL fallback when no hosted icon is available and
+        the registry only exposes a gstatic favicon (which we refuse to
+        embed for privacy unless ``USE_GSTATIC_FAVICONS`` is on).
+
+        - Privacy-safe: emitted inline as a ``data:`` URL, no external
+          request, no Google leak.
+        - Deterministic colour from a SHA256 hash of the provider key so
+          each provider gets a stable, distinct tile.
+        - First letter of the provider key, centred, white-on-colour.
+
+        Returns ``""`` only if the key is empty.
+        """
+        if not provider_key:
+            return ""
+        letter = provider_key[0].upper()
+        if not letter.isalnum():
+            letter = "?"
+        # Stable HSL colour from the first byte of SHA256(key). 65% saturation
+        # / 45% lightness keeps the tile readable behind white text and
+        # produces visually distinct hues across providers.
+        h = hashlib.sha256(provider_key.encode("utf-8")).digest()[0]
+        hue = (h * 360) // 256
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+            f'<rect width="100" height="100" rx="20" fill="hsl({hue}, 65%, 45%)"/>'
+            '<text x="50" y="58" text-anchor="middle" dominant-baseline="middle" '
+            'font-family="system-ui, sans-serif" font-size="56" font-weight="600" '
+            f'fill="white">{letter}</text>'
+            '</svg>'
+        )
+        return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
+
     def _get_provider_icon(self, provider_key: str) -> Optional[str]:
         """Resolve a provider icon URL using the layered fallback chain.
 
-        Order: registry exact match → registry hyphen-stripped →
-        hardcoded ``_PROVIDER_ICONS``. The registry is authoritative because
-        it always reflects OpenRouter's current CDN paths; the hardcoded dict
-        is a reliable offline fallback when the registry is unavailable.
-        Returns ``None`` if no source has it.
+        Order: registry exact match → registry hyphen-stripped → alias
+        rewrite → hardcoded ``_PROVIDER_ICONS`` → generated letter SVG.
+        The registry is authoritative because it always reflects
+        OpenRouter's current CDN paths; the hardcoded dict and the alias
+        map cover providers OpenRouter only exposes as gstatic favicons
+        (which we refuse to embed in privacy mode); the letter-SVG ensures
+        every model surfaces SOME icon instead of OWUI's default tile.
         """
         if not provider_key:
             return None
@@ -1706,13 +1761,32 @@ class Pipe:
         icon = registry.get(key) or registry.get(key.replace("-", ""))
         if icon:
             # gstatic favicons are fetched by the browser on every model render,
-            # leaking the provider's domain to Google.  Privacy-conscious
-            # deployments can disable them (default off) — fall back to the
-            # hardcoded OpenRouter-hosted icon, else no icon (OWUI default).
+            # leaking the provider's domain to Google. Privacy-conscious
+            # deployments can disable them (default off) — try the layered
+            # fallback below instead.
             if icon.startswith("https://t0.gstatic.com/") and not self.valves.USE_GSTATIC_FAVICONS:
-                return _PROVIDER_ICONS.get(key)
-            return icon
-        return _PROVIDER_ICONS.get(key)
+                icon = None
+            else:
+                return icon
+        # Hardcoded list (always wins after registry skip).
+        hard = _PROVIDER_ICONS.get(key)
+        if hard:
+            return hard
+        # Alias rewrite (e.g. bytedance-seed → bytedance).
+        alias = _PROVIDER_SLUG_ALIASES.get(key)
+        if alias:
+            aliased = (
+                _PROVIDER_ICONS.get(alias)
+                or registry.get(alias)
+                or registry.get(alias.replace("-", ""))
+            )
+            if aliased and not (
+                aliased.startswith("https://t0.gstatic.com/")
+                and not self.valves.USE_GSTATIC_FAVICONS
+            ):
+                return aliased
+        # Final fallback: deterministic letter-SVG so every model gets an icon.
+        return self._generate_letter_icon(key)
 
     def _parse_provider_filter(self) -> Optional[set]:
         """Parse MODEL_PROVIDERS valve into a set of lowercase provider names."""

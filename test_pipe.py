@@ -2136,11 +2136,12 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
         "_get_provider_icon: hyphen-strip normalization (x-ai → xai)",
     )
 
-    # Truly unknown provider returns None (registry has no entry)
+    # Truly unknown provider returns a generated letter-SVG data: URL so the
+    # model still surfaces an icon (no more blank tiles in the selector).
     _icon_missing = _pipe_lookup._get_provider_icon("totally-unknown-provider")
     _assert(
-        _icon_missing is None,
-        "_get_provider_icon: unknown provider returns None",
+        _icon_missing and _icon_missing.startswith("data:image/svg+xml;base64,"),
+        "_get_provider_icon: unknown provider falls back to generated letter-SVG",
     )
 
     # Empty/None provider key
@@ -2150,10 +2151,13 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
 _pipe_nogstatic = Pipe()
 _pipe_nogstatic.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_GSTATIC_FAVICONS defaults False
 with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get):
-    # arcee-ai only resolvable via gstatic → suppressed → None (not in hardcoded dict)
+    # arcee-ai only resolvable via gstatic → suppressed → falls back to
+    # generated letter-SVG (privacy-safe, no external request) since it's
+    # not in the hardcoded dict either.
+    _icon_arcee = _pipe_nogstatic._get_provider_icon("arcee-ai")
     _assert(
-        _pipe_nogstatic._get_provider_icon("arcee-ai") is None,
-        "_get_provider_icon: gstatic suppressed when USE_GSTATIC_FAVICONS off",
+        _icon_arcee and _icon_arcee.startswith("data:image/svg+xml;base64,"),
+        "_get_provider_icon: gstatic suppressed → generated letter-SVG fallback",
     )
     # openai is in the hardcoded dict → still resolves even with gstatic off
     _assert(
@@ -2182,9 +2186,10 @@ _assert(
     _pipe_fail._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
     "_get_provider_icon: hardcoded dict still resolves after registry failure",
 )
+_xai_after_fail = _pipe_fail._get_provider_icon("x-ai")
 _assert(
-    _pipe_fail._get_provider_icon("x-ai") is None,
-    "_get_provider_icon: x-ai falls back to None when registry failed",
+    _xai_after_fail and _xai_after_fail.startswith("data:image/svg+xml;base64,"),
+    "_get_provider_icon: x-ai falls back to generated letter-SVG when registry failed",
 )
 
 # 25m. Registry HTTP non-200 → log message; empty dict on first-ever fetch;
@@ -4471,6 +4476,79 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 ))
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
+
+# ── icon coverage: letter-SVG fallback + slug aliases + new hosted icons ─────
+
+_section("icon coverage: letter-SVG + slug aliases + new hosted icons")
+
+# Generated letter-SVG is deterministic and decodable
+import base64 as _b64_ic
+_ico1 = Pipe._generate_letter_icon("nvidia")
+_ico2 = Pipe._generate_letter_icon("nvidia")
+_assert(_ico1 == _ico2, "letter-SVG deterministic for same provider key")
+_assert(_ico1.startswith("data:image/svg+xml;base64,"),
+        "letter-SVG is a data: SVG URL")
+_svg_payload = _b64_ic.b64decode(_ico1.split(",", 1)[1]).decode()
+_assert("<svg" in _svg_payload and "</svg>" in _svg_payload,
+        "decoded payload is valid SVG markup")
+_assert(">N</text>" in _svg_payload,
+        "letter-SVG uses provider initial (N for nvidia)")
+_assert("hsl(" in _svg_payload,
+        "letter-SVG uses HSL color from hash")
+# Different providers → different colors (hash-derived)
+_ico3 = Pipe._generate_letter_icon("zulu")
+_assert(_ico1 != _ico3, "different provider keys → different letter-SVGs")
+# Empty key → empty string (defensive)
+_assert(Pipe._generate_letter_icon("") == "", "empty key → empty fallback")
+# Numeric prefix → first letter is digit, valid as initial
+_ico_num = Pipe._generate_letter_icon("01-something")
+_payload_num = _b64_ic.b64decode(_ico_num.split(",", 1)[1]).decode()
+_assert(">0</text>" in _payload_num, "numeric-prefix key uses '0' as initial")
+# Non-alnum first char → '?'
+_ico_sym = Pipe._generate_letter_icon("@symbol")
+_pl_sym = _b64_ic.b64decode(_ico_sym.split(",", 1)[1]).decode()
+_assert(">?</text>" in _pl_sym, "non-alnum first char falls back to '?'")
+
+# Newly hardcoded provider icons exist and resolve via _get_provider_icon
+import openrouter_pipe as _mp_ic
+for _key, _expected in [
+    ("thedrummer", "https://openrouter.ai/images/icons/TheDrummer.png"),
+    ("ibm-granite", "https://openrouter.ai/images/icons/IBMGranite.svg"),
+    ("nex-agi", "https://openrouter.ai/images/icons/NexAGI.svg"),
+]:
+    _assert(_mp_ic._PROVIDER_ICONS.get(_key) == _expected,
+            f"_PROVIDER_ICONS[{_key}] = {_expected}")
+# And the lookup hits the hardcoded entry even when the registry doesn't have it
+_p_ic = Pipe(); _p_ic._provider_registry = {}; _p_ic._provider_registry_ts = 1e18
+_assert(_p_ic._get_provider_icon("thedrummer") == "https://openrouter.ai/images/icons/TheDrummer.png",
+        "thedrummer resolves to hardcoded URL with empty registry")
+_assert(_p_ic._get_provider_icon("ibm-granite") == "https://openrouter.ai/images/icons/IBMGranite.svg",
+        "ibm-granite resolves to hardcoded URL")
+_assert(_p_ic._get_provider_icon("nex-agi") == "https://openrouter.ai/images/icons/NexAGI.svg",
+        "nex-agi resolves to hardcoded URL")
+
+# Slug aliases: bytedance-seed → bytedance (when bytedance has a registry entry)
+_p_alias = Pipe()
+_p_alias._provider_registry = {"bytedance": "https://example.com/bytedance.svg"}
+_p_alias._provider_registry_ts = 1e18
+_p_alias.valves.USE_GSTATIC_FAVICONS = True  # accept the non-gstatic example
+_alias_icon = _p_alias._get_provider_icon("bytedance-seed")
+_assert(_alias_icon == "https://example.com/bytedance.svg",
+        "bytedance-seed alias resolves to bytedance registry entry")
+# grok → x-ai alias (x-ai registry slug is 'xai' under hyphen-strip)
+_p_alias2 = Pipe()
+_p_alias2._provider_registry = {"xai": "https://example.com/xai.svg"}
+_p_alias2._provider_registry_ts = 1e18
+_p_alias2.valves.USE_GSTATIC_FAVICONS = True
+_grok_icon = _p_alias2._get_provider_icon("grok")
+_assert(_grok_icon == "https://example.com/xai.svg",
+        "grok alias resolves to xai (x-ai stripped) registry entry")
+
+# Letter-SVG fallback never blocks the sync; for unknown provider the icon
+# string is short enough to fit in a model meta record (sanity bound).
+_long_key = "this-is-a-fairly-long-provider-key-for-padding"
+_ico_long = Pipe._generate_letter_icon(_long_key)
+_assert(len(_ico_long) < 2048, "letter-SVG data: URL stays under 2KB")
 
 # ── sprint E MED/LOW finishing: MIME map + key cache + tool cap branch ────────
 
