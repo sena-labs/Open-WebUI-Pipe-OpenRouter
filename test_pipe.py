@@ -2867,13 +2867,16 @@ for _prov_key in _ALL_PROVIDER_KEYS:
         f"provider icon: '{_prov_key}' URL uses /images/icons/",
     )
 
-# Providers without icons should return None (no broken-URL fallback)
-_NO_ICON_PROVIDERS = ["x-ai", "allenai", "nvidia", "databricks", "together",
+# Providers not in the hardcoded _PROVIDER_ICONS fast-path dict should
+# return None via the static helper (the layered fallback chain that
+# delivers domain favicons / letter-SVG runs only inside
+# _get_provider_icon — see the dedicated tests above).
+_NO_ICON_PROVIDERS = ["x-ai", "nvidia", "databricks", "together",
                       "sambanova", "cerebras", "groq", "inflection", "01-ai"]
 for _prov_key in _NO_ICON_PROVIDERS:
     _assert(
         Pipe.get_provider_icon(_prov_key) is None,
-        f"provider icon: '{_prov_key}' → None (no valid icon available)",
+        f"provider icon: '{_prov_key}' → None (not in hardcoded fast-path dict)",
     )
 
 _assert(Pipe.get_provider_icon("unknown-provider") is None, "provider icon: unknown → None")
@@ -4491,6 +4494,74 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
 
+# ── icon coverage 3: 26 hardcoded official brand icons for community providers
+
+_section("icon coverage 3: official brand/HF avatar entries")
+
+import openrouter_pipe as _mp_off
+# 26 newly-hardcoded providers must resolve to a real public icon URL.
+_OFFICIAL = {
+    "nousresearch":          "cdn-avatars.huggingface.co",
+    "bytedance-seed":        "github.com/ByteDance-Seed",
+    "bytedance":             "bytedance.com/favicon.svg",
+    "sao10k":                "cdn-avatars.huggingface.co",
+    "sentence-transformers": "sbert.net/_static/logo.png",
+    "openrouter":            "openrouter.ai/favicon.svg",
+    "inclusionai":           "cdn-avatars.huggingface.co",
+    "baai":                  "cdn-avatars.huggingface.co",
+    "intfloat":              "huggingface.co/avatars/",
+    "tencent":               "cdn-avatars.huggingface.co",
+    "zyphra":                "cdn-avatars.huggingface.co",
+    "thenlper":              "cdn-avatars.huggingface.co",
+    "allenai":               "allenai.org/favicon.ico",
+    "kwaipilot":             "cdn-avatars.huggingface.co",
+    "deepcogito":            "cdn-avatars.huggingface.co",
+    "gryphe":                "cdn-avatars.huggingface.co",
+    "essentialai":           "cdn-avatars.huggingface.co",
+    "undi95":                "cdn-avatars.huggingface.co",
+    "cognitivecomputations": "gravatar.com",
+    "writer":                "cdn-avatars.huggingface.co",
+    "anthracite-org":        "cdn-avatars.huggingface.co",
+    "prime-intellect":       "cdn-avatars.huggingface.co",
+    "canopylabs":            "cdn-avatars.huggingface.co",
+    "hexgrad":               "cdn-avatars.huggingface.co",
+    "sesame":                "cdn-avatars.huggingface.co",
+    "thedrummer":            "openrouter.ai/images/icons/TheDrummer",
+}
+for key, expected_substring in _OFFICIAL.items():
+    url = _mp_off._PROVIDER_ICONS.get(key, "")
+    _assert(url.startswith("https://") and expected_substring in url,
+            f"_PROVIDER_ICONS[{key}] points at {expected_substring}")
+
+# Empty-registry Pipe still resolves via hardcoded dict
+_p_off = Pipe()
+_p_off._provider_registry = {}
+_p_off._provider_registry_ts = 1e18
+for key in ("nousresearch","baai","tencent","writer","allenai","openrouter","sesame"):
+    icon = _p_off._get_provider_icon(key)
+    _assert(icon and icon.startswith("https://"),
+            f"_get_provider_icon({key}) returns the hardcoded official URL with empty registry")
+
+# _is_owui_managed_icon recognises the CDNs we ship as managed so future
+# refreshes can rotate stale URLs without touching user-set custom icons.
+for managed in [
+    "https://cdn-avatars.huggingface.co/v1/production/uploads/abc/def.png",
+    "https://huggingface.co/avatars/abc.svg",
+    "https://github.com/ByteDance-Seed.png",
+    "https://www.gravatar.com/avatar/abc?d=retro",
+    "https://openrouter.ai/favicon.svg",
+    "https://www.sbert.net/_static/logo.png",
+    "https://www.bytedance.com/favicon.svg",
+]:
+    _assert(mod._is_owui_managed_icon(managed),
+            f"_is_owui_managed_icon: managed CDN ({managed.split('/')[2]})")
+
+# User-set custom icons on these same CDNs (with paths beyond what we use)
+# still considered managed (acceptable trade-off — these are all generic
+# CDNs; users wanting absolute persistence pick a different host).
+_assert(not mod._is_owui_managed_icon("https://example.com/custom/icon.svg"),
+        "user-set example.com URL NOT managed")
+
 # ── icon coverage 2: provider-domain favicon fallback (vs gstatic) ───────────
 
 _section("icon coverage 2: provider-domain favicon fallback")
@@ -4614,9 +4685,22 @@ _p_alias = Pipe()
 _p_alias._provider_registry = {"bytedance": "https://example.com/bytedance.svg"}
 _p_alias._provider_registry_ts = 1e18
 _p_alias.valves.USE_GSTATIC_FAVICONS = True  # accept the non-gstatic example
-_alias_icon = _p_alias._get_provider_icon("bytedance-seed")
-_assert(_alias_icon == "https://example.com/bytedance.svg",
-        "bytedance-seed alias resolves to bytedance registry entry")
+# bytedance-seed AND bytedance are now hardcoded; the alias→registry
+# pathway is only exercised when neither hardcoded entry is present.
+# Temporarily drop both so the test can verify the alias-resolution
+# fallback still works as designed.
+import openrouter_pipe as _mp_alias
+_saved_bs = _mp_alias._PROVIDER_ICONS.pop("bytedance-seed", None)
+_saved_b = _mp_alias._PROVIDER_ICONS.pop("bytedance", None)
+try:
+    _alias_icon = _p_alias._get_provider_icon("bytedance-seed")
+    _assert(_alias_icon == "https://example.com/bytedance.svg",
+            "bytedance-seed alias resolves to bytedance registry entry (with hardcoded entries removed)")
+finally:
+    if _saved_bs is not None:
+        _mp_alias._PROVIDER_ICONS["bytedance-seed"] = _saved_bs
+    if _saved_b is not None:
+        _mp_alias._PROVIDER_ICONS["bytedance"] = _saved_b
 # grok → x-ai alias (x-ai registry slug is 'xai' under hyphen-strip)
 _p_alias2 = Pipe()
 _p_alias2._provider_registry = {"xai": "https://example.com/xai.svg"}

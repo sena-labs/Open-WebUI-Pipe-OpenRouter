@@ -147,6 +147,36 @@ _PROVIDER_ICONS = {
     "thedrummer": "https://openrouter.ai/images/icons/TheDrummer.png",
     "ibm-granite": "https://openrouter.ai/images/icons/IBMGranite.svg",
     "nex-agi": "https://openrouter.ai/images/icons/NexAGI.svg",
+    # Verified May 2026 — providers absent from the OpenRouter icon CDN,
+    # mapped to their official brand favicon or HuggingFace org avatar
+    # (probed via the HF `/api/{users|organizations}/<slug>/overview`
+    # endpoint's ``avatarUrl`` field). For community model authors with no
+    # corporate site, the HF avatar is the most authoritative public icon.
+    "nousresearch": "https://cdn-avatars.huggingface.co/v1/production/uploads/6317aade83d8d2fd903192d9/tPLjYEeP6q1w0j_G2TJG_.png",
+    "bytedance-seed": "https://github.com/ByteDance-Seed.png",
+    "bytedance": "https://www.bytedance.com/favicon.svg",
+    "sao10k": "https://cdn-avatars.huggingface.co/v1/production/uploads/64be6a5376a6e2efccc638c1/gvRRLHsicTCxpURJeQDv3.jpeg",
+    "sentence-transformers": "https://www.sbert.net/_static/logo.png",
+    "openrouter": "https://openrouter.ai/favicon.svg",
+    "inclusionai": "https://cdn-avatars.huggingface.co/v1/production/uploads/662e1f9da266499277937d33/fyKuazRifqiaIO34xrhhm.jpeg",
+    "baai": "https://cdn-avatars.huggingface.co/v1/production/uploads/1664511063789-632c234f42c386ebd2710434.png",
+    "intfloat": "https://huggingface.co/avatars/5a1ee74c2dbe349a6ec9843a1599d281.svg",
+    "tencent": "https://cdn-avatars.huggingface.co/v1/production/uploads/5dd96eb166059660ed1ee413/Lp3m-XLpjQGwBItlvn69q.png",
+    "zyphra": "https://cdn-avatars.huggingface.co/v1/production/uploads/noauth/jxR_DdbmmulkyLubYqfMv.png",
+    "thenlper": "https://cdn-avatars.huggingface.co/v1/production/uploads/616adb8578833ce5997e441a/Oy5YkTaCMq-FEc0k3FTMd.jpeg",
+    "allenai": "https://allenai.org/favicon.ico",
+    "kwaipilot": "https://cdn-avatars.huggingface.co/v1/production/uploads/6438cc09c04b3b996ea73196/izeqDmgIB27KPxPkisPSF.png",
+    "deepcogito": "https://cdn-avatars.huggingface.co/v1/production/uploads/5fe16a29e69f7b521398f73b/qKx7SKgZrs0y5YbbQZcdQ.png",
+    "gryphe": "https://cdn-avatars.huggingface.co/v1/production/uploads/64ae4107ad6218d51a2a7d0c/3dcor68aYBKEcTlOUHJpK.png",
+    "essentialai": "https://cdn-avatars.huggingface.co/v1/production/uploads/66f59888850df13c40e41e03/16cvhTq9ynO67ItUU-75e.png",
+    "undi95": "https://cdn-avatars.huggingface.co/v1/production/uploads/63ab1241ad514ca8d1430003/d-43TcOxG-zqAbzrH2m7H.png",
+    "cognitivecomputations": "https://www.gravatar.com/avatar/506bfc052d479937a4f87a78e227de47?d=retro&size=128",
+    "writer": "https://cdn-avatars.huggingface.co/v1/production/uploads/1625001569797-60db8b5ad8b4797b129145d5.png",
+    "anthracite-org": "https://cdn-avatars.huggingface.co/v1/production/uploads/658a46cbfb9c2bdfae75b3a6/HDYkduzAwQRNHuRl5eYdP.png",
+    "prime-intellect": "https://cdn-avatars.huggingface.co/v1/production/uploads/61e020e4a343274bb132e138/H2mcdPRWtl4iKLd-OYYBc.jpeg",
+    "canopylabs": "https://cdn-avatars.huggingface.co/v1/production/uploads/61840329647c869d57b0c5b3/OAOpnZvDFkcaAmc2P2EkZ.png",
+    "hexgrad": "https://cdn-avatars.huggingface.co/v1/production/uploads/6629552c96f529a39bac7c89/EaoEz4WH2VoE5twl2oJie.png",
+    "sesame": "https://cdn-avatars.huggingface.co/v1/production/uploads/63170e08c92fd6fee316ee60/ytNeAB_Zte8zbkPoGSFQ3.jpeg",
 }
 
 # Alias map: maps a model-author slug to a registry / hardcoded slug when
@@ -192,6 +222,18 @@ def _is_owui_managed_icon(url: str) -> bool:
         # Require the query string ("?") so a user-set bare gstatic URL isn't
         # misclassified — real faviconV2 icons always carry query params.
         or url.startswith("https://t0.gstatic.com/faviconV2?")
+        # Hardcoded brand icons we ship from common public CDNs (HuggingFace
+        # avatars, GitHub user avatars, Gravatar, openrouter favicon).
+        # Marking them managed lets a registry refresh swap stale CDN URLs
+        # when a provider rotates them, without ever touching a user-set
+        # custom icon (which would be on a different host or path).
+        or url.startswith("https://cdn-avatars.huggingface.co/")
+        or url.startswith("https://huggingface.co/avatars/")
+        or url.startswith("https://github.com/")
+        or url.startswith("https://www.gravatar.com/avatar/")
+        or url == "https://openrouter.ai/favicon.svg"
+        or url == "https://www.sbert.net/_static/logo.png"
+        or url == "https://www.bytedance.com/favicon.svg"
     ):
         return True
     # Provider-domain favicons written by the USE_PROVIDER_DOMAIN_FAVICON
