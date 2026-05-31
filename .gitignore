@@ -73,3 +73,9 @@ ruvector.db
 # emits — the [a-z]* suffix catches free-form names like 107-kling,
 # 113-mid, 117-mid-clean, etc.
 [0-9][0-9][0-9]-*
+
+# Local-only README variants for the openwebui.com community portal
+# listing (Markdown + plain-text). Kept out of the repo so the canonical
+# README.md stays the single source of truth on GitHub.
+README.owui.md
+README.owui.txt
