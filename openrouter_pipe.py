@@ -171,18 +171,21 @@ def _is_owui_managed_icon(url: str) -> bool:
     """Return True if the icon URL was set by OWUI or our sync logic.
 
     data: URLs are the pipe's own SVG icon that OWUI assigns as default to all
-    manifold child models.  openrouter.ai/images/models/ and
-    openrouter.ai/images/icons/ are the OpenRouter-hosted provider icons we
-    write (the former was the old path, superseded by the latter).
-    t0.gstatic.com/faviconV2 URLs are the gstatic favicons returned by
-    OpenRouter's provider registry for providers without a hosted icon — we
-    write those too as part of icon auto-discovery, so they must remain
-    overwriteable when OpenRouter updates its mapping.  Any other URL is
+    manifold child models. ``/static/favicon.png`` and any ``/static/``
+    asset path are the OWUI server-default placeholders served from the
+    backend (more recent OWUI versions). ``openrouter.ai/images/models/``
+    and ``openrouter.ai/images/icons/`` are the OpenRouter-hosted provider
+    icons we write (the former was the old path, superseded by the latter).
+    ``t0.gstatic.com/faviconV2`` URLs are the gstatic favicons returned by
+    OpenRouter's provider registry for providers without a hosted icon —
+    we write those too as part of icon auto-discovery, so they must remain
+    overwriteable when OpenRouter updates its mapping. Any other URL is
     assumed to be a user-set custom icon and must not be overwritten.
     """
     return (
         not url
         or url.startswith("data:")
+        or url.startswith("/static/")
         or url.startswith("https://openrouter.ai/images/models/")
         or url.startswith("https://openrouter.ai/images/icons/")
         # Require the query string ("?") so a user-set bare gstatic URL isn't
