@@ -1927,7 +1927,7 @@ finally:
 # (OWUI may overwrite the record after pipes() returns; confirmed on next call)
 _pipe_func = Pipe()
 _pipe_func.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
-_pipe_func._function_id = "openrouter_pipe"  # simulate OWUI module naming
+_pipe_func._function_id = "openrouter-pipe"  # simulate OWUI module naming
 _mock_Models_f = MagicMock()
 _mock_Models_f.get_model_by_id.return_value = None  # No existing record yet
 _mock_ModelForm_f = MagicMock()
@@ -1947,11 +1947,11 @@ try:
     # Verify DB lookups used prefixed IDs
     _lookup_ids = [c.args[0] for c in _mock_Models_f.get_model_by_id.call_args_list]
     _assert(
-        "openrouter_pipe.openai/gpt-4o" in _lookup_ids,
+        "openrouter-pipe.openai/gpt-4o" in _lookup_ids,
         "_sync_model_icons: DB lookup uses prefixed ID (openai)",
     )
     _assert(
-        "openrouter_pipe.anthropic/claude-3.5-sonnet" in _lookup_ids,
+        "openrouter-pipe.anthropic/claude-3.5-sonnet" in _lookup_ids,
         "_sync_model_icons: DB lookup uses prefixed ID (anthropic)",
     )
     # Verify insert_new_model was called (since get_model_by_id returned None)
@@ -1963,11 +1963,11 @@ try:
     _form_calls = _mock_ModelForm_f.call_args_list
     _form_ids = [c.kwargs.get("id", "") for c in _form_calls]
     _assert(
-        "openrouter_pipe.openai/gpt-4o" in _form_ids,
+        "openrouter-pipe.openai/gpt-4o" in _form_ids,
         "_sync_model_icons: ModelForm uses prefixed ID (openai)",
     )
     _assert(
-        "openrouter_pipe.anthropic/claude-3.5-sonnet" in _form_ids,
+        "openrouter-pipe.anthropic/claude-3.5-sonnet" in _form_ids,
         "_sync_model_icons: ModelForm uses prefixed ID (anthropic)",
     )
     # After insert (model not yet registered by OWUI), _icons_synced must NOT be updated.
@@ -1982,7 +1982,7 @@ finally:
 # 25g. Existing model with user custom icon → skips overwrite
 _pipe_skip = Pipe()
 _pipe_skip.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
-_pipe_skip._function_id = "openrouter_pipe"  # simulate OWUI module naming
+_pipe_skip._function_id = "openrouter-pipe"  # simulate OWUI module naming
 _mock_Models_s = MagicMock()
 _existing_model = MagicMock()
 _existing_model.meta.profile_image_url = "https://custom-icon.example.com/icon.png"
@@ -2015,7 +2015,7 @@ finally:
 # 25h. Existing model with OWUI default (data: URL) icon → updates with provider icon
 _pipe_update = Pipe()
 _pipe_update.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
-_pipe_update._function_id = "openrouter_pipe"  # simulate OWUI module naming
+_pipe_update._function_id = "openrouter-pipe"  # simulate OWUI module naming
 _mock_Models_u = MagicMock()
 _existing_default = MagicMock()
 _existing_default.name = "GPT-4o"

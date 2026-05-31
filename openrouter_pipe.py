@@ -1368,7 +1368,7 @@ class Pipe:
 
         OpenRouter model IDs use the format ``provider/model`` (e.g.
         ``anthropic/claude-3.5-sonnet``). The manifold prefix added by Open
-        WebUI is a function id without ``/`` (e.g. ``openrouter_pipe``). We
+        WebUI is a function id without ``/`` (e.g. ``openrouter-pipe``). We
         only strip when the text before the first ``.`` contains no ``/`` —
         otherwise the dot is part of the model version (e.g.
         ``claude-3.5-sonnet``) and must be preserved.
@@ -1686,7 +1686,7 @@ class Pipe:
 
         Open WebUI serves model icons from its database, not from the dicts
         returned by ``pipes()``.  OWUI prefixes every pipe model ID with
-        ``{function_id}.`` (e.g. ``openrouter_pipe.openai/gpt-4o``) and the
+        ``{function_id}.`` (e.g. ``openrouter-pipe.openai/gpt-4o``) and the
         frontend requests icons using that prefixed ID.
 
         Called both on cache miss and on subsequent cache hits (until all

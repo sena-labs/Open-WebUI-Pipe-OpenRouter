@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.2] — 2026-05-31
+
+### Changed
+
+- **Function ID renamed `openrouter_pipe` → `openrouter-pipe`** (dash, not underscore). The openwebui.com community portal slugifies the listing title (`OpenRouter Pipe` → `openrouter-pipe`) and rejected the underscored manifest with an "undefined" error on upload. The new ID matches the portal-generated slug, so the published listing now installs cleanly. Internal Python module name (`openrouter_pipe.py`, `import openrouter_pipe`) is unchanged — Python identifiers cannot contain dashes.
+
+### Breaking
+
+- **Existing Admin-Panel installs that registered under the old `openrouter_pipe` ID are not auto-migrated** — Open WebUI keys functions by ID in its database. After updating, the old function row remains active under the old ID; the new `openrouter-pipe` ID will create a fresh function row when re-installed via the portal. To migrate cleanly: copy your Valves config, uninstall the old function, install the new one, paste the config back. No data loss — chat history is tied to the model selector entry, not the function row.
+
+### Docs
+
+- Updated docstring references in `_clean_model_id` and `_sync_model_icons` to use the new dash form when illustrating the OWUI manifold prefix (e.g. `openrouter-pipe.openai/gpt-4o`).
+- Updated 5 `test_pipe.py` simulations of `_function_id` and the prefix-assertion strings to match the new ID.
+
 ## [1.10.1] — 2026-05-31
 
 ### Added
