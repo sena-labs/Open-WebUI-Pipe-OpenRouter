@@ -1345,6 +1345,11 @@ class Pipe:
         # Sync provider icons into Open WebUI's Models database
         if self.valves.SYNC_PROVIDER_ICONS:
             self._sync_model_icons(models)
+            # ALSO patch icons for active OWUI model rows whose ID has our
+            # manifold prefix but no longer appears in the current catalog
+            # (deprecated / withdrawn models OWUI didn't auto-clean). They
+            # otherwise stay on the OWUI default placeholder forever.
+            self._sync_orphan_db_icons()
 
         return models
 
@@ -1565,6 +1570,80 @@ class Pipe:
                 )
 
         return result
+
+    def _sync_orphan_db_icons(self) -> None:
+        """Patch icons for active OWUI model rows whose ID has our manifold
+        prefix but no longer appears in the current pipes() catalog.
+
+        These are typically deprecated / withdrawn models that OpenRouter
+        removed from /models but OWUI never cleaned up — they still appear
+        in the user's model selector and otherwise stick to OWUI's default
+        placeholder icon forever because the regular per-catalog sync only
+        iterates the current pipes() output.
+
+        Reuses ``_get_provider_icon`` so the same fallback chain (registry
+        → hardcoded → alias → domain favicon → letter-SVG) applies, and
+        ``_is_owui_managed_icon`` so user-set custom icons are preserved.
+        """
+        try:
+            from open_webui.models.models import (
+                ModelForm,
+                ModelMeta,
+                ModelParams,
+                Models,
+            )
+        except ImportError:
+            return
+        if not self._function_id:
+            return
+        function_id = self._function_id
+        # Iterate all active models in OWUI's DB that carry our manifold
+        # prefix. ``list_models`` returns ``ModelModel`` objects with
+        # ``id``, ``name``, ``meta``, ``params``, ``is_active`` attributes.
+        try:
+            all_rows = self._resolve_maybe_awaitable(Models.get_all_models())
+        except Exception as exc:
+            print(f"[OpenRouter Pipe] Orphan-icon sweep: list failed: {exc}")
+            return
+        prefix = f"{function_id}."
+        for row in all_rows or []:
+            db_model_id = getattr(row, "id", "") or ""
+            if not db_model_id.startswith(prefix):
+                continue
+            # Active filter when present; default True for older OWUI.
+            if hasattr(row, "is_active") and row.is_active is False:
+                continue
+            # Skip rows that the regular sync already handled this pass.
+            clean_id = db_model_id[len(prefix):]
+            if clean_id in self._icons_synced:
+                continue
+            existing_icon = ""
+            if hasattr(row, "meta") and row.meta:
+                existing_icon = getattr(row.meta, "profile_image_url", "") or ""
+            if existing_icon and not _is_owui_managed_icon(existing_icon):
+                continue
+            # Provider key derivation mirrors the regular sync path.
+            parts = clean_id.split("/", 1)
+            provider_key = parts[0].lstrip("~").lower() if len(parts) > 1 else ""
+            icon_url = self._get_provider_icon(provider_key)
+            if not icon_url or icon_url == existing_icon:
+                continue
+            try:
+                existing_params = ModelParams()
+                if hasattr(row, "params") and row.params:
+                    existing_params = row.params
+                self._resolve_maybe_awaitable(Models.update_model_by_id(
+                    db_model_id,
+                    ModelForm(
+                        id=db_model_id,
+                        name=getattr(row, "name", "") or clean_id,
+                        meta=ModelMeta(profile_image_url=icon_url),
+                        params=existing_params,
+                    ),
+                ))
+                self._icons_synced.add(clean_id)
+            except Exception as exc:
+                print(f"[OpenRouter Pipe] Orphan-icon update failed for {db_model_id}: {exc}")
 
     @staticmethod
     def _resolve_maybe_awaitable(value):
