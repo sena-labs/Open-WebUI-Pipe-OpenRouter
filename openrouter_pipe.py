@@ -25,6 +25,7 @@ import struct
 import time
 import traceback
 from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
+from urllib import parse as urlparse
 from urllib.parse import urlsplit
 
 import requests
@@ -182,7 +183,7 @@ def _is_owui_managed_icon(url: str) -> bool:
     overwriteable when OpenRouter updates its mapping. Any other URL is
     assumed to be a user-set custom icon and must not be overwritten.
     """
-    return (
+    if (
         not url
         or url.startswith("data:")
         or url.startswith("/static/")
@@ -191,7 +192,15 @@ def _is_owui_managed_icon(url: str) -> bool:
         # Require the query string ("?") so a user-set bare gstatic URL isn't
         # misclassified — real faviconV2 icons always carry query params.
         or url.startswith("https://t0.gstatic.com/faviconV2?")
-    )
+    ):
+        return True
+    # Provider-domain favicons written by the USE_PROVIDER_DOMAIN_FAVICON
+    # fallback: ``https://<host>/favicon.ico`` exactly, no path/query
+    # suffix. Treat these as managed so a registry refresh can replace
+    # them when a real hosted icon becomes available. A user-set custom
+    # favicon URL would almost certainly carry a path beyond /favicon.ico
+    # or a query string, so this stays safe.
+    return url.startswith("https://") and url.endswith("/favicon.ico") and url.count("/") == 3
 
 
 def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
@@ -765,6 +774,19 @@ class Pipe:
             default=os.getenv("OPENROUTER_USE_GSTATIC_FAVICONS", "false").lower() == "true",
             description="Allow registry-discovered Google gstatic favicons for providers without an OpenRouter-hosted icon. Off by default: when enabled, the browser fetches these from t0.gstatic.com on every model render, leaking the provider domain to Google",
         )
+        USE_PROVIDER_DOMAIN_FAVICON: bool = Field(
+            default=os.getenv("OPENROUTER_USE_PROVIDER_DOMAIN_FAVICON", "true").lower() == "true",
+            description=(
+                "When the OpenRouter registry only offers a gstatic favicon "
+                "(blocked by USE_GSTATIC_FAVICONS=False) and no hardcoded "
+                "OpenRouter-hosted icon exists, fall back to "
+                "https://<provider-domain>/favicon.ico (extracted from the "
+                "gstatic URL's `url=` query parameter). Privacy-preferable to "
+                "gstatic — the favicon request still hits the provider's CDN "
+                "but never traverses Google. The deterministic letter-SVG is "
+                "used only if this is also disabled or no domain is known."
+            ),
+        )
         REQUEST_TIMEOUT: int = Field(
             default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
             gt=0,
@@ -993,6 +1015,13 @@ class Pipe:
         # request. The cache invalidates automatically when the admin
         # rotates the key (different ciphertext → cache miss → re-decrypt).
         self._auth_header_cache: dict = {}
+        # Provider slug → website domain extracted from OpenRouter's
+        # gstatic favicon URLs. Populated alongside ``_provider_registry``
+        # during _load_provider_registry. Used by _get_provider_icon to
+        # serve a privacy-friendlier favicon from the provider's own
+        # domain when the gstatic-Google leak is disabled but we still
+        # want a real brand mark.
+        self._provider_domain_cache: dict = {}
         # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
@@ -1685,6 +1714,7 @@ class Pipe:
             return self._provider_registry
 
         registry: dict = {}
+        domains: dict = {}
         success = False
         try:
             resp = self._session.get(
@@ -1705,6 +1735,24 @@ class Pipe:
                         if not _is_safe_url(icon):
                             continue
                         registry[slug] = icon
+                        # When the registry serves a gstatic favicon, the
+                        # original site URL is embedded in the ``url=``
+                        # query param. Extract it so we can serve a
+                        # privacy-friendlier favicon from the provider's
+                        # own domain (USE_PROVIDER_DOMAIN_FAVICON valve).
+                        if "gstatic.com/faviconV2" in icon:
+                            try:
+                                qs = urlparse.parse_qs(urlsplit(icon).query)
+                                site = (qs.get("url") or [""])[0]
+                                if site and _is_safe_url(site):
+                                    host = (urlsplit(site).hostname or "").lower()
+                                    if host:
+                                        domains[slug] = host
+                                        compact_d = slug.replace("-", "")
+                                        if compact_d and compact_d != slug:
+                                            domains.setdefault(compact_d, host)
+                            except Exception:
+                                pass
                         # Also index by hyphen-stripped slug — model-author IDs
                         # like ``x-ai`` map to provider slug ``xai``.
                         compact = slug.replace("-", "")
@@ -1724,6 +1772,7 @@ class Pipe:
         if success:
             # Successful fetch — update the cached registry and start the full TTL.
             self._provider_registry = registry
+            self._provider_domain_cache = domains
             self._provider_registry_ts = now
         else:
             # Failed fetch (non-200 or network error): preserve any previously-good
@@ -1815,6 +1864,22 @@ class Pipe:
                 and not self.valves.USE_GSTATIC_FAVICONS
             ):
                 return aliased
+        # Provider-domain favicon: when gstatic is blocked but the registry
+        # entry includes the original provider URL, fetch that domain's
+        # favicon instead. The request still leaks the provider's domain to
+        # itself (already implied by the model selection), but no Google
+        # middleman is involved.
+        if self.valves.USE_PROVIDER_DOMAIN_FAVICON:
+            domain = (
+                self._provider_domain_cache.get(key)
+                or self._provider_domain_cache.get(key.replace("-", ""))
+                or (
+                    self._provider_domain_cache.get(alias)
+                    if alias else None
+                )
+            )
+            if domain:
+                return f"https://{domain}/favicon.ico"
         # Final fallback: deterministic letter-SVG so every model gets an icon.
         return self._generate_letter_icon(key)
 

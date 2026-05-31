@@ -2152,17 +2152,31 @@ _pipe_nogstatic = Pipe()
 _pipe_nogstatic.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_GSTATIC_FAVICONS defaults False
 with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get):
     # arcee-ai only resolvable via gstatic → suppressed → falls back to
-    # generated letter-SVG (privacy-safe, no external request) since it's
-    # not in the hardcoded dict either.
+    # the provider's own favicon URL extracted from the gstatic URL's
+    # `url=` query parameter (USE_PROVIDER_DOMAIN_FAVICON default True).
     _icon_arcee = _pipe_nogstatic._get_provider_icon("arcee-ai")
     _assert(
-        _icon_arcee and _icon_arcee.startswith("data:image/svg+xml;base64,"),
-        "_get_provider_icon: gstatic suppressed → generated letter-SVG fallback",
+        _icon_arcee == "https://www.arcee.ai/favicon.ico",
+        "_get_provider_icon: gstatic suppressed → provider-domain favicon",
     )
     # openai is in the hardcoded dict → still resolves even with gstatic off
     _assert(
         _pipe_nogstatic._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
         "_get_provider_icon: hardcoded icon still returned with gstatic off",
+    )
+
+# 25k3. USE_PROVIDER_DOMAIN_FAVICON OFF → falls back to letter-SVG
+_pipe_no_domain = Pipe()
+_pipe_no_domain.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="test-key",
+    USE_GSTATIC_FAVICONS=False,
+    USE_PROVIDER_DOMAIN_FAVICON=False,
+)
+with patch.object(_pipe_no_domain._session, "get", side_effect=_counting_reg_get):
+    _icon_arcee_off = _pipe_no_domain._get_provider_icon("arcee-ai")
+    _assert(
+        _icon_arcee_off and _icon_arcee_off.startswith("data:image/svg+xml;base64,"),
+        "_get_provider_icon: domain fallback off + gstatic off → letter-SVG",
     )
 
 # 25l. Registry network failure → cached empty dict, no retry within TTL window
@@ -4476,6 +4490,74 @@ _vg_429 = asyncio.run(_p_429._run_video_generation(
 ))
 _assert("Rate limited" in _vg_429 and "429" in _vg_429,
         "video 429 maps to Rate limited message")
+
+# ── icon coverage 2: provider-domain favicon fallback (vs gstatic) ───────────
+
+_section("icon coverage 2: provider-domain favicon fallback")
+
+# Registry payload simulating real OpenRouter gstatic responses where the
+# original site URL is embedded in the query string.
+_dom_payload = {
+    "data": [
+        {"slug": "openai", "name": "OpenAI", "icon": {"url": "/images/icons/OpenAI.svg"}},
+        {"slug": "nvidia", "name": "NVIDIA",
+         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://www.nvidia.com/en-us/&size=128"}},
+        {"slug": "z-ai", "name": "Z.ai",
+         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://z.ai/model-api&size=128"}},
+        {"slug": "xai", "name": "xAI",
+         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"}},
+    ]
+}
+_mock_dom = MagicMock(); _mock_dom.status_code = 200; _mock_dom.json.return_value = _dom_payload
+def _dom_get(*a, **kw): return _mock_dom
+
+# Domain extraction populates _provider_domain_cache.
+_p_dom = Pipe()
+_p_dom.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_PROVIDER_DOMAIN_FAVICON default True
+with patch.object(_p_dom._session, "get", side_effect=_dom_get):
+    _p_dom._load_provider_registry()
+_assert(_p_dom._provider_domain_cache.get("nvidia") == "www.nvidia.com",
+        "domain extracted: nvidia → www.nvidia.com")
+_assert(_p_dom._provider_domain_cache.get("z-ai") == "z.ai",
+        "domain extracted: z-ai → z.ai")
+_assert(_p_dom._provider_domain_cache.get("xai") == "x.ai",
+        "domain extracted: xai → x.ai")
+# Hyphen-stripped slug also indexed
+_assert(_p_dom._provider_domain_cache.get("zai") == "z.ai",
+        "hyphen-stripped variant also in domain cache")
+
+# Lookup flow: gstatic blocked → returns provider favicon URL
+_p_dom2 = Pipe()
+_p_dom2.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", USE_GSTATIC_FAVICONS=False)
+with patch.object(_p_dom2._session, "get", side_effect=_dom_get):
+    _assert(_p_dom2._get_provider_icon("nvidia") == "https://www.nvidia.com/favicon.ico",
+            "nvidia → provider favicon (USE_GSTATIC off, USE_PROVIDER_DOMAIN_FAVICON on)")
+    _assert(_p_dom2._get_provider_icon("z-ai") == "https://z.ai/favicon.ico",
+            "z-ai → provider favicon")
+    # x-ai (model author) hyphen-strips to xai → registry has xai → extracts x.ai
+    _assert(_p_dom2._get_provider_icon("x-ai") == "https://x.ai/favicon.ico",
+            "x-ai author slug → x.ai favicon via hyphen-strip")
+    # openai hardcoded — provider-domain fallback skipped
+    _assert(_p_dom2._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+            "openai still uses hardcoded URL")
+
+# Provider not in registry + USE_PROVIDER_DOMAIN_FAVICON on → letter-SVG (no domain known)
+_p_dom3 = Pipe()
+_p_dom3.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
+with patch.object(_p_dom3._session, "get", side_effect=_dom_get):
+    _icon_unk = _p_dom3._get_provider_icon("totally-unknown")
+    _assert(_icon_unk and _icon_unk.startswith("data:image/svg+xml;base64,"),
+            "unknown provider without domain → letter-SVG")
+
+# _is_owui_managed_icon recognises provider-domain favicons as managed
+_assert(mod._is_owui_managed_icon("https://www.nvidia.com/favicon.ico"),
+        "_is_owui_managed_icon: provider-domain /favicon.ico → True")
+_assert(mod._is_owui_managed_icon("https://x.ai/favicon.ico"),
+        "_is_owui_managed_icon: short-host /favicon.ico → True")
+_assert(not mod._is_owui_managed_icon("https://custom.example.com/icons/special.svg"),
+        "_is_owui_managed_icon: user-set custom URL still NOT managed")
+_assert(not mod._is_owui_managed_icon("https://example.com/some/path/favicon.ico"),
+        "_is_owui_managed_icon: favicon.ico nested inside a path → NOT managed (probably user-set)")
 
 # ── icon coverage: letter-SVG fallback + slug aliases + new hosted icons ─────
 
