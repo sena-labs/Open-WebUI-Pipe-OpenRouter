@@ -4516,11 +4516,11 @@ import openrouter_pipe as _mp_off
 # 26 newly-hardcoded providers must resolve to a real public icon URL.
 _OFFICIAL = {
     "nousresearch":          "cdn-avatars.huggingface.co",
-    "bytedance-seed":        "github.com/ByteDance-Seed",
-    "bytedance":             "bytedance.com/favicon.svg",
+    "bytedance-seed":        "cdn-avatars.huggingface.co",
+    "bytedance":             "cdn-avatars.huggingface.co",
     "sao10k":                "cdn-avatars.huggingface.co",
     "sentence-transformers": "sbert.net/_static/logo.png",
-    "openrouter":            "openrouter.ai/favicon.svg",
+    "openrouter":            "openrouter.ai/apple-touch-icon.png",
     "inclusionai":           "cdn-avatars.huggingface.co",
     "baai":                  "cdn-avatars.huggingface.co",
     "intfloat":              "huggingface.co/avatars/",

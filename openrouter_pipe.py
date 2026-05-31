@@ -153,11 +153,11 @@ _PROVIDER_ICONS = {
     # endpoint's ``avatarUrl`` field). For community model authors with no
     # corporate site, the HF avatar is the most authoritative public icon.
     "nousresearch": "https://cdn-avatars.huggingface.co/v1/production/uploads/6317aade83d8d2fd903192d9/tPLjYEeP6q1w0j_G2TJG_.png",
-    "bytedance-seed": "https://github.com/ByteDance-Seed.png",
-    "bytedance": "https://www.bytedance.com/favicon.svg",
+    "bytedance-seed": "https://cdn-avatars.huggingface.co/v1/production/uploads/6535c9e88bde2fae19b6fb25/flkDUqd_YEuFsjeNET3r-.png",
+    "bytedance": "https://cdn-avatars.huggingface.co/v1/production/uploads/6535c9e88bde2fae19b6fb25/0clr54wj5Ly-RkYU9OXPp.png",
     "sao10k": "https://cdn-avatars.huggingface.co/v1/production/uploads/64be6a5376a6e2efccc638c1/gvRRLHsicTCxpURJeQDv3.jpeg",
     "sentence-transformers": "https://www.sbert.net/_static/logo.png",
-    "openrouter": "https://openrouter.ai/favicon.svg",
+    "openrouter": "https://openrouter.ai/apple-touch-icon.png",
     "inclusionai": "https://cdn-avatars.huggingface.co/v1/production/uploads/662e1f9da266499277937d33/fyKuazRifqiaIO34xrhhm.jpeg",
     "baai": "https://cdn-avatars.huggingface.co/v1/production/uploads/1664511063789-632c234f42c386ebd2710434.png",
     "intfloat": "https://huggingface.co/avatars/5a1ee74c2dbe349a6ec9843a1599d281.svg",
@@ -193,6 +193,12 @@ _PROVIDER_ICONS = {
     "z-ai": "https://cdn-avatars.huggingface.co/v1/production/uploads/62dc173789b4cf157d36ebee/i_pxzM2ZDo3Ub-BEgIkE9.png",
     "alfredpros": "https://cdn-avatars.huggingface.co/v1/production/uploads/1664992250278-noauth.jpeg",
     "upstage": "https://cdn-avatars.huggingface.co/v1/production/uploads/649144feeb13c70f7671c603/bUxWC5jKltd-MyrrCNCv5.png",
+    # Providers whose website /favicon.ico returns text/html (SPA index) or
+    # empty bytes — provider-domain favicon fallback is useless for them
+    # because OWUI's frontend would render a broken image. HEAD-checked
+    # May 2026 against the HuggingFace avatar URL instead.
+    "ai21": "https://cdn-avatars.huggingface.co/v1/production/uploads/67baf6e5489cb4dc98a4bff4/9Rkvk1VGhK1woxWvhqDyb.png",
+    "mancer": "https://huggingface.co/avatars/6ac61107e7607ba38d7a51dffb0b4702.svg",
 }
 
 # Alias map: maps a model-author slug to a registry / hardcoded slug when
@@ -248,6 +254,7 @@ def _is_owui_managed_icon(url: str) -> bool:
         or url.startswith("https://github.com/")
         or url.startswith("https://www.gravatar.com/avatar/")
         or url == "https://openrouter.ai/favicon.svg"
+        or url == "https://openrouter.ai/apple-touch-icon.png"
         or url == "https://www.sbert.net/_static/logo.png"
         or url == "https://www.bytedance.com/favicon.svg"
     ):
