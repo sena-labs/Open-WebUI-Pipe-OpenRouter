@@ -2151,14 +2151,21 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
 _pipe_nogstatic = Pipe()
 _pipe_nogstatic.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_GSTATIC_FAVICONS defaults False
 with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get):
-    # arcee-ai only resolvable via gstatic → suppressed → falls back to
-    # the provider's own favicon URL extracted from the gstatic URL's
-    # `url=` query parameter (USE_PROVIDER_DOMAIN_FAVICON default True).
-    _icon_arcee = _pipe_nogstatic._get_provider_icon("arcee-ai")
-    _assert(
-        _icon_arcee == "https://www.arcee.ai/favicon.ico",
-        "_get_provider_icon: gstatic suppressed → provider-domain favicon",
-    )
+    # arcee-ai is now hardcoded after the May-2026 icon expansion, so the
+    # hardcoded-table lookup wins over the domain-favicon fallback even
+    # with gstatic suppressed. Pop it temporarily so the test exercises
+    # the gstatic→domain-favicon path it was designed to verify.
+    import openrouter_pipe as _mp_test_ng
+    _saved_arc_hard = _mp_test_ng._PROVIDER_ICONS.pop("arcee-ai", None)
+    try:
+        _icon_arcee = _pipe_nogstatic._get_provider_icon("arcee-ai")
+        _assert(
+            _icon_arcee == "https://www.arcee.ai/favicon.ico",
+            "_get_provider_icon: gstatic suppressed → provider-domain favicon",
+        )
+    finally:
+        if _saved_arc_hard is not None:
+            _mp_test_ng._PROVIDER_ICONS["arcee-ai"] = _saved_arc_hard
     # openai is in the hardcoded dict → still resolves even with gstatic off
     _assert(
         _pipe_nogstatic._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
@@ -2173,11 +2180,18 @@ _pipe_no_domain.valves = Pipe.Valves(
     USE_PROVIDER_DOMAIN_FAVICON=False,
 )
 with patch.object(_pipe_no_domain._session, "get", side_effect=_counting_reg_get):
-    _icon_arcee_off = _pipe_no_domain._get_provider_icon("arcee-ai")
-    _assert(
-        _icon_arcee_off and _icon_arcee_off.startswith("data:image/svg+xml;base64,"),
-        "_get_provider_icon: domain fallback off + gstatic off → letter-SVG",
-    )
+    # Same trick: drop the hardcoded arcee-ai entry for this assertion.
+    import openrouter_pipe as _mp_test_nd
+    _saved_arc_hard2 = _mp_test_nd._PROVIDER_ICONS.pop("arcee-ai", None)
+    try:
+        _icon_arcee_off = _pipe_no_domain._get_provider_icon("arcee-ai")
+        _assert(
+            _icon_arcee_off and _icon_arcee_off.startswith("data:image/svg+xml;base64,"),
+            "_get_provider_icon: domain fallback off + gstatic off → letter-SVG",
+        )
+    finally:
+        if _saved_arc_hard2 is not None:
+            _mp_test_nd._PROVIDER_ICONS["arcee-ai"] = _saved_arc_hard2
 
 # 25l. Registry network failure → cached empty dict, no retry within TTL window
 _pipe_fail = Pipe()
@@ -2872,7 +2886,7 @@ for _prov_key in _ALL_PROVIDER_KEYS:
 # delivers domain favicons / letter-SVG runs only inside
 # _get_provider_icon — see the dedicated tests above).
 _NO_ICON_PROVIDERS = ["x-ai", "nvidia", "databricks", "together",
-                      "sambanova", "cerebras", "groq", "inflection", "01-ai"]
+                      "sambanova", "cerebras", "groq", "01-ai"]
 for _prov_key in _NO_ICON_PROVIDERS:
     _assert(
         Pipe.get_provider_icon(_prov_key) is None,
@@ -4601,13 +4615,22 @@ _assert(_p_dom._provider_domain_cache.get("zai") == "z.ai",
 _p_dom2 = Pipe()
 _p_dom2.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", USE_GSTATIC_FAVICONS=False)
 with patch.object(_p_dom2._session, "get", side_effect=_dom_get):
-    _assert(_p_dom2._get_provider_icon("nvidia") == "https://www.nvidia.com/favicon.ico",
-            "nvidia → provider favicon (USE_GSTATIC off, USE_PROVIDER_DOMAIN_FAVICON on)")
-    _assert(_p_dom2._get_provider_icon("z-ai") == "https://z.ai/favicon.ico",
-            "z-ai → provider favicon")
-    # x-ai (model author) hyphen-strips to xai → registry has xai → extracts x.ai
-    _assert(_p_dom2._get_provider_icon("x-ai") == "https://x.ai/favicon.ico",
-            "x-ai author slug → x.ai favicon via hyphen-strip")
+    # nvidia and x-ai aren't hardcoded → domain favicon wins. z-ai IS now
+    # hardcoded (HF avatar) → pop it to verify the fallback path still
+    # works as designed when no hardcoded entry exists.
+    import openrouter_pipe as _mp_test_dom
+    _saved_z = _mp_test_dom._PROVIDER_ICONS.pop("z-ai", None)
+    try:
+        _assert(_p_dom2._get_provider_icon("nvidia") == "https://www.nvidia.com/favicon.ico",
+                "nvidia → provider favicon (USE_GSTATIC off, USE_PROVIDER_DOMAIN_FAVICON on)")
+        _assert(_p_dom2._get_provider_icon("z-ai") == "https://z.ai/favicon.ico",
+                "z-ai → provider favicon (hardcoded entry removed for test)")
+        # x-ai (model author) hyphen-strips to xai → registry has xai → extracts x.ai
+        _assert(_p_dom2._get_provider_icon("x-ai") == "https://x.ai/favicon.ico",
+                "x-ai author slug → x.ai favicon via hyphen-strip")
+    finally:
+        if _saved_z is not None:
+            _mp_test_dom._PROVIDER_ICONS["z-ai"] = _saved_z
     # openai hardcoded — provider-domain fallback skipped
     _assert(_p_dom2._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
             "openai still uses hardcoded URL")

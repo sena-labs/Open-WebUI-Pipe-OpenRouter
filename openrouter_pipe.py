@@ -177,6 +177,20 @@ _PROVIDER_ICONS = {
     "canopylabs": "https://cdn-avatars.huggingface.co/v1/production/uploads/61840329647c869d57b0c5b3/OAOpnZvDFkcaAmc2P2EkZ.png",
     "hexgrad": "https://cdn-avatars.huggingface.co/v1/production/uploads/6629552c96f529a39bac7c89/EaoEz4WH2VoE5twl2oJie.png",
     "sesame": "https://cdn-avatars.huggingface.co/v1/production/uploads/63170e08c92fd6fee316ee60/ytNeAB_Zte8zbkPoGSFQ3.jpeg",
+    # Providers that DO appear in OpenRouter's registry as gstatic favicons
+    # but whose extracted website URL returns a 404 on /favicon.ico (so
+    # USE_PROVIDER_DOMAIN_FAVICON can't help). HEAD-checked May 2026.
+    # Resolved via the same HuggingFace API lookup as the entries above.
+    "inflection": "https://cdn-avatars.huggingface.co/v1/production/uploads/noauth/MHmBn86vnJsYkW56rXoIK.png",
+    "baidu": "https://cdn-avatars.huggingface.co/v1/production/uploads/64f187a2cc1c03340ac30498/TYYUxK8xD1AxExFMWqbZD.png",
+    "stepfun": "https://cdn-avatars.huggingface.co/v1/production/uploads/644f7e6233ac8f46fa0b9e26/CmF2ocXhkr2UtHXgmwq7-.png",
+    "rekaai": "https://cdn-avatars.huggingface.co/v1/production/uploads/67cfd5c7a9e354203d6904ec/ArJ3mrKcYxCEV23zbk7E8.jpeg",
+    "relace": "https://cdn-avatars.huggingface.co/v1/production/uploads/665fa199c42cab782fad690f/F0ZGiyMFntzLaj27v_Rxx.png",
+    "aion-labs": "https://cdn-avatars.huggingface.co/v1/production/uploads/6162fe6070554df7422ef77a/Kg29B09itIWEN8o6YfvW4.png",
+    "arcee-ai": "https://cdn-avatars.huggingface.co/v1/production/uploads/6435718aaaef013d1aec3b8b/GZPnGkfMn8Ino6JbkL4fJ.png",
+    "inception": "https://cdn-avatars.huggingface.co/v1/production/uploads/6429100588215cee63b9334e/YzcaVzr2ZWhmc5e2dgkgC.png",
+    "liquid": "https://cdn-avatars.huggingface.co/v1/production/uploads/61b8e2ba285851687028d395/EsTgVtnM2IqVRKgPdfqcB.png",
+    "z-ai": "https://cdn-avatars.huggingface.co/v1/production/uploads/62dc173789b4cf157d36ebee/i_pxzM2ZDo3Ub-BEgIkE9.png",
 }
 
 # Alias map: maps a model-author slug to a registry / hardcoded slug when
