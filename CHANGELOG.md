@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.4] — 2026-05-31
+
+### Changed
+
+- **Funding source switched to Ko-fi only** — `.github/FUNDING.yml` rewritten to `ko_fi: senalabs`, `funding_url` in both `function.json` and the module-level docstring frontmatter point to `https://ko-fi.com/senalabs`. GitHub Sponsors link removed. No code change; openwebui.com portal re-reads the frontmatter on next sync to surface the new support link.
+
 ## [1.10.3] — 2026-05-31
 
 ### Fixed
