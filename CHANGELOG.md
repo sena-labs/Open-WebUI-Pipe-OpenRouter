@@ -7,20 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.10.2] — 2026-05-31
+## [1.10.3] — 2026-05-31
+
+### Fixed
+
+- **openwebui.com community portal upload — *undefined* error.** Re-grounded in OWUI source instead of the slug visible in the form. `src/lib/utils/index.ts` defines `nameToId` as `name.replace(/[^\w]+/g, '_').toLowerCase()` (`\w = [A-Za-z0-9_]`), so `OpenRouter Pipe` slugifies to `openrouter_pipe` — **underscores are correct, dashes are not**. v1.10.2 had momentarily swapped the id to dashes on a misdiagnosis; this release reverts that change. The real culprit was a stale module-level frontmatter docstring in `openrouter_pipe.py` (parsed by `backend/open_webui/utils/plugin.py:extract_frontmatter` via `^\s*([a-z_]+):\s*(.*)$`): `version: 1.9.0` (last touched at that release) and a description that pre-dated the image/video/audio output flows. When the portal renders the parsed frontmatter alongside the form, missing-or-stale keys surface as a JavaScript `undefined` tooltip on the preview pane.
 
 ### Changed
 
-- **Function ID renamed `openrouter_pipe` → `openrouter-pipe`** (dash, not underscore). The openwebui.com community portal slugifies the listing title (`OpenRouter Pipe` → `openrouter-pipe`) and rejected the underscored manifest with an "undefined" error on upload. The new ID matches the portal-generated slug, so the published listing now installs cleanly. Internal Python module name (`openrouter_pipe.py`, `import openrouter_pipe`) is unchanged — Python identifiers cannot contain dashes.
-
-### Breaking
-
-- **Existing Admin-Panel installs that registered under the old `openrouter_pipe` ID are not auto-migrated** — Open WebUI keys functions by ID in its database. After updating, the old function row remains active under the old ID; the new `openrouter-pipe` ID will create a fresh function row when re-installed via the portal. To migrate cleanly: copy your Valves config, uninstall the old function, install the new one, paste the config back. No data loss — chat history is tied to the model selector entry, not the function row.
+- **Function ID reverted to `openrouter_pipe`.** Reason: see *Fixed* above — matches the portal's actual slugifier. Reason for the revert specifically: v1.10.2's `openrouter-pipe` would have failed the portal's own validation (every existing community pipe in `/f/<user>/<slug>` uses underscores) and would have created a *new* function row in every existing install's OWUI DB, forcing a manual config copy with no upside. Cleaner to keep the historical id.
+- **Module-level frontmatter docstring refreshed** — `version: 1.10.3` and a v1.10.x-accurate description (image / video / audio output flows, SSRF-guarded media downloads, 99.3% icon coverage, `MAX_TOOL_ITERATIONS`, encrypted UserValves keys, atomic routing-set swap). Arrow character `→` replaced with `..` since the OWUI frontmatter parser keeps the literal value but the portal's frontend renderer occasionally chokes on non-ASCII in metadata tooltips.
 
 ### Docs
 
-- Updated docstring references in `_clean_model_id` and `_sync_model_icons` to use the new dash form when illustrating the OWUI manifold prefix (e.g. `openrouter-pipe.openai/gpt-4o`).
-- Updated 5 `test_pipe.py` simulations of `_function_id` and the prefix-assertion strings to match the new ID.
+- Docstring references in `_clean_model_id` and `_sync_model_icons` reverted to `openrouter_pipe.openai/gpt-4o` form.
+- 5 `test_pipe.py` `_function_id` simulations and 2 prefix-assertion strings reverted to `openrouter_pipe.*`. All 939 tests green.
+
+### Breaking note for v1.10.2 testers
+
+If you tagged or installed `1.10.2` between the previous release and this one, your OWUI DB now has a stranded function row under the `openrouter-pipe` id. To clean up: **Admin Panel → Functions** → delete the `openrouter-pipe` entry → install/update `openrouter_pipe` to 1.10.3. Valves config does not migrate automatically — copy it before the delete. No chat history is affected (chat history is keyed on the model selector entry, not the function row).
+
+## [1.10.2] — 2026-05-31  *(superseded by 1.10.3 — do not use)*
+
+Identifier-rename release based on a misread of the OWUI portal slugifier. See 1.10.3 *Fixed* for the corrected root cause. Tag remains in git history for traceability; the published manifest was never accepted by the portal.
 
 ## [1.10.1] — 2026-05-31
 

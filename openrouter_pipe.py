@@ -3,12 +3,12 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://github.com/sponsors/sena-labs
-version: 1.9.0
+version: 1.10.3
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.32.4, pydantic>=2.0
-description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat/TTS/audio/image/embeddings), variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations, auto-discovered provider icons. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY). Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer. Transient 429/5xx retries with Retry-After awareness.
+description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
 """
 
 import asyncio
@@ -1368,7 +1368,7 @@ class Pipe:
 
         OpenRouter model IDs use the format ``provider/model`` (e.g.
         ``anthropic/claude-3.5-sonnet``). The manifold prefix added by Open
-        WebUI is a function id without ``/`` (e.g. ``openrouter-pipe``). We
+        WebUI is a function id without ``/`` (e.g. ``openrouter_pipe``). We
         only strip when the text before the first ``.`` contains no ``/`` —
         otherwise the dot is part of the model version (e.g.
         ``claude-3.5-sonnet``) and must be preserved.
@@ -1686,7 +1686,7 @@ class Pipe:
 
         Open WebUI serves model icons from its database, not from the dicts
         returned by ``pipes()``.  OWUI prefixes every pipe model ID with
-        ``{function_id}.`` (e.g. ``openrouter-pipe.openai/gpt-4o``) and the
+        ``{function_id}.`` (e.g. ``openrouter_pipe.openai/gpt-4o``) and the
         frontend requests icons using that prefixed ID.
 
         Called both on cache miss and on subsequent cache hits (until all
