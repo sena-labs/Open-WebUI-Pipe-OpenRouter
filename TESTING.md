@@ -192,9 +192,12 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 | # | Action | Expected result |
 |---|--------|-----------------|
 | 17.1 | Open the model selector | Models from OpenAI, Anthropic, Google, Meta, etc. show their own icon |
-| 17.2 | Check an unknown provider (e.g. `aion-labs`) | No icon (empty field), no error |
+| 17.2 | Check a community provider with no corporate site (e.g. `alfredpros`, `upstage`) | HuggingFace-avatar icon appears (resolved through the hardcoded `_PROVIDER_ICONS` map) |
 | 17.3 | Leave `USE_GSTATIC_FAVICONS = false` (default) | Providers only resolvable via gstatic show OWUI's default icon (no `t0.gstatic.com` requests) |
 | 17.4 | Set `USE_GSTATIC_FAVICONS = true` | Registry-discovered gstatic favicons appear for extra providers |
+| 17.5 | Default `USE_PROVIDER_DOMAIN_FAVICON = true` for a provider with only a corporate domain (e.g. `cognitivecomputations`) | Provider-domain favicon used as fallback; HEAD-checked once, cached, real image MIME enforced (SPA `text/html` shells discarded) |
+| 17.6 | Set `USE_PROVIDER_DOMAIN_FAVICON = false` for the same provider | Falls through to the deterministic letter-SVG (single-letter colored square) instead of the corporate favicon |
+| 17.7 | Inspect OWUI DB rows for deprecated / withdrawn models after first `pipes()` call | Rows carry the resolved icon (patched by `_sync_orphan_db_icons` even though the model is no longer surfaced by `/models`) |
 
 ---
 

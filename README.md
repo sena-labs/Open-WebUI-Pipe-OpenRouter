@@ -64,7 +64,7 @@ control out of the box.
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — 13 hardcoded fast-path logos plus auto-discovered icons for ~20 more providers (xAI, Inflection, NVIDIA, Arcee, Morph, Cerebras, …) lazy-loaded from OpenRouter's provider registry, all synced directly into Open WebUI's model database.
+- **Provider icons (99.3% real brand coverage)** — 55+ hardcoded fast-path logos (corporate favicons + HuggingFace community avatars) and a five-layer fallback chain (`_PROVIDER_ICONS` → hyphen-strip → `_PROVIDER_SLUG_ALIASES` → OpenRouter registry → provider-domain favicon → deterministic letter-SVG) so every visible model gets a stable icon. Synced directly into Open WebUI's model database via `_sync_orphan_db_icons` (also patches OWUI rows for deprecated/withdrawn models that the regular sync skips).
 - **ZDR (Zero Data Retention)** — filter the catalog to ZDR-capable models (`ZDR_MODELS_ONLY`) and/or enforce ZDR per request (`ZDR_ENFORCE`).
 - **Tool-calling filter** — show all / only / exclude tool-capable models (`TOOL_CALLING_FILTER`).
 - **Provider preferences** — `PROVIDER_ONLY` allowlist, `PROVIDER_QUANTIZATIONS`, `PROVIDER_ALLOW_FALLBACKS`, and `PROVIDER_MAX_PRICE_PROMPT/COMPLETION` price caps.
@@ -225,8 +225,9 @@ documented behaviour — most installs never need to change them.
 | `ENABLE_CACHE_CONTROL` | `OPENROUTER_ENABLE_CACHE_CONTROL` | `false` | Inject Anthropic `cache_control` on the longest message |
 | `ANTHROPIC_PROMPT_CACHE_TTL` | `OPENROUTER_ANTHROPIC_PROMPT_CACHE_TTL` | `5m` | TTL for the Anthropic ephemeral cache breakpoint: `5m` or `1h` |
 | `SHOW_GENERATION_ID` | `OPENROUTER_SHOW_GENERATION_ID` | `false` | Append the OpenRouter generation ID to each response (for `GET /generation?id=` lookups) |
-| `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database |
+| `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database (also runs `_sync_orphan_db_icons` to patch rows for deprecated/withdrawn models the regular sync skips) |
 | `USE_GSTATIC_FAVICONS` | `OPENROUTER_USE_GSTATIC_FAVICONS` | `false` | Allow registry-discovered Google gstatic favicons for providers without an OpenRouter-hosted icon. Off by default (avoids per-render requests to `t0.gstatic.com`) |
+| `USE_PROVIDER_DOMAIN_FAVICON` | `OPENROUTER_USE_PROVIDER_DOMAIN_FAVICON` | `true` | Fallback to the provider's own corporate-domain favicon when no hardcoded / registry / alias icon exists (and gstatic is blocked). HEAD-checked once per provider (cached) and only kept if the response is a real image MIME — SPA shell pages returning `text/html` are discarded so the deterministic letter-SVG fallback runs instead. Disable to skip per-render cross-origin requests to provider domains |
 
 ### Network
 
@@ -291,6 +292,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 | OWUI file upload | `_owui_upload_bytes()` | Single shared helper backing every image / video / audio re-host through OWUI |
 | Security guards | `_is_openrouter_url()`, MIME / size / scheme whitelists | SSRF + auth-leak protection on media downloads, citation URL filter |
 | Enrichment | `_inject_cache_control()`, `_insert_citations()`, `_format_credit_info()` | Anthropic prompt-cache breakpoints, `[n]` → markdown links, opt-in credit footer (pre-warmed off the event loop) |
+| Provider icons | `_get_provider_icon()`, `_generate_letter_icon()`, `_sync_orphan_db_icons()`, `_resolve_maybe_awaitable()` | Five-layer fallback chain (registry → hyphen-strip → `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` → provider-domain favicon → deterministic letter-SVG), OWUI-managed-icon recognition, OWUI ≥ 0.4 async `Models.{get,update,insert}_model_by_id` resolver |
 
 ```text
 Open-WebUI-Pipe-OpenRouter/
