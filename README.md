@@ -3,7 +3,7 @@
 [![Build](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/sena-labs/Open-WebUI-Pipe-OpenRouter?label=release)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/releases/latest)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-868%20%E2%9C%93-brightgreen)](test_pipe.py)
+[![Tests](https://img.shields.io/badge/tests-939%20%E2%9C%93-brightgreen)](test_pipe.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio (input + generation),
@@ -106,7 +106,7 @@ All OpenRouter models will appear in the model selector immediately.
 git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
-python test_pipe.py        # 868 tests — verify everything is green
+python test_pipe.py        # 939 tests — verify everything is green
 ```
 
 ## Usage
@@ -296,7 +296,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 Open-WebUI-Pipe-OpenRouter/
 ├── openrouter_pipe.py      # Main pipe source — install this in Open WebUI
 ├── function.json           # Open WebUI community manifest
-├── test_pipe.py            # Unit test suite (868 tests)
+├── test_pipe.py            # Unit test suite (939 tests)
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
@@ -326,7 +326,7 @@ It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter 
 ## Development
 
 ```bash
-python test_pipe.py                       # Unit tests (868 tests)
+python test_pipe.py                       # Unit tests (939 tests)
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 

@@ -295,7 +295,7 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 868 passed, 0 failed
+- [ ] `python test_pipe.py` → 939 passed, 0 failed
 - [ ] `python integration_test.py` → 44/44
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 400+ models with provider icons

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] — 2026-05-31
+
+### Added
+
+- **Layered icon-resolution fallback chain** — every model in the selector now shows a real brand icon (or, as a last resort, a deterministic letter tile). New order: OpenRouter registry → hyphen-stripped slug → hardcoded `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` rewrite → provider-domain favicon (extracted from the registry's gstatic `url=` query parameter) → generated letter-SVG. Live VPS audit went from 261/408 hosted icons (64%) to **448/451 (99.3%)** — only the three `kwaivgi/kling-*` models remain on letter-SVG because Kuaishou's video team has no public icon source.
+- **41 official brand / HuggingFace-avatar icons added to `_PROVIDER_ICONS`** — covers nousresearch, sao10k, openrouter, sentence-transformers, inclusionai, baai, intfloat, tencent, zyphra, thenlper, allenai, kwaipilot, deepcogito, gryphe, essentialai, undi95, cognitivecomputations, writer, anthracite-org, prime-intellect, canopylabs, hexgrad, sesame, alfredpros, upstage, inflection, baidu, stepfun, rekaai, relace, aion-labs, arcee-ai, inception, liquid, z-ai, ai21, mancer, bytedance, bytedance-seed, thedrummer, ibm-granite, nex-agi. Each URL HEAD-checked against the actual served content type so SPA fallbacks that return `text/html` for missing assets no longer leak through as broken images.
+- **`USE_PROVIDER_DOMAIN_FAVICON` admin valve** (default `true`) — when gstatic is suppressed for privacy and no hardcoded icon exists, fall back to `https://<provider-domain>/favicon.ico` rather than the letter-SVG. Privacy-preferable to gstatic (the favicon request hits the provider directly, no Google middleman).
+- **`_generate_letter_icon` final fallback** — deterministic data: SVG with the provider's initial on an HSL-from-SHA256-of-key background. Privacy-safe (no external request), stable across syncs (no churn on the icon-managed check).
+- **`_sync_orphan_db_icons` sweep** — `pipes()` now also iterates active OWUI model rows whose ID has our manifold prefix but no longer appears in the current catalog (deprecated / withdrawn models OWUI never cleans up). Six visible orphans on the live deployment were stuck on `/static/favicon.png` because the per-catalog sync only walked the current `pipes()` output.
+
+### Fixed
+
+- **`/static/favicon.png` was not recognised as managed** — the OWUI 0.4+ server-default favicon placeholder slipped through `_is_owui_managed_icon` and the regular sync refused to overwrite it. Added `/static/` to the managed-prefix list.
+- **`Models.{get,update,insert}_model_by_id` are async on OWUI ≥ 0.4** — `_sync_model_icons` was sync and the coroutines were silently discarded, so the in-place sync never wrote to the model DB on modern OWUI. New `_resolve_maybe_awaitable` helper drains the coroutine with `asyncio.run` when needed (thread-pool fallback when invoked from inside a running loop).
+- **Provider-domain favicon URLs that returned `text/html` (SPA shell)** — `ai21.com/favicon.ico` (200 but 0 bytes), `bytedance.com/favicon.svg`, `mancer.tech/favicon.ico`, and `openrouter.ai/favicon.svg` all returned the SPA index page instead of an image, so the OWUI selector rendered them as broken-image placeholders. Replaced each with the HuggingFace avatar URL or, for OpenRouter itself, `apple-touch-icon.png` (a real 6.4KB PNG).
+- **Provider slug aliases** — new `_PROVIDER_SLUG_ALIASES` map (`bytedance-seed → bytedance`, `rekaai → reka`, `grok → x-ai`, plus convenience entries for `gemini`/`claude`/`google-vertex`) handles model-author IDs that don't appear in the OpenRouter registry directly.
+
+### Changed
+
+- **`_is_owui_managed_icon` recognises every CDN we ship** — `cdn-avatars.huggingface.co`, `huggingface.co/avatars/`, `github.com/<user>.png`, `gravatar.com/avatar/`, `openrouter.ai/{favicon.svg,apple-touch-icon.png}`, `sbert.net/_static/logo.png`, `bytedance.com/favicon.svg`, plus any top-level `https://<host>/favicon.ico`. Future refreshes can rotate stale CDN URLs without ever touching a user-set custom icon (which would live on a different host).
+- **Module-level `_PROVIDER_DOMAIN_CACHE`** populated alongside the icon registry — the provider website extracted from each gstatic favicon `url=` query param is indexed under both the exact slug and the hyphen-stripped variant.
+
+### Docs
+
+- **README**: expanded TOC to include all configuration subsections (Common valve combinations, Reasoning tokens, Citations, Media Generation, Cost Display, Per-user settings, API key encryption, Tool calling); added a dedicated **Media Generation** valve table documenting `VIDEO_GENERATION_TIMEOUT`, `VIDEO_POLL_INTERVAL`, `AUDIO_OUTPUT_FORMAT`, `AUDIO_OUTPUT_VOICE`; expanded **Common valve combinations** with flux / grok-imagine / Lyria / gpt-audio-mini examples and `SHOW_REMAINING_CREDIT` / `ZDR_ENFORCE` entries; rewrote the Architecture table with the actual live functions (`_non_stream_fetch + _non_stream_with_events` instead of the dead `_non_stream_response`, plus rows for the tool loop, video / audio generation, the shared `_owui_upload_bytes` helper, and the SSRF / size / MIME security guards); added release-version and test-count badges.
+- **Test count updated to 939** across README, TESTING, CONTRIBUTING, and the PR template.
+
+### Tests
+
+- 868 → **939** tests (+71). New coverage for the letter-SVG fallback, provider-domain favicon path, slug aliases, the orphan-DB sweep, the awaitable-resolver helper, the 41 newly hardcoded icon URLs, and the `_is_owui_managed_icon` recognition of the seven CDNs we ship from. All green on Python 3.10–3.13.
+
 ## [1.10.0] — 2026-05-30
 
 ### Added

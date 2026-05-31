@@ -68,10 +68,8 @@ logs/security/
 ruvector.db
 
 # Browser-driven smoke-test artifacts (Chrome MCP saves screenshots/HTML
-# captures keyed by frame number — purely local debug output)
-[0-9][0-9][0-9]-*.html
-[0-9][0-9][0-9]-*.png
-[0-9][0-9][0-9]-*.md
-[0-9][0-9][0-9]-*.txt
-[0-9][0-9][0-9]-rendered
-[0-9][0-9][0-9]-loaded
+# captures keyed by frame number — purely local debug output). Match
+# both extensionless dumps and the four common extensions Chrome MCP
+# emits — the [a-z]* suffix catches free-form names like 107-kling,
+# 113-mid, 117-mid-clean, etc.
+[0-9][0-9][0-9]-*
