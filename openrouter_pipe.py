@@ -191,6 +191,8 @@ _PROVIDER_ICONS = {
     "inception": "https://cdn-avatars.huggingface.co/v1/production/uploads/6429100588215cee63b9334e/YzcaVzr2ZWhmc5e2dgkgC.png",
     "liquid": "https://cdn-avatars.huggingface.co/v1/production/uploads/61b8e2ba285851687028d395/EsTgVtnM2IqVRKgPdfqcB.png",
     "z-ai": "https://cdn-avatars.huggingface.co/v1/production/uploads/62dc173789b4cf157d36ebee/i_pxzM2ZDo3Ub-BEgIkE9.png",
+    "alfredpros": "https://cdn-avatars.huggingface.co/v1/production/uploads/1664992250278-noauth.jpeg",
+    "upstage": "https://cdn-avatars.huggingface.co/v1/production/uploads/649144feeb13c70f7671c603/bUxWC5jKltd-MyrrCNCv5.png",
 }
 
 # Alias map: maps a model-author slug to a registry / hardcoded slug when
