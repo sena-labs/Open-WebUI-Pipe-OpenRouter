@@ -1481,6 +1481,33 @@ class Pipe:
 
         return result
 
+    @staticmethod
+    def _resolve_maybe_awaitable(value):
+        """Resolve a value that may be an awaitable from OWUI's DB layer.
+
+        Open WebUI ≥ 0.4 made ``Models.{get,update,insert}_model_by_id``
+        and ``Users.get_user_by_id`` async. ``_sync_model_icons`` runs
+        synchronously (called from the equally-sync ``pipes()``), and
+        the OWUI runtime invokes ``pipes()`` from a worker thread, so
+        there's no running event loop in this call site — we can safely
+        drain the coroutine with ``asyncio.run``. Older OWUI versions
+        return plain values; pass them through unchanged.
+        """
+        if inspect.iscoroutine(value):
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop — safe to drive a fresh one.
+                return asyncio.run(value)
+            # Inside a running loop (unexpected for pipes()). Off-load
+            # to a worker thread that owns its own loop to avoid the
+            # "asyncio.run() cannot be called from a running event loop"
+            # error.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                return ex.submit(asyncio.run, value).result()
+        return value
+
     def _sync_model_icons(self, models: List[dict]) -> None:
         """Write provider icons into Open WebUI's Models DB.
 
@@ -1537,14 +1564,14 @@ class Pipe:
                 # broken /images/models/ URLs, clear it so OWUI shows its
                 # default icon rather than a broken image.
                 try:
-                    existing = Models.get_model_by_id(db_model_id)
+                    existing = self._resolve_maybe_awaitable(Models.get_model_by_id(db_model_id))
                     if existing and hasattr(existing, "meta") and existing.meta:
                         stale = getattr(existing.meta, "profile_image_url", "") or ""
                         if stale.startswith("https://openrouter.ai/images/models/"):
                             existing_params = ModelParams()
                             if hasattr(existing, "params") and existing.params:
                                 existing_params = existing.params
-                            Models.update_model_by_id(
+                            self._resolve_maybe_awaitable(Models.update_model_by_id(
                                 db_model_id,
                                 ModelForm(
                                     id=db_model_id,
@@ -1556,14 +1583,14 @@ class Pipe:
                                     meta=ModelMeta(profile_image_url=""),
                                     params=existing_params,
                                 ),
-                            )
+                            ))
                 except Exception:
                     pass
                 self._icons_synced.add(model_id)
                 continue
 
             try:
-                existing = Models.get_model_by_id(db_model_id)
+                existing = self._resolve_maybe_awaitable(Models.get_model_by_id(db_model_id))
                 if existing:
                     existing_icon = ""
                     if hasattr(existing, "meta") and existing.meta:
@@ -1587,7 +1614,7 @@ class Pipe:
                     existing_params = ModelParams()
                     if hasattr(existing, "params") and existing.params:
                         existing_params = existing.params
-                    Models.update_model_by_id(
+                    self._resolve_maybe_awaitable(Models.update_model_by_id(
                         db_model_id,
                         ModelForm(
                             id=db_model_id,
@@ -1599,7 +1626,7 @@ class Pipe:
                             meta=ModelMeta(profile_image_url=icon_url),
                             params=existing_params,
                         ),
-                    )
+                    ))
                 else:
                     # Model not yet in DB — best-effort early insert.
                     # OWUI will register models after pipes() returns and may
@@ -1607,7 +1634,7 @@ class Pipe:
                     # The next cache-hit call to _sync_model_icons will find the
                     # model in DB and update it correctly.
                     try:
-                        Models.insert_new_model(
+                        self._resolve_maybe_awaitable(Models.insert_new_model(
                             ModelForm(
                                 id=db_model_id,
                                 name=model.get("name", model_id),
@@ -1615,7 +1642,7 @@ class Pipe:
                                 params=ModelParams(),
                             ),
                             user_id="pipe:openrouter",
-                        )
+                        ))
                     except Exception:
                         pass
                     continue  # do not add to _icons_synced yet
