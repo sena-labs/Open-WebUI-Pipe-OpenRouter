@@ -1161,7 +1161,15 @@ class Pipe:
             # Continue syncing icons on cache hits until all models are confirmed.
             # This resolves the race condition where OWUI registers models (and may
             # overwrite icons) only after the first pipes() call returns.
-            if self.valves.SYNC_PROVIDER_ICONS and len(self._icons_synced) < len(self._models_cache):
+            # Check whether any CATALOG model is still unsynced rather than
+            # comparing set sizes — _icons_synced can also hold orphan IDs
+            # (from _sync_orphan_db_icons), so a raw length comparison can
+            # exceed the catalog count and stop re-syncing prematurely.
+            if self.valves.SYNC_PROVIDER_ICONS and any(
+                m.get("id") not in self._icons_synced
+                for m in self._models_cache
+                if m.get("id") and m.get("id") != "error"
+            ):
                 self._sync_model_icons(self._models_cache)
             return self._models_cache
 
@@ -3454,6 +3462,19 @@ class Pipe:
             yield f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
             state["error"] = True
         except requests.exceptions.HTTPError as exc:
+            # The errored response is the streaming response from
+            # _retryable_request (which does not close it on the final
+            # raise). Cache its body then close it so the pooled
+            # connection isn't leaked — mirrors _stream_response.
+            if exc.response is not None:
+                try:
+                    _ = exc.response.content
+                except Exception:
+                    pass
+                try:
+                    exc.response.close()
+                except Exception:
+                    pass
             yield self._format_http_error(exc)
             state["error"] = True
         except Exception as exc:  # pragma: no cover

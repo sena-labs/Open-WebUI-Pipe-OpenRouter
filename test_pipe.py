@@ -5712,6 +5712,68 @@ _pp_str = _pmm._prepare_payload(_body_str, _pmm.valves)
 _assert(_pp_str["messages"][0]["content"] == "You are concise.", "plain-string content preserved")
 _assert(_pp_str["messages"][1]["content"] == "Hi", "plain-string user content preserved")
 
+# ── Regression: _stream_one_round closes the errored streaming response ───────
+_section("regression: _stream_one_round HTTP-error response cleanup")
+import requests as _rq_sor
+
+
+class _FakeErrResp:
+    def __init__(self):
+        self.status_code = 400
+        self.headers = {}
+        self.content = b"{}"
+        self.closed = False
+
+    def raise_for_status(self):
+        exc = _rq_sor.exceptions.HTTPError("400 Bad Request")
+        exc.response = self
+        raise exc
+
+    def json(self):
+        return {"error": {"message": "bad model"}}
+
+    def iter_lines(self, chunk_size=8192):
+        return iter(())
+
+    def close(self):
+        self.closed = True
+
+
+_sor_pipe = _mod_oo.Pipe()
+_sor_pipe.valves.OPENROUTER_API_KEY = "sk-or-test"
+_sor_pipe.valves.MAX_RETRIES = 0
+_sor_fake = _FakeErrResp()
+with patch.object(_sor_pipe._session, "post", return_value=_sor_fake):
+    _sor_state = {}
+    _sor_out = list(
+        _sor_pipe._stream_one_round({}, {"model": "x", "messages": []}, _sor_pipe.valves, _sor_state)
+    )
+_assert(_sor_state.get("error") is True, "stream round flags error on HTTP 400")
+_assert(any("HTTP 400" in p for p in _sor_out), "stream round yields the HTTP-error message")
+_assert(_sor_fake.closed is True, "errored streaming response is closed (no connection leak)")
+
+# ── Regression: cache-hit icon re-sync ignores orphan IDs in _icons_synced ────
+_section("regression: pipes() cache-hit icon re-sync vs orphan IDs")
+import time as _time_sor
+
+_isync_pipe = _mod_oo.Pipe()
+_isync_pipe.valves.OPENROUTER_API_KEY = "sk-or-test"
+_isync_pipe.valves.SYNC_PROVIDER_ICONS = True
+_isync_pipe._models_cache = [{"id": "a/1"}, {"id": "a/2"}, {"id": "a/3"}]
+_isync_pipe._models_cache_ts = _time_sor.monotonic()
+_isync_pipe._models_cache_key = _isync_pipe._build_cache_key()
+# Orphan IDs inflate the set past the catalog size while a/3 is still unsynced.
+_isync_pipe._icons_synced = {"a/1", "a/2", "orphan/x", "orphan/y"}
+_isync_calls = {"n": 0}
+_isync_pipe._sync_model_icons = lambda models: _isync_calls.__setitem__("n", _isync_calls["n"] + 1)
+_isync_pipe.pipes()
+_assert(_isync_calls["n"] == 1, "re-syncs when a catalog model is unsynced despite orphan inflation")
+# When every catalog model is synced, no re-sync even if orphans linger.
+_isync_pipe._icons_synced = {"a/1", "a/2", "a/3", "orphan/x"}
+_isync_calls["n"] = 0
+_isync_pipe.pipes()
+_assert(_isync_calls["n"] == 0, "no re-sync once all catalog models are confirmed")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
