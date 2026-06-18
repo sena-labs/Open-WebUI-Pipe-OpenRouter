@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.5] — 2026-06-18
+
+### Fixed
+
+- **`ZDR_MODELS_ONLY` returned 0 models — ID mismatch between `/endpoints/zdr` and `/models`** ([#14](https://github.com/sena-labs/Public/issues/14)). OpenRouter's `/endpoints/zdr` returns entries keyed on the `model_id` field (e.g. `anthropic/claude-4.8-opus-20260528`), but `_load_zdr_model_ids()` only read `id`/`model`, so the ZDR set came back empty and every model was filtered out ("No ZDR-capable models available."). Two changes: (1) `_load_zdr_model_ids()` now extracts `model_id` first, falling back to `id`/`model` for forward-compat; (2) the `pipes()` filter compares **both** the short `/models` `id` and the entry's `canonical_slug` against the ZDR set, since the canonical slug is what the ZDR endpoint keys on and frequently differs from the short id.
+
+### Tests
+
+- `19i. ZDR_MODELS_ONLY filter` mock rewritten from the string-list shape (which masked the bug) to the real `/endpoints/zdr` dict shape with `model_id`, plus a `canonical_slug`-only match to guard both fix paths. All 939 tests green.
+
 ## [1.10.4] — 2026-05-31
 
 ### Changed

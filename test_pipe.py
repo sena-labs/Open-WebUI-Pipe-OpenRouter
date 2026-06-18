@@ -1632,15 +1632,24 @@ _section("19i. ZDR_MODELS_ONLY filter")
 
 _mock_zdr_resp = MagicMock()
 _mock_zdr_resp.status_code = 200
+# Real /endpoints/zdr shape: dicts keyed on `model_id` (issue #14). The
+# canonical claude slug here only matches a /models entry via canonical_slug.
 _mock_zdr_resp.json.return_value = {
-    "data": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]
+    "data": [
+        {"model_id": "openai/gpt-4o"},
+        {"model_id": "anthropic/claude-4.8-opus-20260528"},
+    ]
 }
 _mock_zdr_resp.raise_for_status = MagicMock()
 
 _mock_models_zdr = {
     "data": [
         {"id": "openai/gpt-4o", "name": "GPT-4o"},
-        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude"},
+        {
+            "id": "anthropic/claude-opus-4.8",
+            "name": "Claude",
+            "canonical_slug": "anthropic/claude-4.8-opus-20260528",
+        },
         {"id": "google/gemini-2.0-flash-exp", "name": "Gemini"},
     ]
 }
@@ -1662,8 +1671,8 @@ _pipe_zdr._models_cache = None
 with patch.object(_pipe_zdr._session, "get", side_effect=_zdr_router):
     _zdr_models = _pipe_zdr.pipes()
 _zdr_ids = {m["id"] for m in _zdr_models}
-_assert(_zdr_ids == {"openai/gpt-4o", "anthropic/claude-3.5-sonnet"},
-        "ZDR_MODELS_ONLY: catalog narrowed to ZDR-capable IDs")
+_assert(_zdr_ids == {"openai/gpt-4o", "anthropic/claude-opus-4.8"},
+        "ZDR_MODELS_ONLY: catalog narrowed to ZDR-capable IDs (model_id + canonical_slug)")
 
 # Loader caches: no second HTTP call when called twice
 _pipe_zdr2 = Pipe()

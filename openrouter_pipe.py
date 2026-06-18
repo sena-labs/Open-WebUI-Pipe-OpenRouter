@@ -3,7 +3,7 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.10.4
+version: 1.10.5
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
@@ -1268,9 +1268,19 @@ class Pipe:
 
             if zdr_only and zdr_capable_ids is not None:
                 # OpenRouter's /endpoints/zdr returns base IDs (no '~' alias prefix
-                # and no ':variant' suffix). Strip both before comparing.
+                # and no ':variant' suffix). Strip both before comparing. The ZDR
+                # list keys on the canonical slug, which can differ from the short
+                # /models id, so check `canonical_slug` too before excluding.
                 base_id = model_id.lstrip("~").split(":", 1)[0]
-                if base_id not in zdr_capable_ids:
+                canonical = (
+                    str(model.get("canonical_slug") or "")
+                    .lstrip("~")
+                    .split(":", 1)[0]
+                )
+                if (
+                    base_id not in zdr_capable_ids
+                    and canonical not in zdr_capable_ids
+                ):
                     continue
 
             # Deprecation handling: a non-null `expiration_date` means
@@ -2070,7 +2080,14 @@ class Pipe:
                         if isinstance(entry, str):
                             ids.add(entry)
                         elif isinstance(entry, dict):
-                            mid = entry.get("id") or entry.get("model")
+                            # OpenRouter's /endpoints/zdr returns the model
+                            # slug under `model_id` (e.g. "anthropic/claude-..");
+                            # fall back to id/model for forward-compat.
+                            mid = (
+                                entry.get("model_id")
+                                or entry.get("id")
+                                or entry.get("model")
+                            )
                             if isinstance(mid, str) and mid:
                                 ids.add(mid)
             finally:
