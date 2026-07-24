@@ -3,12 +3,12 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.11.0
+version: 1.12.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.32.4, pydantic>=2.0
-description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. TTS/speech models (kokoro, deepgram-aura, gemini-tts, ...) route through the dedicated /api/v1/audio/speech endpoint (text in -> raw mp3 bytes out), re-host the audio, and embed via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
+description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. TTS/speech models (kokoro, deepgram-aura, gemini-tts, ...) route through the dedicated /api/v1/audio/speech endpoint: the spoken text is cleaned first (strip markdown/emoji/code/LaTeX/<details> so the voice reads prose not markup, OWUI-style), split past the ~3900-char provider cap and concatenated back into one clip (raw-PCM providers auto-wrapped as WAV), with per-model voice auto-selection, per-message [voice=NAME] directive, AUDIO_OUTPUT_SPEED, TTS_SOURCE (auto/user/assistant), and an in-memory result cache; re-hosted and embedded via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
 """
 
 import asyncio
@@ -85,6 +85,80 @@ _AUDIO_FORMAT_TO_MIME = {
     "aac": "audio/aac",
     "m4a": "audio/mp4",
 }
+
+# ── TTS text cleaning + splitting ─────────────────────────────────────────────
+# A TTS/speech model reads its `input` verbatim, so raw markdown/emoji/code is
+# spoken aloud ("**bold**" → "asterisk asterisk bold ..."). This mirrors Open
+# WebUI's native TTS pipeline (removeEmojis + removeFormattings + <details>
+# stripping in src/lib/utils/index.ts) so we speak clean prose, and adds LaTeX
+# stripping (a documented gap in OWUI's own path). All patterns are compiled
+# once at import time — cleaning runs on every TTS request.
+_TTS_MAX_CHARS = 3900  # OpenAI-style /audio/speech input cap (~4096) with margin
+
+# Strip <details>…</details> first (reasoning / tool_call / code_interpreter
+# panels) so internal chain-of-thought is never spoken.
+_TTS_DETAILS_RE = re.compile(r"<details[^>]*>.*?</details>", re.DOTALL | re.IGNORECASE)
+# Dependency-free stand-in for JS \p{RGI_Emoji}/gv (Python's re has no RGI
+# property). Broad pictograph / symbol / flag / keycap / ZWJ / VS ranges.
+_TTS_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # CJK symbols, emoji, pictographs, supplemental
+    "\U00002600-\U000027BF"   # misc symbols + dingbats
+    "\U0001F1E6-\U0001F1FF"   # regional indicators (flags)
+    "\U00002190-\U000021FF"   # arrows
+    "\U00002B00-\U00002BFF"   # misc symbols and arrows
+    "\U00002300-\U000023FF"   # misc technical (⌚, ⏰, ▶️ base)
+    "\U0000FE00-\U0000FE0F"   # variation selectors
+    "\U0000200D"               # zero-width joiner
+    "\U000020E3"               # combining enclosing keycap
+    "]+",
+    flags=re.UNICODE,
+)
+_TTS_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")          # drop fenced code blocks
+_TTS_TABLE_ROW_RE = re.compile(r"^\|.*\|$", re.MULTILINE)   # drop markdown table rows
+_TTS_BOLD_RE = re.compile(r"(?:\*\*|__)(.*?)(?:\*\*|__)")   # **b** / __b__ → b
+_TTS_STRIKE_RE = re.compile(r"~~(.*?)~~")                   # ~~s~~ → s
+_TTS_ITALIC_RE = re.compile(r"(?:[*_])(.*?)(?:[*_])")       # *i* / _i_ → i
+_TTS_INLINE_CODE_RE = re.compile(r"`([^`]+)`")             # `code` → code (keep text)
+_TTS_LINK_RE = re.compile(r"!?\[([^\]]*)\](?:\([^)]+\)|\[[^\]]*\])")  # [l](url)/![a](url) → l
+_TTS_REF_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*.*$", re.MULTILINE)     # reference link defs
+_TTS_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)   # ATX header markers
+_TTS_BULLET_RE = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)  # bullet markers
+_TTS_NUMLIST_RE = re.compile(r"^\s*\d+\.\s+", re.MULTILINE)  # numbered-list markers
+_TTS_QUOTE_RE = re.compile(r"^\s*>[> ]*", re.MULTILINE)     # blockquote markers
+_TTS_FOOTNOTE_RE = re.compile(r"\[\^[^\]]*\]")            # footnote refs
+# LaTeX / math — read character-by-character by TTS otherwise. OWUI does NOT
+# strip these; we do. Block forms first so the inline pass can't nibble them.
+_TTS_LATEX_BLOCK_RE = re.compile(r"\$\$[\s\S]*?\$\$")
+_TTS_LATEX_BRACK_RE = re.compile(r"\\\[[\s\S]*?\\\]")
+_TTS_LATEX_PAREN_RE = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
+_TTS_LATEX_INLINE_RE = re.compile(r"\$[^$\n]+\$")
+# Our own media embeds (and their <div> wrapper) — so a TTS reply is never
+# fed back as text to be "spoken" on the next turn (TTS_SOURCE=auto).
+_TTS_MEDIA_EMBED_RE = re.compile(r"<(audio|video)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_TTS_DIV_TAG_RE = re.compile(r"</?div[^>]*>", re.IGNORECASE)
+_TTS_MULTINEWLINE_RE = re.compile(r"\n{2,}")
+_TTS_MULTISPACE_RE = re.compile(r"[ \t]{2,}")
+# Splitting: sentence-ish (after . ! ? or on newlines) vs paragraph (newlines).
+_TTS_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_TTS_PARAGRAPH_SPLIT_RE = re.compile(r"\n+")
+# Optional per-message voice directive, e.g. "[voice=nova] read this".
+_TTS_VOICE_DIRECTIVE_RE = re.compile(r"\[voice\s*=\s*([^\]]+)\]", re.IGNORECASE)
+# Content-Type tokens that mean the provider returned raw PCM despite our mp3
+# request (e.g. Gemini-TTS via OpenRouter). We wrap those in a WAV container.
+_TTS_PCM_CT_TOKENS = ("pcm", "l16", "raw", "x-raw")
+
+
+def _env_float(name: str) -> Optional[float]:
+    """Parse an optional float env var; blank/invalid → None."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
 
 # Allowed citation URL schemes. OWUI emits citation events to the frontend
 # verbatim; ``javascript:``, ``data:``, ``vbscript:`` URLs would let an
@@ -877,7 +951,49 @@ class Pipe:
         )
         AUDIO_OUTPUT_VOICE: str = Field(
             default=os.getenv("OPENROUTER_AUDIO_OUTPUT_VOICE", "alloy"),
-            description="Voice for speech synthesis. Used for gpt-audio (chat-audio) and TTS models (/audio/speech). Voice names are provider-specific, so for a dedicated TTS model the pipe auto-falls back to that model's first advertised voice when this value isn't one it accepts (dynamically read from the model's supported_voices). Set a valid per-model voice to override. Ignored by music models like Lyria. OpenAI voices: alloy, echo, fable, onyx, nova, shimmer.",
+            description="Voice for speech synthesis. Used for gpt-audio (chat-audio) and TTS models (/audio/speech). Voice names are provider-specific, so for a dedicated TTS model the pipe auto-falls back to that model's first advertised voice when this value isn't one it accepts (dynamically read from the model's supported_voices). Set a valid per-model voice to override, or use a per-message '[voice=NAME]' directive. Ignored by music models like Lyria. OpenAI voices: alloy, echo, fable, onyx, nova, shimmer.",
+        )
+        AUDIO_OUTPUT_SPEED: Optional[float] = Field(
+            default=_env_float("OPENROUTER_AUDIO_OUTPUT_SPEED"),
+            description="Playback speed for TTS/speech models (/audio/speech), typically 0.25–4.0. Empty = provider default (1.0). A per-request 'speed' in the body overrides this.",
+        )
+        TTS_SOURCE: str = Field(
+            default=os.getenv("OPENROUTER_TTS_SOURCE", "auto"),
+            description=(
+                "Which text a TTS/speech model reads aloud: 'auto' (the last "
+                "assistant reply if the chat has one, else your latest message), "
+                "'user' (always your latest message), or 'assistant' (always the "
+                "last assistant reply)."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "auto", "label": "Auto (assistant reply, else user)"},
+                        {"value": "user", "label": "User message"},
+                        {"value": "assistant", "label": "Assistant reply"},
+                    ],
+                }
+            },
+        )
+        AUDIO_TTS_SPLIT: str = Field(
+            default=os.getenv("OPENROUTER_AUDIO_TTS_SPLIT", "punctuation"),
+            description=(
+                "How TTS text is split before synthesis (only matters past the "
+                "~3900-char provider cap; chunks are concatenated back into one "
+                "audio clip): 'punctuation' (sentence-ish, default), 'paragraphs', "
+                "or 'none' (whitespace hard-wrap only)."
+            ),
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "punctuation", "label": "Punctuation (sentences)"},
+                        {"value": "paragraphs", "label": "Paragraphs"},
+                        {"value": "none", "label": "None"},
+                    ],
+                }
+            },
         )
         SHOW_COST_INFO: bool = Field(
             default=False,
@@ -1012,6 +1128,9 @@ class Pipe:
         VIDEO_POLL_INTERVAL: Optional[float] = Field(default=None, gt=0)
         AUDIO_OUTPUT_FORMAT: Optional[str] = None
         AUDIO_OUTPUT_VOICE: Optional[str] = None
+        AUDIO_OUTPUT_SPEED: Optional[float] = None
+        TTS_SOURCE: Optional[str] = None
+        AUDIO_TTS_SPLIT: Optional[str] = None
         SHOW_COST_INFO: Optional[bool] = None
         SHOW_GENERATION_ID: Optional[bool] = None
         COST_CURRENCY: Optional[str] = None
@@ -1072,6 +1191,27 @@ class Pipe:
         # per model instead of blindly sending an OpenAI voice everywhere.
         # Reassigned wholesale (atomic under the GIL) on each pipes() refresh.
         self._speech_voices: dict = {}
+        # TTS result cache: {sha256(model|voice|format|speed|split|cleaned text)
+        # → OWUI file URL}. Avoids re-billing + re-synthesizing identical text
+        # on regenerate/re-send. Bounded; cleared wholesale past the cap.
+        self._speech_cache: dict = {}
+        # Model IDs whose catalog `supported_parameters` include tools/tool_choice.
+        # pipe() consults this before forwarding `tools`: a non-tool model 404s
+        # the whole request if tools are attached. Empty = unknown (pre-fetch);
+        # in that case tools are forwarded as before (don't break tool use when
+        # we lack capability data). Swapped atomically on each pipes() refresh.
+        self._tool_capable_ids: frozenset = frozenset()
+        # Same gating for other params OpenRouter treats as HARD routing
+        # constraints (404 'No endpoints found that support X' when unsupported):
+        # structured outputs (response_format json_object/json_schema) and, under
+        # REQUIRE_PARAMETERS, reasoning. Empty set = unknown → don't strip.
+        self._structured_output_ids: frozenset = frozenset()
+        self._reasoning_ids: frozenset = frozenset()
+        # Models that have NO chat-capable endpoint (embeddings / rerank /
+        # transcription): selecting them in the chat picker 404/400s. Maps
+        # id → kind so pipe() can return a clear message instead of the raw
+        # upstream error. (speech/video/audio route via their own flows.)
+        self._nonchat_kind: dict = {}
         # Flip on after pipes() has run at least once for this Pipe
         # instance so pipe() doesn't keep lazy-triggering it on every
         # request when the user happens to have zero audio/video models.
@@ -1264,6 +1404,10 @@ class Pipe:
         audio_ids: set = set()
         speech_ids: set = set()
         speech_voices: dict = {}
+        tool_ids: set = set()
+        struct_ids: set = set()
+        reason_ids: set = set()
+        nonchat_kind: dict = {}
 
         for model in data:
             model_id = model.get("id")
@@ -1365,6 +1509,35 @@ class Pipe:
                         if voices:
                             speech_voices[model_id] = voices
 
+            # Track model-gated capabilities so pipe() never forwards a HARD
+            # routing-constraint param to a model whose endpoints lack it —
+            # OpenRouter 404s the whole request otherwise ("No endpoints found
+            # that support X"), which reads as a broken model.
+            supported_params = model.get("supported_parameters") or []
+            if isinstance(supported_params, list):
+                if any(p in supported_params for p in ("tools", "tool_choice")):
+                    tool_ids.add(model_id)
+                if any(
+                    p in supported_params
+                    for p in ("structured_outputs", "response_format")
+                ):
+                    struct_ids.add(model_id)
+                if any(
+                    p in supported_params
+                    for p in ("reasoning", "include_reasoning", "reasoning_effort")
+                ):
+                    reason_ids.add(model_id)
+
+            # Flag models with NO chat-capable output modality (embeddings /
+            # rerank / transcription): they 404/400 at /chat/completions. speech,
+            # video, audio and image DO have handling, so they're not flagged.
+            if isinstance(out_modalities, list) and out_modalities:
+                nonchat = {"embeddings", "rerank", "transcription", "moderation"}
+                chatty = {"text", "image", "audio", "speech", "video"}
+                kinds = [x for x in out_modalities if x in nonchat]
+                if kinds and not any(x in chatty for x in out_modalities):
+                    nonchat_kind[model_id] = kinds[0]
+
             models.append(model_dict)
 
         # Append virtual variant entries (e.g. openai/gpt-4o:nitro). Variants
@@ -1393,6 +1566,10 @@ class Pipe:
         self._audio_model_ids = frozenset(audio_ids)
         self._speech_model_ids = frozenset(speech_ids)
         self._speech_voices = speech_voices
+        self._tool_capable_ids = frozenset(tool_ids)
+        self._structured_output_ids = frozenset(struct_ids)
+        self._reasoning_ids = frozenset(reason_ids)
+        self._nonchat_kind = nonchat_kind
         self._lazy_populated = True
 
         # Store in cache
@@ -1595,13 +1772,86 @@ class Pipe:
                     )
             return result
 
+        # Non-chat models (embeddings / rerank / transcription) have no
+        # /chat/completions endpoint — OpenRouter 400/404s them. Return a clear,
+        # actionable message instead of the raw upstream error. (speech/video/
+        # audio/image are handled by their own flows above.)
+        _nonchat = self._nonchat_kind.get(model_id)
+        if _nonchat:
+            _endpoint = {
+                "embeddings": "/api/v1/embeddings",
+                "rerank": "/api/v1/rerank",
+                "transcription": "/api/v1/audio/transcriptions",
+                "moderation": "/api/v1/chat/completions moderation flow",
+            }.get(_nonchat, "a dedicated endpoint")
+            return (
+                f"OpenRouter Error: '{model_id}' is a {_nonchat}-type model with no "
+                f"/chat/completions endpoint, so it can't be used in a chat. Call "
+                f"OpenRouter's {_endpoint} endpoint directly instead."
+            )
+
         payload = self._prepare_payload(body, eff)
         headers = self._build_headers(model_id=payload.get("model"), valves=eff)
         stream = body.get("stream", False)
 
+        # A model with no tool-calling endpoint 404s the ENTIRE request if ANY
+        # tool signal reaches it ("No endpoints found that support tool use") —
+        # it appears broken even though it just can't do tools. Strip every
+        # source of that signal for such models: (1) tools/tool_choice that Open
+        # WebUI's native function-calling injected straight into the body (and
+        # that _prepare_payload passes through), and (2) the __tools__-derived
+        # tools array built below. Then the model answers normally.
+        supports_tools = self._model_supports_tools(model_id)
         tools_payload = self._build_tools_payload(__tools__)
+        if not supports_tools:
+            dropped = payload.pop("tools", None)
+            dropped_tc = payload.pop("tool_choice", None)
+            if tools_payload or dropped is not None or dropped_tc is not None:
+                if __event_emitter__:
+                    try:
+                        await __event_emitter__(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "description": f"{model_id} has no tool-calling endpoint — answering without the enabled tool(s).",
+                                    "done": False,
+                                },
+                            }
+                        )
+                    except Exception:
+                        pass
+                print(
+                    f"[OpenRouter Pipe] {model_id} is not tool-capable; stripped "
+                    "tools/tool_choice to avoid a 404."
+                )
+            tools_payload = None
         if tools_payload:
             payload["tools"] = tools_payload
+
+        # response_format (json_object/json_schema) is another HARD routing
+        # constraint: a model whose endpoints lack structured-output support
+        # 404/400s the whole request. Drop it when the model can't do it.
+        if payload.get("response_format") and not self._model_has_cap(
+            model_id, self._structured_output_ids
+        ):
+            payload.pop("response_format", None)
+            print(
+                f"[OpenRouter Pipe] {model_id} has no structured-output endpoint; "
+                "dropped response_format to avoid a 404."
+            )
+
+        # reasoning becomes a hard constraint under provider require_parameters,
+        # and is silently ignored otherwise — drop it for non-reasoning models so
+        # REQUIRE_PARAMETERS=true doesn't 404 (and we don't send dead params).
+        if not self._model_has_cap(model_id, self._reasoning_ids):
+            payload.pop("reasoning", None)
+            payload.pop("include_reasoning", None)
+
+        # Never send a bare tool_choice with no tools present (e.g. TOOL_CHOICE
+        # valve = 'required' on a plain chat) — providers 400 on the orphan
+        # directive. Applies to every model, tool-capable or not.
+        if not payload.get("tools"):
+            payload.pop("tool_choice", None)
 
         if tools_payload and not stream:
             result = await self._run_tools_nonstream(headers, payload, eff, __tools__, __event_emitter__, __request__, __user__, __metadata__)
@@ -2545,6 +2795,25 @@ class Pipe:
                 out.append({"type": "function", "function": spec})
         return out or None
 
+    @staticmethod
+    def _model_has_cap(model_id: str, cap_ids: frozenset) -> bool:
+        """Whether ``model_id`` is in ``cap_ids`` (a per-capability model set).
+
+        Returns True when ``cap_ids`` is empty (unknown — ``pipes()`` hasn't
+        populated or the fetch failed) so we never strip a param blindly; only
+        strip when we POSITIVELY know the model lacks the capability. Virtual
+        variants (``base:nitro``) inherit the base model's capability.
+        """
+        if not cap_ids:
+            return True
+        if model_id in cap_ids:
+            return True
+        return model_id.rsplit(":", 1)[0] in cap_ids
+
+    def _model_supports_tools(self, model_id: str) -> bool:
+        """Whether ``model_id`` has a tool-calling endpoint, per the catalog."""
+        return self._model_has_cap(model_id, self._tool_capable_ids)
+
     async def _execute_tool_calls(self, tool_calls, __tools__, __event_emitter__) -> list:
         """Execute model tool_calls in parallel; return one role:tool message each.
 
@@ -2699,6 +2968,165 @@ class Pipe:
                 if joined:
                     return joined
         return ""
+
+    @staticmethod
+    def _extract_message_text(body: dict, role: str) -> str:
+        """Return the latest message of ``role`` as flat text (str or text parts)."""
+        msgs = body.get("messages") or []
+        for m in reversed(msgs):
+            if not isinstance(m, dict) or m.get("role") != role:
+                continue
+            content = m.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        t = p.get("text")
+                        if isinstance(t, str):
+                            parts.append(t)
+                joined = " ".join(parts).strip()
+                if joined:
+                    return joined
+        return ""
+
+    @staticmethod
+    def _extract_tts_text(body: dict, source: str) -> str:
+        """Pick the text a TTS model should speak, per the TTS_SOURCE valve.
+
+        'user'      → latest user message (echo TTS).
+        'assistant' → latest assistant reply ("read that answer aloud").
+        'auto'      → assistant reply if the chat has one, else the user text.
+        """
+        source = (source or "auto").strip().lower()
+        if source == "user":
+            return Pipe._extract_message_text(body, "user")
+        if source == "assistant":
+            return Pipe._extract_message_text(body, "assistant")
+        # auto: prefer the last assistant reply, BUT skip our own audio/video
+        # embeds (a prior TTS turn) — those aren't text to speak. Fall back to
+        # the user's message when the last assistant turn was such an embed.
+        assistant = Pipe._extract_message_text(body, "assistant")
+        if assistant and ("<audio" in assistant.lower() or "<video" in assistant.lower()):
+            assistant = ""
+        return assistant or Pipe._extract_message_text(body, "user")
+
+    @staticmethod
+    def _parse_voice_directive(text: str) -> tuple:
+        """Extract an optional ``[voice=NAME]`` directive; return (voice, cleaned).
+
+        The directive is removed from the spoken text so it isn't read aloud.
+        Returns (None, text) when absent.
+        """
+        if not text:
+            return (None, text)
+        m = _TTS_VOICE_DIRECTIVE_RE.search(text)
+        if not m:
+            return (None, text)
+        voice = (m.group(1) or "").strip()
+        cleaned = _TTS_VOICE_DIRECTIVE_RE.sub("", text, count=1)
+        return (voice or None, cleaned)
+
+    @staticmethod
+    def _clean_tts_text(text: str) -> str:
+        """Strip markup/emoji/code/LaTeX so a TTS model speaks clean prose.
+
+        Mirrors Open WebUI's removeEmojis + removeFormattings chain (plus
+        <details> stripping and LaTeX removal) so the voice doesn't read
+        "asterisk asterisk", URLs, code, or reasoning panels aloud.
+        """
+        if not text:
+            return ""
+        t = _TTS_DETAILS_RE.sub("", text)      # reasoning/tool_call panels
+        t = _TTS_MEDIA_EMBED_RE.sub("", t)     # our own <audio>/<video> embeds
+        t = _TTS_DIV_TAG_RE.sub("", t)         # their <div> wrappers
+        t = _TTS_EMOJI_RE.sub("", t)           # emoji/pictographs
+        t = _TTS_CODE_FENCE_RE.sub("", t)      # fenced code blocks (dropped)
+        t = _TTS_TABLE_ROW_RE.sub("", t)       # table rows
+        t = _TTS_BOLD_RE.sub(r"\1", t)         # **bold** → bold
+        t = _TTS_STRIKE_RE.sub(r"\1", t)       # ~~s~~ → s
+        t = _TTS_ITALIC_RE.sub(r"\1", t)       # *italic* → italic
+        t = _TTS_INLINE_CODE_RE.sub(r"\1", t)  # `code` → code (keep inner text)
+        t = _TTS_LINK_RE.sub(r"\1", t)         # [label](url) → label
+        t = _TTS_REF_DEF_RE.sub("", t)         # reference link defs
+        t = _TTS_HEADER_RE.sub("", t)          # # headers
+        t = _TTS_BULLET_RE.sub("", t)          # - bullets
+        t = _TTS_NUMLIST_RE.sub("", t)         # 1. numbered lists
+        t = _TTS_QUOTE_RE.sub("", t)           # > blockquotes
+        t = _TTS_FOOTNOTE_RE.sub("", t)        # [^1] footnote refs
+        t = _TTS_LATEX_BLOCK_RE.sub("", t)     # $$...$$
+        t = _TTS_LATEX_BRACK_RE.sub("", t)     # \[...\]
+        t = _TTS_LATEX_PAREN_RE.sub(r"\1", t)  # \(...\) → inner
+        t = _TTS_LATEX_INLINE_RE.sub("", t)    # $...$
+        t = _TTS_MULTINEWLINE_RE.sub("\n", t)  # collapse blank lines
+        t = _TTS_MULTISPACE_RE.sub(" ", t)     # collapse runs of spaces
+        return t.strip()
+
+    @staticmethod
+    def _hardwrap_text(text: str, max_chars: int) -> List[str]:
+        """Split an over-cap string on whitespace into <= max_chars pieces.
+
+        A single token longer than the cap is hard-cut so no piece ever exceeds
+        the provider limit.
+        """
+        out: List[str] = []
+        cur = ""
+        for word in text.split(" "):
+            if not word:
+                continue
+            if not cur:
+                cur = word
+            elif len(cur) + 1 + len(word) <= max_chars:
+                cur += " " + word
+            else:
+                out.append(cur)
+                cur = word
+            while len(cur) > max_chars:
+                out.append(cur[:max_chars])
+                cur = cur[max_chars:]
+        if cur:
+            out.append(cur)
+        return out
+
+    @staticmethod
+    def _split_tts_text(
+        text: str, max_chars: int = _TTS_MAX_CHARS, mode: str = "punctuation"
+    ) -> List[str]:
+        """Split cleaned text into provider-safe chunks (each <= max_chars).
+
+        Mirrors OWUI's response-splitting modes. Splitting only matters past the
+        provider input cap — a short message stays a single chunk. 'punctuation'
+        additionally merges a chunk into the previous one when the previous is
+        tiny (<4 words or <50 chars) to avoid degenerate one-word requests.
+        """
+        if not text or not text.strip():
+            return []
+        mode = (mode or "punctuation").strip().lower()
+        if mode == "none":
+            pieces = [text]
+        elif mode == "paragraphs":
+            pieces = [p for p in _TTS_PARAGRAPH_SPLIT_RE.split(text) if p.strip()]
+        else:  # punctuation
+            raw = [s.strip() for s in _TTS_SENTENCE_SPLIT_RE.split(text) if s and s.strip()]
+            pieces = []
+            for s in raw:
+                if pieces and (
+                    len(pieces[-1].split()) < 4 or len(pieces[-1]) < 50
+                ):
+                    pieces[-1] = pieces[-1] + " " + s
+                else:
+                    pieces.append(s)
+        out: List[str] = []
+        for p in pieces:
+            p = p.strip()
+            if not p:
+                continue
+            if len(p) <= max_chars:
+                out.append(p)
+            else:
+                out.extend(Pipe._hardwrap_text(p, max_chars))
+        return out
 
     async def _owui_upload_bytes(
         self,
@@ -2857,6 +3285,119 @@ class Pipe:
             request, user, metadata, video_bytes, content_type, "Video"
         )
 
+    @staticmethod
+    def _pcm_rate_from_ct(content_type: str) -> int:
+        """Parse the sample rate from a raw-PCM Content-Type.
+
+        e.g. ``audio/pcm; rate=24000`` → 24000. Defaults to 24000 (the
+        OpenAI/Gemini PCM default) when unspecified — matches OWUI's transcode.
+        """
+        for part in (content_type or "").split(";"):
+            part = part.strip().lower()
+            if part.startswith("rate="):
+                try:
+                    r = int(part.split("=", 1)[1])
+                    if r > 0:
+                        return r
+                except (ValueError, IndexError):
+                    pass
+        return 24000
+
+    def _tts_footer(self, valves, gen_id: str) -> str:
+        """Build the optional gen-id + remaining-credit footer for a TTS reply."""
+        footer = ""
+        if valves.SHOW_GENERATION_ID and gen_id:
+            # Shared helper sanitizes the upstream-supplied ID (strips
+            # backticks/newlines) before embedding it in the code span.
+            footer += _format_generation_id(gen_id)
+        if valves.SHOW_REMAINING_CREDIT:
+            credit_line = self._format_credit_info(
+                self._credit_balance_cached(valves), valves.COST_CURRENCY
+            )
+            if credit_line:
+                footer += credit_line
+        return footer
+
+    def _tts_fetch_chunk(
+        self, chunk_text, model_id, voice, speed, headers, valves, max_bytes
+    ) -> tuple:
+        """POST one text chunk to /audio/speech (sync, like the video flow).
+
+        Returns ``(error_or_None, audio_bytes, content_type, gen_id)``. Reads
+        are capped at ``max_bytes`` (the remaining cumulative budget) so a long
+        multi-chunk narration can't blow past ``_AUDIO_MAX_BYTES``.
+        """
+        payload: dict = {
+            "model": model_id,
+            "input": chunk_text,
+            "voice": voice,
+            "response_format": "mp3",
+        }
+        if speed is not None:
+            payload["speed"] = speed
+        resp = None
+        try:
+            try:
+                resp = self._session.post(
+                    self.speech_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=valves.REQUEST_TIMEOUT,
+                    stream=True,
+                )
+            except requests.exceptions.Timeout:
+                return (f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s.", b"", "", "")
+            except requests.exceptions.RequestException as exc:
+                return (f"OpenRouter Error: Speech synthesis request failed: {exc}", b"", "", "")
+
+            if resp.status_code in (401, 403):
+                return (f"OpenRouter Error: Authentication failed (HTTP {resp.status_code}). Check OPENROUTER_API_KEY.", b"", "", "")
+            if resp.status_code == 402:
+                return ("OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model.", b"", "", "")
+            if resp.status_code == 429:
+                return ("OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.", b"", "", "")
+            if resp.status_code >= 400:
+                detail = ""
+                try:
+                    err = resp.json().get("error", {})
+                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                except Exception:
+                    detail = (resp.text or "")[:300]
+                return (f"OpenRouter Error: Speech synthesis failed (HTTP {resp.status_code}). {detail}", b"", "", "")
+
+            gen_id = resp.headers.get("X-Generation-Id") or ""
+            content_type = resp.headers.get("Content-Type") or ""
+            try:
+                _declared = int(resp.headers.get("Content-Length") or "0")
+            except (TypeError, ValueError):
+                _declared = 0
+            if _declared > max_bytes:
+                return (
+                    "OpenRouter Error: Speech download rejected — declared size "
+                    f"{_declared} bytes exceeds the {_AUDIO_MAX_BYTES} byte cap.",
+                    b"", "", "",
+                )
+            buf = bytearray()
+            try:
+                for part in resp.iter_content(chunk_size=64 * 1024):
+                    if not part:
+                        continue
+                    buf.extend(part)
+                    if len(buf) > max_bytes:
+                        return (
+                            f"OpenRouter Error: Speech download exceeded the {_AUDIO_MAX_BYTES} byte cap.",
+                            b"", "", "",
+                        )
+            except requests.exceptions.RequestException as exc:
+                return (f"OpenRouter Error: Speech download failed: {exc}", b"", "", "")
+            return (None, bytes(buf), content_type, gen_id)
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
     async def _run_speech_generation(
         self,
         body: dict,
@@ -2871,133 +3412,128 @@ class Pipe:
 
         TTS (speech-output) models — kokoro, deepgram/aura, gemini-tts, etc. —
         are NOT served by /chat/completions. They use the dedicated
-        ``POST /api/v1/audio/speech`` endpoint which takes ``{model, input,
-        voice, response_format}`` and returns a *raw audio byte stream* (not
-        JSON), plus an ``X-Generation-Id`` header. This method extracts the
-        latest user message as the text to speak, calls the endpoint, enforces
-        the same byte cap as the other media flows, re-hosts the bytes through
-        OWUI's file system, and returns a block-HTML ``<audio>`` embed.
+        ``POST /api/v1/audio/speech`` endpoint (``{model, input, voice,
+        response_format}`` → raw audio byte stream + ``X-Generation-Id`` header).
 
-        We always request ``response_format="mp3"`` (the endpoint defaults to
-        raw ``pcm``, which a browser can't play without a WAV wrapper), so the
-        result is universally playable regardless of the model's provider.
+        Pipeline (modeled on Open WebUI's native TTS):
+          1. Pick the text to speak per ``TTS_SOURCE`` (auto/user/assistant).
+          2. Honour a per-message ``[voice=NAME]`` directive.
+          3. Clean markup/emoji/code/LaTeX so the voice speaks prose, not
+             "asterisk asterisk" or a URL read character-by-character.
+          4. Split past the provider's ~3900-char input cap and concatenate the
+             synthesized chunks back into ONE clip (we can't stream progressive
+             players like OWUI's speaker button — we return a single message).
+          5. Cache the hosted clip so identical text isn't re-billed/re-synthesized.
+
+        We request ``response_format="mp3"`` (universally playable + naively
+        concatenable). If a provider ignores that and returns raw PCM (e.g.
+        Gemini-TTS via OpenRouter), the concatenated samples are wrapped in a
+        single WAV container instead — raw PCM concatenation is exact.
         """
-        # Same "latest user text" extraction the video flow uses — TTS also
-        # takes a flat input string, not a chat history.
-        input_text = self._extract_video_prompt(body)
+        source = getattr(valves, "TTS_SOURCE", None) or "auto"
+        raw_text = self._extract_tts_text(body, source)
+        # Parse + strip the voice directive BEFORE cleaning so it isn't spoken.
+        directive_voice, raw_text = self._parse_voice_directive(raw_text)
+        input_text = self._clean_tts_text(raw_text)
         if not input_text:
-            return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
+            return (
+                "OpenRouter Error: Text-to-speech requires a non-empty text prompt "
+                "(nothing speakable remained after stripping markup/code)."
+            )
 
-        # Resolve the voice. ``voice`` is a REQUIRED field with no server-side
-        # default, and voice names are provider-specific (kokoro: af_bella/…,
-        # deepgram: aura-2-thalia-en, gemini: Zephyr, …), so a single global
-        # valve can't be right for every model. Prefer the configured voice
-        # when it's valid for THIS model; otherwise fall back to the model's
-        # first advertised voice (dynamic, harvested from the catalog). Only
-        # when we have no voice list for the model do we pass the valve value
-        # through as-is (best effort) — blanked → 'alloy'.
-        configured = (valves.AUDIO_OUTPUT_VOICE or "").strip()
+        # Resolve the voice: per-message directive or valve, validated against
+        # the model's advertised supported_voices (provider-specific names), with
+        # a fallback to the model's first voice, or 'alloy' when no list exists.
+        configured = (directive_voice or valves.AUDIO_OUTPUT_VOICE or "").strip()
         supported = self._speech_voices.get(model_id) or []
         if supported:
             voice = configured if configured in supported else supported[0]
         else:
             voice = configured or "alloy"
-        headers = self._build_headers(model_id=model_id, valves=valves)
-        payload: dict = {
-            "model": model_id,
-            "input": input_text,
-            "voice": voice,
-            "response_format": "mp3",
-        }
-        # Forward an optional playback-speed multiplier if the caller set one.
-        speed = body.get("speed")
-        if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
-            payload["speed"] = speed
+
+        # Speed: a per-request body 'speed' wins, else the AUDIO_OUTPUT_SPEED valve.
+        speed = None
+        b_speed = body.get("speed")
+        if isinstance(b_speed, (int, float)) and not isinstance(b_speed, bool) and b_speed > 0:
+            speed = float(b_speed)
+        else:
+            v_speed = getattr(valves, "AUDIO_OUTPUT_SPEED", None)
+            if isinstance(v_speed, (int, float)) and not isinstance(v_speed, bool) and v_speed > 0:
+                speed = float(v_speed)
+
+        split_mode = getattr(valves, "AUDIO_TTS_SPLIT", None) or "punctuation"
+        chunks = self._split_tts_text(input_text, _TTS_MAX_CHARS, split_mode)
+        if not chunks:
+            return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
+
+        # Cache: identical (model, voice, format, speed, split, cleaned text) →
+        # reuse the previously hosted clip; skip the POST + re-upload entirely.
+        cache_key = hashlib.sha256(
+            "\x00".join(
+                [model_id, voice, "mp3", str(speed), split_mode, input_text]
+            ).encode("utf-8")
+        ).hexdigest()
+        cached_url = self._speech_cache.get(cache_key)
+        if cached_url:
+            return f"\n\n<div><audio>{cached_url}</audio></div>\n\n" + self._tts_footer(valves, "")
 
         if emitter:
             try:
                 await emitter(
-                    {
-                        "type": "status",
-                        "data": {"description": "Generating speech...", "done": False},
-                    }
+                    {"type": "status", "data": {"description": "Generating speech...", "done": False}}
                 )
             except Exception:
                 pass
 
-        resp = None
+        headers = self._build_headers(model_id=model_id, valves=valves)
+        combined = bytearray()
         gen_id = ""
-        try:
-            try:
-                resp = self._session.post(
-                    self.speech_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=valves.REQUEST_TIMEOUT,
-                    stream=True,
-                )
-            except requests.exceptions.Timeout:
-                return f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s."
-            except requests.exceptions.RequestException as exc:
-                return f"OpenRouter Error: Speech synthesis request failed: {exc}"
-
-            if resp.status_code in (401, 403):
-                return f"OpenRouter Error: Authentication failed (HTTP {resp.status_code}). Check OPENROUTER_API_KEY."
-            if resp.status_code == 402:
-                return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model."
-            if resp.status_code == 429:
-                return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
-            if resp.status_code >= 400:
-                detail = ""
+        pcm_ct = ""  # first raw-PCM Content-Type seen (drives WAV wrapping + rate)
+        total = len(chunks)
+        for idx, chunk in enumerate(chunks):
+            if emitter and total > 1:
                 try:
-                    err = resp.json().get("error", {})
-                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                except Exception:
-                    detail = (resp.text or "")[:300]
-                return f"OpenRouter Error: Speech synthesis failed (HTTP {resp.status_code}). {detail}"
-
-            gen_id = resp.headers.get("X-Generation-Id") or ""
-            # Enforce the audio byte cap BEFORE materializing the full body —
-            # a Content-Length gives us an early reject, and the streamed read
-            # bounds memory if the header is absent or lies.
-            try:
-                _declared_len = int(resp.headers.get("Content-Length") or "0")
-            except (TypeError, ValueError):
-                _declared_len = 0
-            if _declared_len > _AUDIO_MAX_BYTES:
-                return (
-                    "OpenRouter Error: Speech download rejected — declared size "
-                    f"{_declared_len} bytes exceeds {_AUDIO_MAX_BYTES} byte cap."
-                )
-            buf = bytearray()
-            try:
-                for chunk in resp.iter_content(chunk_size=64 * 1024):
-                    if not chunk:
-                        continue
-                    buf.extend(chunk)
-                    if len(buf) > _AUDIO_MAX_BYTES:
-                        return (
-                            "OpenRouter Error: Speech download exceeded "
-                            f"{_AUDIO_MAX_BYTES} byte cap mid-stream."
-                        )
-            except requests.exceptions.RequestException as exc:
-                return f"OpenRouter Error: Speech download failed: {exc}"
-            audio_bytes = bytes(buf)
-        finally:
-            if resp is not None:
-                try:
-                    resp.close()
+                    await emitter(
+                        {"type": "status", "data": {"description": f"Generating speech ({idx + 1}/{total})...", "done": False}}
+                    )
                 except Exception:
                     pass
+            remaining = _AUDIO_MAX_BYTES - len(combined)
+            err, audio_bytes, content_type, cg = self._tts_fetch_chunk(
+                chunk, model_id, voice, speed, headers, valves, remaining
+            )
+            if err:
+                return err
+            if not audio_bytes:
+                return "OpenRouter Error: Speech synthesis returned 0 bytes."
+            if not gen_id and cg:
+                gen_id = cg
+            ct_main = content_type.split(";", 1)[0].strip().lower()
+            if any(tok in ct_main for tok in _TTS_PCM_CT_TOKENS):
+                pcm_ct = pcm_ct or content_type
+            combined.extend(audio_bytes)
 
-        if not audio_bytes:
+        if not combined:
             return "OpenRouter Error: Speech synthesis returned 0 bytes."
 
-        # We always request mp3, so persist as audio/mpeg regardless of the
-        # upstream Content-Type — never trust a relay-supplied header to steer
-        # OWUI's renderer toward a different type.
+        # Finalize. mp3 (the common case) is served as concatenated frames; raw
+        # PCM is wrapped once in a WAV container (exact, no ffmpeg needed).
+        if pcm_ct:
+            audio_out = self._wrap_pcm16_as_wav(
+                bytes(combined), sample_rate=self._pcm_rate_from_ct(pcm_ct)
+            )
+            out_ct = "audio/wav"
+        else:
+            audio_out = bytes(combined)
+            out_ct = "audio/mpeg"
+        if len(audio_out) > _AUDIO_MAX_BYTES:
+            return (
+                f"OpenRouter Error: Speech output {len(audio_out)} bytes exceeds "
+                f"the {_AUDIO_MAX_BYTES} byte cap."
+            )
+
         upload = await self._upload_audio_to_owui(
-            request, user, metadata, audio_bytes, content_type="audio/mpeg"
+            request, user, metadata, audio_out, content_type=out_ct
         )
         if not upload:
             return (
@@ -3006,24 +3542,17 @@ class Pipe:
             )
         _file_id, new_url = upload
         clean_url = new_url.split("?", 1)[0]
+        # Bounded cache of hosted URLs — clear wholesale past the cap (same
+        # strategy as the auth-header cache) so it can't grow unboundedly.
+        if len(self._speech_cache) >= 256:
+            self._speech_cache.clear()
+        self._speech_cache[cache_key] = clean_url
+
         # Same block-HTML pattern as the audio-gen / video flows: wrap in <div>
         # so marked emits a block html token and OWUI renders a real
         # <audio controls> element.
         audio_tag = f"\n\n<div><audio>{clean_url}</audio></div>\n\n"
-
-        footer = ""
-        if valves.SHOW_GENERATION_ID and gen_id:
-            # Shared helper sanitizes the upstream-supplied ID (strips
-            # backticks/newlines) before embedding it in the code span.
-            footer += _format_generation_id(gen_id)
-        if valves.SHOW_REMAINING_CREDIT:
-            credit_line = self._format_credit_info(
-                self._credit_balance_cached(valves), valves.COST_CURRENCY
-            )
-            if credit_line:
-                footer += credit_line
-
-        return f"{audio_tag}{footer}"
+        return f"{audio_tag}{self._tts_footer(valves, gen_id)}"
 
     async def _run_video_generation(
         self,
@@ -4104,7 +4633,11 @@ class Pipe:
         elif status == 403:
             base = "OpenRouter Error: Access denied (HTTP 403). Your API key may not have permission for this model."
         elif status == 404:
-            base = "OpenRouter Error: Model or endpoint not found (HTTP 404). The model ID may be wrong or unavailable."
+            base = (
+                "OpenRouter Error: Model or endpoint not found (HTTP 404). The "
+                "model may be unavailable, or the request used a capability the "
+                "model's endpoints don't support (e.g. tool calling)."
+            )
         elif status == 408:
             base = "OpenRouter Error: Request timed out on the server (HTTP 408). Try again."
         elif status == 413:

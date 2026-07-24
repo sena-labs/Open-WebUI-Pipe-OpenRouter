@@ -3999,6 +3999,7 @@ _section("coverage: pipe() tool dispatch + stream cap + credit in final message"
 
 # (a) pipe() entry with __tools__ (non-stream) runs the tool loop and returns the final answer
 _pe9 = Pipe(); _pe9.valves.OPENROUTER_API_KEY = "sk-or-test"; _pe9.valves.MAX_TOOL_ITERATIONS = 3
+_pe9._lazy_populated = True  # skip the catalog fetch; leave tool-capability unknown (tools attach)
 _r1 = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}}]}
 _r2 = {"choices": [{"message": {"role": "assistant", "content": "final answer"}}]}
 class _R9:
@@ -4584,6 +4585,459 @@ _tts_cap = asyncio.run(_p_tts_cap._run_speech_generation(
     "hexgrad/kokoro-82m", _p_tts_cap.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
 ))
 _assert("byte cap" in _tts_cap, "TTS declared size over cap → rejected before download")
+
+# ── tool-capability gate: don't forward tools to non-tool models (avoids 404) ─
+
+_section("tool-capability gate: non-tool models don't 404 on attached tools")
+
+# pipes() tracks tool-capable models from supported_parameters.
+_p_tc = Pipe()
+_fake_tc_data = [
+    {"id": "openai/gpt-4o", "name": "GPT-4o",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+     "supported_parameters": ["tools", "tool_choice", "temperature"]},
+    {"id": "deepgram/aura-2", "name": "Aura 2",
+     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
+     "supported_parameters": ["temperature"]},
+    {"id": "some/text-no-tools", "name": "No Tools",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]}},
+]
+class _TCResp:
+    status_code = 200
+    def json(self): return {"data": _fake_tc_data}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _TCSess:
+    def get(self, *a, **kw): return _TCResp()
+_p_tc._session = _TCSess()
+_p_tc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_tc.valves.SYNC_PROVIDER_ICONS = False
+_p_tc.pipes()
+_assert("openai/gpt-4o" in _p_tc._tool_capable_ids, "pipes() tracks tool-capable model")
+_assert("deepgram/aura-2" not in _p_tc._tool_capable_ids, "pipes() excludes non-tool model")
+_assert("some/text-no-tools" not in _p_tc._tool_capable_ids, "pipes() excludes model with no supported_parameters")
+
+# _model_supports_tools semantics.
+_assert(_p_tc._model_supports_tools("openai/gpt-4o") is True, "gate: tool-capable model allowed")
+_assert(_p_tc._model_supports_tools("openai/gpt-4o:nitro") is True, "gate: variant inherits base capability")
+_assert(_p_tc._model_supports_tools("deepgram/aura-2") is False, "gate: non-tool model blocked")
+_assert(Pipe()._model_supports_tools("anything") is True, "gate: unknown (empty set) → allow (don't break tools)")
+
+# End-to-end: pipe() with a tool + a NON-tool model must NOT attach tools and
+# must NOT 404 — it answers normally. Capture the outgoing payload.
+_pe_gate = Pipe()
+_pe_gate.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe_gate._lazy_populated = True
+_pe_gate._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_gate_seen = {"payload": None}
+def _cap_req(headers, payload, stream, valves):
+    _gate_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "hello without tools"}}]}
+        def close(self): pass
+    return _R()
+_pe_gate._retryable_request = _cap_req  # type: ignore
+_tools_gate = {"get_current_timestamp": {"spec": {"name": "get_current_timestamp"}, "callable": lambda: "now"}}
+_res_gate = _run(_pe_gate.pipe(
+    {"model": "some/non-tool-model", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+    __tools__=_tools_gate,
+))
+_assert("tools" not in (_gate_seen["payload"] or {}), "gate: tools NOT forwarded to a non-tool model")
+_assert("hello without tools" in _res_gate, "gate: non-tool model still answers (no 404)")
+
+# Body-injected tools/tool_choice (OWUI native function-calling puts them
+# straight into the body) must ALSO be stripped for a non-tool model — this is
+# the real 404 source that a __tools__-only gate would miss.
+_pe_body = Pipe()
+_pe_body.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe_body._lazy_populated = True
+_pe_body._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_body_seen = {"payload": None}
+def _cap_req2(headers, payload, stream, valves):
+    _body_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "answered"}}]}
+        def close(self): pass
+    return _R()
+_pe_body._retryable_request = _cap_req2  # type: ignore
+_res_body = _run(_pe_body.pipe({
+    "model": "some/non-tool-model", "stream": False,
+    "messages": [{"role": "user", "content": "hi"}],
+    "tools": [{"type": "function", "function": {"name": "get_current_timestamp"}}],
+    "tool_choice": "auto",
+}, __tools__=None))
+_assert("tools" not in (_body_seen["payload"] or {}), "gate: body-injected tools stripped for non-tool model")
+_assert("tool_choice" not in (_body_seen["payload"] or {}), "gate: body-injected tool_choice stripped for non-tool model")
+_assert("answered" in _res_body, "gate: non-tool model answers despite body tools (no 404)")
+
+# A tool-capable model KEEPS body-level tool_choice WHEN tools are present.
+_pe_keep = Pipe()
+_pe_keep.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe_keep._lazy_populated = True
+_pe_keep._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_keep_seen = {"payload": None}
+def _cap_req3(headers, payload, stream, valves):
+    _keep_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "final answer"}}]}
+        def close(self): pass
+    return _R()
+_pe_keep._retryable_request = _cap_req3  # type: ignore
+_run(_pe_keep.pipe({
+    "model": "openai/gpt-4o", "stream": False,
+    "messages": [{"role": "user", "content": "hi"}], "tool_choice": "auto",
+}, __tools__={"t": {"spec": {"name": "t"}, "callable": lambda: "r"}}))
+_assert((_keep_seen["payload"] or {}).get("tool_choice") == "auto", "gate: tool-capable model keeps tool_choice when tools present")
+_assert("tools" in (_keep_seen["payload"] or {}), "gate: tool-capable model keeps tools")
+
+# Orphan tool_choice (no tools present) is stripped even on a tool-capable model.
+_pe_orphan = Pipe()
+_pe_orphan.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe_orphan._lazy_populated = True
+_pe_orphan._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_orphan_seen = {"payload": None}
+def _cap_req4(headers, payload, stream, valves):
+    _orphan_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
+        def close(self): pass
+    return _R()
+_pe_orphan._retryable_request = _cap_req4  # type: ignore
+_run(_pe_orphan.pipe({
+    "model": "openai/gpt-4o", "stream": False,
+    "messages": [{"role": "user", "content": "hi"}], "tool_choice": "required",
+}, __tools__=None))
+_assert("tool_choice" not in (_orphan_seen["payload"] or {}), "gate: orphan tool_choice (no tools) stripped even on tool-capable model")
+
+# Control: a tool-capable model DOES get the tools forwarded.
+_pe_ok = Pipe()
+_pe_ok.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe_ok._lazy_populated = True
+_pe_ok._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_ok_seen = {"payload": None}
+_ok_seq = [
+    type("R", (), {"json": lambda s: {"choices": [{"message": {"content": "final answer"}}]}, "close": lambda s: None})(),
+]
+def _ok_req(headers, payload, stream, valves):
+    _ok_seen["payload"] = payload
+    return _ok_seq.pop(0)
+_pe_ok._retryable_request = _ok_req  # type: ignore
+_run(_pe_ok.pipe(
+    {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+    __tools__=_tools_gate,
+))
+_assert("tools" in (_ok_seen["payload"] or {}), "gate: tools ARE forwarded to a tool-capable model")
+
+# ── capability gating: response_format / reasoning / non-chat models ──────────
+
+_section("capability gating: response_format, reasoning, non-chat models")
+
+# pipes() tracks structured-output, reasoning capability, and non-chat kinds.
+_p_cap = Pipe()
+_fake_cap_data = [
+    {"id": "openai/gpt-4o", "name": "GPT-4o",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+     "supported_parameters": ["tools", "structured_outputs", "response_format", "reasoning"]},
+    {"id": "plain/text-model", "name": "Plain",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+     "supported_parameters": ["temperature"]},
+    {"id": "nvidia/embed-1b", "name": "Embed",
+     "architecture": {"output_modalities": ["embeddings"], "input_modalities": ["text"]}},
+    {"id": "cohere/rerank-v3", "name": "Rerank",
+     "architecture": {"output_modalities": ["rerank"], "input_modalities": ["text"]}},
+    {"id": "openai/whisper-1", "name": "Whisper",
+     "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]}},
+]
+class _CapResp:
+    status_code = 200
+    def json(self): return {"data": _fake_cap_data}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _CapSess:
+    def get(self, *a, **kw): return _CapResp()
+_p_cap._session = _CapSess()
+_p_cap.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_cap.valves.SYNC_PROVIDER_ICONS = False
+_p_cap.pipes()
+_assert("openai/gpt-4o" in _p_cap._structured_output_ids, "pipes() tracks structured-output model")
+_assert("plain/text-model" not in _p_cap._structured_output_ids, "pipes() excludes non-structured model")
+_assert("openai/gpt-4o" in _p_cap._reasoning_ids, "pipes() tracks reasoning model")
+_assert("plain/text-model" not in _p_cap._reasoning_ids, "pipes() excludes non-reasoning model")
+_assert(_p_cap._nonchat_kind.get("nvidia/embed-1b") == "embeddings", "pipes() flags embeddings as non-chat")
+_assert(_p_cap._nonchat_kind.get("cohere/rerank-v3") == "rerank", "pipes() flags rerank as non-chat")
+_assert(_p_cap._nonchat_kind.get("openai/whisper-1") == "transcription", "pipes() flags transcription as non-chat")
+_assert("openai/gpt-4o" not in _p_cap._nonchat_kind, "pipes() does NOT flag a text model as non-chat")
+
+# Non-chat model selected → clear error, no HTTP call.
+_p_nc = Pipe()
+_p_nc.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_nc._lazy_populated = True
+_p_nc._nonchat_kind = {"nvidia/embed-1b": "embeddings"}  # type: ignore
+_nc_out = _run(_p_nc.pipe({"model": "nvidia/embed-1b", "messages": [{"role": "user", "content": "hi"}]}))
+_assert("embeddings-type model" in _nc_out and "can't be used in a chat" in _nc_out, "non-chat model → clear error")
+_assert("/api/v1/embeddings" in _nc_out, "non-chat error names the right endpoint")
+
+# response_format stripped for a model without structured-output support.
+_p_rf = Pipe()
+_p_rf.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_rf.valves.RESPONSE_FORMAT = "json_object"
+_p_rf._lazy_populated = True
+_p_rf._structured_output_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_rf_seen = {"payload": None}
+def _rf_req(headers, payload, stream, valves):
+    _rf_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
+        def close(self): pass
+    return _R()
+_p_rf._retryable_request = _rf_req  # type: ignore
+_run(_p_rf.pipe({"model": "plain/no-structured", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
+_assert("response_format" not in (_rf_seen["payload"] or {}), "response_format stripped for non-structured model")
+
+# response_format kept for a structured-capable model.
+_p_rf2 = Pipe()
+_p_rf2.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_rf2.valves.RESPONSE_FORMAT = "json_object"
+_p_rf2._lazy_populated = True
+_p_rf2._structured_output_ids = frozenset({"openai/gpt-4o"})  # type: ignore
+_rf2_seen = {"payload": None}
+def _rf2_req(headers, payload, stream, valves):
+    _rf2_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
+        def close(self): pass
+    return _R()
+_p_rf2._retryable_request = _rf2_req  # type: ignore
+_run(_p_rf2.pipe({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
+_assert((_rf2_seen["payload"] or {}).get("response_format") == {"type": "json_object"}, "response_format kept for structured-capable model")
+
+# reasoning stripped for a non-reasoning model (avoids REQUIRE_PARAMETERS 404).
+_p_rs = Pipe()
+_p_rs.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_rs.valves.INCLUDE_REASONING = True
+_p_rs.valves.REASONING_EFFORT = "high"
+_p_rs._lazy_populated = True
+_p_rs._reasoning_ids = frozenset({"openai/o3"})  # type: ignore
+_rs_seen = {"payload": None}
+def _rs_req(headers, payload, stream, valves):
+    _rs_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
+        def close(self): pass
+    return _R()
+_p_rs._retryable_request = _rs_req  # type: ignore
+_run(_p_rs.pipe({"model": "plain/no-reasoning", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
+_assert("reasoning" not in (_rs_seen["payload"] or {}) and "include_reasoning" not in (_rs_seen["payload"] or {}),
+        "reasoning/include_reasoning stripped for non-reasoning model")
+
+# reasoning kept for a reasoning-capable model.
+_p_rs2 = Pipe()
+_p_rs2.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_rs2.valves.INCLUDE_REASONING = True
+_p_rs2._lazy_populated = True
+_p_rs2._reasoning_ids = frozenset({"openai/o3"})  # type: ignore
+_rs2_seen = {"payload": None}
+def _rs2_req(headers, payload, stream, valves):
+    _rs2_seen["payload"] = payload
+    class _R:
+        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
+        def close(self): pass
+    return _R()
+_p_rs2._retryable_request = _rs2_req  # type: ignore
+_run(_p_rs2.pipe({"model": "openai/o3", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
+_assert((_rs2_seen["payload"] or {}).get("include_reasoning") is True, "include_reasoning kept for reasoning-capable model")
+
+# Unknown capability set (empty) → don't strip (don't break when data absent).
+_p_unk = Pipe()
+_assert(_p_unk._model_has_cap("any/model", frozenset()) is True, "empty cap set → allow (unknown)")
+_assert(_p_unk._model_has_cap("a/b:nitro", frozenset({"a/b"})) is True, "variant inherits base capability")
+
+# ── TTS text cleaning (mirrors OWUI removeFormattings + removeEmojis) ──────────
+
+_section("text-to-speech: text cleaning, splitting, source, directives")
+
+_ct = Pipe._clean_tts_text
+_assert(_ct("**bold** and *italic*") == "bold and italic", "clean: bold/italic markers stripped")
+_assert(_ct("# Heading here") == "Heading here", "clean: ATX header marker stripped")
+_assert(_ct("see [the docs](https://example.com/x)") == "see the docs", "clean: link → label, URL dropped")
+_assert(_ct("![alt text](https://img/x.png)") == "alt text", "clean: image → alt text")
+_assert(_ct("text\n```python\nprint('hi')\n```\nmore") == "text\nmore",
+        "clean: fenced code block dropped entirely")
+_assert(_ct("use the `run()` function") == "use the run() function", "clean: inline code keeps inner text")
+_assert(_ct("- one\n- two") == "one\ntwo", "clean: bullet markers stripped")
+_assert(_ct("1. first\n2. second") == "first\nsecond", "clean: numbered-list markers stripped")
+_assert(_ct("> quoted line") == "quoted line", "clean: blockquote marker stripped")
+_assert(_ct("done ✅ great 🎉") == "done great", "clean: emoji removed (collapsed spaces)")
+_assert(_ct("hello 👨‍👩‍👧‍👦 family") == "hello family", "clean: ZWJ emoji family removed")
+_assert(_ct("value is $x^2 + 1$ ok") == "value is ok", "clean: inline LaTeX stripped")
+_assert(_ct("block $$\\int_0^1 x dx$$ end") == "block end", "clean: block LaTeX stripped")
+_assert(_ct("keep this\n\n<details><summary>reasoning</summary>secret thoughts</details>\n\nvisible")
+        == "keep this\nvisible", "clean: <details> reasoning panel stripped")
+_assert(_ct("~~gone~~ stays") == "gone stays", "clean: strikethrough markers stripped")
+_assert(_ct("plain sentence.") == "plain sentence.", "clean: plain prose untouched")
+_assert(_ct("") == "" and _ct(None) == "", "clean: empty/None → empty")
+
+# ── TTS splitting ─────────────────────────────────────────────────────────────
+
+_sp = Pipe._split_tts_text
+_assert(_sp("Just one short sentence.") == ["Just one short sentence."], "split: short text → single chunk")
+_two = _sp("This is the first reasonably long sentence that clears fifty characters. "
+           "And here is the second reasonably long sentence also over fifty characters.")
+_assert(len(_two) == 2, "split(punctuation): two full sentences → two chunks")
+# merge pass: a tiny leading fragment merges into the following sentence.
+_merged = _sp("Hi. This is a much longer following sentence that stands on its own fine.")
+_assert(len(_merged) == 1 and _merged[0].startswith("Hi."), "split: tiny fragment merges with next")
+_para = _sp("Alpha para one.\n\nBeta para two.", 3900, "paragraphs")
+_assert(_para == ["Alpha para one.", "Beta para two."], "split(paragraphs): split on blank lines")
+_none = _sp("a. b. c. d.", 3900, "none")
+_assert(_none == ["a. b. c. d."], "split(none): whole text as one chunk when under cap")
+# hard-wrap: text longer than the cap is broken into <= cap pieces on whitespace.
+_long = " ".join(["word"] * 2000)  # ~10000 chars
+_wrapped = _sp(_long, 100, "none")
+_assert(len(_wrapped) > 1 and all(len(c) <= 100 for c in _wrapped), "split: over-cap text hard-wrapped under cap")
+_assert(_sp("", 3900, "punctuation") == [] and _sp("   ", 3900, "none") == [], "split: empty/whitespace → []")
+
+# ── TTS source selection (TTS_SOURCE auto/user/assistant) ─────────────────────
+
+_body_conv = {"messages": [
+    {"role": "user", "content": "please read the answer"},
+    {"role": "assistant", "content": "The answer is 42."},
+]}
+_assert(Pipe._extract_tts_text(_body_conv, "auto") == "The answer is 42.", "source auto: reads assistant reply when present")
+_assert(Pipe._extract_tts_text(_body_conv, "user") == "please read the answer", "source user: always the user message")
+_assert(Pipe._extract_tts_text(_body_conv, "assistant") == "The answer is 42.", "source assistant: the assistant reply")
+_assert(Pipe._extract_tts_text({"messages": [{"role": "user", "content": "hi"}]}, "auto") == "hi",
+        "source auto: falls back to user when no assistant reply")
+# auto must NOT try to speak a prior TTS turn (our own <audio> embed).
+_body_prev_tts = {"messages": [
+    {"role": "user", "content": "say hello"},
+    {"role": "assistant", "content": "\n\n<div><audio>/api/v1/files/x/content</audio></div>\n\n"},
+    {"role": "user", "content": "now say goodbye"},
+]}
+_assert(Pipe._extract_tts_text(_body_prev_tts, "auto") == "now say goodbye",
+        "source auto: skips our own audio embed, reads the new user message")
+_assert(Pipe._clean_tts_text("<div><audio>/api/v1/files/x/content</audio></div>") == "",
+        "clean: our audio embed strips to empty (never spoken)")
+
+# ── TTS per-message voice directive ───────────────────────────────────────────
+
+_dv, _dt = Pipe._parse_voice_directive("[voice=nova] read this aloud")
+_assert(_dv == "nova" and _dt.strip() == "read this aloud", "directive: [voice=nova] parsed + stripped from text")
+_assert(Pipe._parse_voice_directive("no directive here") == (None, "no directive here"), "directive: none → (None, text)")
+
+# ── _run_speech_generation: cleaning applied end-to-end + directive voice ──────
+
+def _tts_run(body, pipe=None, voices=None, valve_setup=None):
+    _p = pipe or Pipe()
+    if voices is not None:
+        _p._speech_voices = dict(voices)  # type: ignore
+    if valve_setup:
+        valve_setup(_p.valves)
+    _r = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "X-Generation-Id": "g"})
+    _r.content = b"\xff\xfbmp3"
+    _p._session = _FakeSession([_r] * 8)
+    async def _up(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+        _tts_run.last = {"ct": content_type, "len": len(audio_bytes)}
+        return ("id", "/api/v1/files/id/content")
+    _p._upload_audio_to_owui = _up.__get__(_p, Pipe)  # type: ignore
+    out = asyncio.run(_p._run_speech_generation(
+        body, "hexgrad/kokoro-82m", _p.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+    ))
+    posts = [c for c in _p._session.calls if c[0] == "POST"]
+    return out, posts, _p
+
+# Markdown input is cleaned before it reaches /audio/speech.
+_out_md, _posts_md, _ = _tts_run({"messages": [{"role": "user", "content": "# Title\n**bold** and `code` done ✅"}]})
+_assert("<div><audio>/api/v1/files/id/content</audio></div>" in _out_md, "run: cleaned TTS still embeds <audio>")
+_sent_md = (_posts_md[0][2].get("json") or {}).get("input")
+_assert(_sent_md == "Title bold and code done", "run: markdown/emoji cleaned out of the spoken input")
+
+# Per-message [voice=...] directive overrides the valve and is not spoken.
+_out_dir, _posts_dir, _ = _tts_run(
+    {"messages": [{"role": "user", "content": "[voice=am_adam] hello there"}]},
+    voices={"hexgrad/kokoro-82m": ["af_bella", "am_adam"]},
+)
+_dir_body = _posts_dir[0][2].get("json") or {}
+_assert(_dir_body.get("voice") == "am_adam", "run: [voice=am_adam] directive picks the voice")
+_assert(_dir_body.get("input") == "hello there", "run: directive text stripped from spoken input")
+
+# AUDIO_OUTPUT_SPEED valve is forwarded as payload.speed.
+_out_sp, _posts_sp, _ = _tts_run(
+    {"messages": [{"role": "user", "content": "hello"}]},
+    valve_setup=lambda v: setattr(v, "AUDIO_OUTPUT_SPEED", 1.5),
+)
+_assert((_posts_sp[0][2].get("json") or {}).get("speed") == 1.5, "run: AUDIO_OUTPUT_SPEED forwarded as speed")
+
+# TTS_SOURCE=auto reads the prior assistant reply.
+_out_src, _posts_src, _ = _tts_run({"messages": [
+    {"role": "user", "content": "read it"},
+    {"role": "assistant", "content": "Spoken answer."},
+]})
+_assert((_posts_src[0][2].get("json") or {}).get("input") == "Spoken answer.", "run: TTS_SOURCE=auto speaks the assistant reply")
+
+# Empty-after-cleaning (e.g. only a code block) → friendly error, no POST.
+_p_empty = Pipe()
+_p_empty._session = _FakeSession([])
+_out_empty = asyncio.run(_p_empty._run_speech_generation(
+    {"messages": [{"role": "user", "content": "```\njust code\n```"}]},
+    "hexgrad/kokoro-82m", _p_empty.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+))
+_assert("nothing speakable" in _out_empty, "run: text that cleans to empty → friendly error")
+
+# ── multi-chunk: split long text, synthesize each, concatenate into one <audio> ─
+
+_p_multi = Pipe()
+_p_multi.valves.AUDIO_TTS_SPLIT = "paragraphs"
+_r1 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _r1.content = b"AAAA"
+_r2 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _r2.content = b"BBBB"
+_p_multi._session = _FakeSession([_r1, _r2])
+_multi_up = {"len": None, "ct": None}
+async def _up_multi(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _multi_up["len"] = len(audio_bytes); _multi_up["ct"] = content_type
+    return ("m", "/api/v1/files/m/content")
+_p_multi._upload_audio_to_owui = _up_multi.__get__(_p_multi, Pipe)  # type: ignore
+_out_multi = asyncio.run(_p_multi._run_speech_generation(
+    {"messages": [{"role": "user", "content": "First paragraph here.\n\nSecond paragraph here."}]},
+    "hexgrad/kokoro-82m", _p_multi.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+))
+_multi_posts = [c for c in _p_multi._session.calls if c[0] == "POST"]
+_assert(len(_multi_posts) == 2, "multi-chunk: two paragraphs → two /audio/speech POSTs")
+_assert(_multi_up["len"] == 8 and _multi_up["ct"] == "audio/mpeg", "multi-chunk: mp3 bytes concatenated into one clip")
+_assert(_out_multi.count("<audio>") == 1, "multi-chunk: still ONE <audio> embed")
+
+# ── PCM fallback: provider ignores mp3 and returns raw PCM → wrapped as WAV ────
+
+_p_pcm2 = Pipe()
+_rpcm = _FakeResp(200, headers={"Content-Type": "audio/pcm; rate=24000"})
+_rpcm.content = bytes(range(32))  # raw PCM samples
+_p_pcm2._session = _FakeSession([_rpcm])
+_pcm_up = {"ct": None, "head": None}
+async def _up_pcm(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _pcm_up["ct"] = content_type; _pcm_up["head"] = bytes(audio_bytes[:4])
+    return ("p", "/api/v1/files/p/content")
+_p_pcm2._upload_audio_to_owui = _up_pcm.__get__(_p_pcm2, Pipe)  # type: ignore
+_out_pcm = asyncio.run(_p_pcm2._run_speech_generation(
+    {"messages": [{"role": "user", "content": "speak this"}]},
+    "google/gemini-tts", _p_pcm2.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+))
+_assert(_pcm_up["ct"] == "audio/wav" and _pcm_up["head"] == b"RIFF", "pcm fallback: raw PCM wrapped in a WAV container")
+_assert(Pipe._pcm_rate_from_ct("audio/pcm; rate=16000") == 16000, "pcm rate parsed from Content-Type")
+_assert(Pipe._pcm_rate_from_ct("audio/pcm") == 24000, "pcm rate defaults to 24000")
+
+# ── cache: identical text returns the hosted clip without a second POST ────────
+
+_p_cache = Pipe()
+_rc = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _rc.content = b"\xff\xfbmp3"
+_p_cache._session = _FakeSession([_rc])  # exactly ONE response available
+async def _up_cache(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    return ("c", "/api/v1/files/c/content")
+_p_cache._upload_audio_to_owui = _up_cache.__get__(_p_cache, Pipe)  # type: ignore
+_cbody = {"messages": [{"role": "user", "content": "cache me please"}]}
+_c1 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
+_c2 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
+_cache_posts = [c for c in _p_cache._session.calls if c[0] == "POST"]
+_assert(len(_cache_posts) == 1, "cache: second identical request makes NO new POST")
+_assert("/api/v1/files/c/content" in _c2, "cache: second request returns the cached clip URL")
 
 # ── audit fixes: tool-stream media + video 402 + non-stream finalize ─────────
 
