@@ -3,7 +3,7 @@
 [![Build](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml/badge.svg)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/actions/workflows/tests.yml)
 [![Release](https://img.shields.io/github/v/release/sena-labs/Open-WebUI-Pipe-OpenRouter?label=release)](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/releases/latest)
 [![Python](https://img.shields.io/badge/Python-%E2%89%A53.10-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-939%20%E2%9C%93-brightgreen)](test_pipe.py)
+[![Tests](https://img.shields.io/badge/tests-1050%20%E2%9C%93-brightgreen)](test_pipe.py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Access the **full OpenRouter catalog (400+ models)** — chat, TTS, audio (input + generation),
@@ -13,6 +13,7 @@ control out of the box.
 
 ## Table of Contents
 
+- [Showcase](#showcase)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -43,6 +44,28 @@ control out of the box.
 - [License](#license)
 
 ---
+
+## Showcase
+
+Every OpenRouter output modality renders **natively inside the Open WebUI chat** — no plugins, no external viewers.
+
+### 🖼️ Image generation
+
+Image-output models (`gemini-image`, `flux`, …) return images that are uploaded to Open WebUI storage and embedded inline.
+
+![Image generation rendered inline in Open WebUI](docs/img/feature-image-generation.png)
+
+### 🔊 Text-to-speech
+
+TTS / speech models (`kokoro`, `deepgram-aura`, `gemini-tts`, …) route through the dedicated `/audio/speech` endpoint — the text is cleaned (markdown / emoji / code / LaTeX stripped) and returned as a native `<audio>` player.
+
+![Text-to-speech rendered as a native audio player in Open WebUI](docs/img/feature-tts-audio.png)
+
+### 🎬 Video generation
+
+Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine`, …) route through the asynchronous `/videos` endpoint with polling, then re-host the MP4 and embed it as a native `<video>` player.
+
+![Video generation rendered as a native video player in Open WebUI](docs/img/feature-video-generation.png)
 
 ## Features
 
