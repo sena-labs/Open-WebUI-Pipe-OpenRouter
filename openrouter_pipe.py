@@ -3,12 +3,12 @@ title: OpenRouter Pipe
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.10.5
+version: 1.11.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.32.4, pydantic>=2.0
-description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
+description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. TTS/speech models (kokoro, deepgram-aura, gemini-tts, ...) route through the dedicated /api/v1/audio/speech endpoint (text in -> raw mp3 bytes out), re-host the audio, and embed via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
 """
 
 import asyncio
@@ -43,6 +43,7 @@ _CITATION_RE = re.compile(r"\[(\d+)\]")
 _API_PATH_MODELS = "/models"
 _API_PATH_CHAT = "/chat/completions"
 _API_PATH_VIDEOS = "/videos"
+_API_PATH_AUDIO_SPEECH = "/audio/speech"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
 
@@ -876,7 +877,7 @@ class Pipe:
         )
         AUDIO_OUTPUT_VOICE: str = Field(
             default=os.getenv("OPENROUTER_AUDIO_OUTPUT_VOICE", "alloy"),
-            description="Voice for speech-synthesis audio models (gpt-audio, gpt-audio-mini). Ignored by music models like Lyria. Common: alloy, echo, fable, onyx, nova, shimmer.",
+            description="Voice for speech synthesis. Used for gpt-audio (chat-audio) and TTS models (/audio/speech). Voice names are provider-specific, so for a dedicated TTS model the pipe auto-falls back to that model's first advertised voice when this value isn't one it accepts (dynamically read from the model's supported_voices). Set a valid per-model voice to override. Ignored by music models like Lyria. OpenAI voices: alloy, echo, fable, onyx, nova, shimmer.",
         )
         SHOW_COST_INFO: bool = Field(
             default=False,
@@ -1055,8 +1056,22 @@ class Pipe:
         # statement); concurrent pipe() readers see either the old set or
         # the new set, never a half-rebuilt mid-clear state.
         self._video_model_ids: frozenset = frozenset()
-        # Same for audio-output models (lyria, gpt-audio, ...).
+        # Same for audio-output models (lyria, gpt-audio, ...) served via
+        # /chat/completions with modalities=["text","audio"].
         self._audio_model_ids: frozenset = frozenset()
+        # Speech-output (TTS) models (kokoro, deepgram/aura, gemini-tts, ...).
+        # These are NOT chat models — they ride the dedicated /audio/speech
+        # endpoint (text in → raw audio bytes out), so they route separately
+        # from _audio_model_ids.
+        self._speech_model_ids: frozenset = frozenset()
+        # {speech_model_id: [supported voice names]} harvested from each
+        # model's `supported_voices` field. Voice names are provider-specific
+        # (kokoro uses af_bella/am_adam, deepgram uses aura-2-thalia-en, ...),
+        # so the single AUDIO_OUTPUT_VOICE valve can't be right for every
+        # provider. This map lets _run_speech_generation pick a valid default
+        # per model instead of blindly sending an OpenAI voice everywhere.
+        # Reassigned wholesale (atomic under the GIL) on each pipes() refresh.
+        self._speech_voices: dict = {}
         # Flip on after pipes() has run at least once for this Pipe
         # instance so pipe() doesn't keep lazy-triggering it on every
         # request when the user happens to have zero audio/video models.
@@ -1114,6 +1129,11 @@ class Pipe:
     def videos_url(self) -> str:
         """Return the full URL for the video generation endpoint."""
         return f"{self._base}{_API_PATH_VIDEOS}"
+
+    @property
+    def speech_url(self) -> str:
+        """Return the full URL for the text-to-speech (TTS) endpoint."""
+        return f"{self._base}{_API_PATH_AUDIO_SPEECH}"
 
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
@@ -1242,6 +1262,8 @@ class Pipe:
         # see an empty set and skip audio/video routing silently.
         video_ids: set = set()
         audio_ids: set = set()
+        speech_ids: set = set()
+        speech_voices: dict = {}
 
         for model in data:
             model_id = model.get("id")
@@ -1330,6 +1352,18 @@ class Pipe:
                     video_ids.add(model_id)
                 if "audio" in out_modalities:
                     audio_ids.add(model_id)
+                # TTS models expose "speech" (not "audio") and are served by
+                # the dedicated /audio/speech endpoint, not /chat/completions.
+                if "speech" in out_modalities:
+                    speech_ids.add(model_id)
+                    # Capture provider-specific voice names so the TTS flow can
+                    # default to a valid voice per model instead of forcing the
+                    # OpenAI-flavoured valve default everywhere.
+                    sv = model.get("supported_voices")
+                    if isinstance(sv, list):
+                        voices = [v for v in sv if isinstance(v, str) and v]
+                        if voices:
+                            speech_voices[model_id] = voices
 
             models.append(model_dict)
 
@@ -1357,6 +1391,8 @@ class Pipe:
         # transient state.
         self._video_model_ids = frozenset(video_ids)
         self._audio_model_ids = frozenset(audio_ids)
+        self._speech_model_ids = frozenset(speech_ids)
+        self._speech_voices = speech_voices
         self._lazy_populated = True
 
         # Store in cache
@@ -1483,6 +1519,7 @@ class Pipe:
         # audio-modality injection mid-rebuild.
         audio_models = self._audio_model_ids
         video_models = self._video_model_ids
+        speech_models = self._speech_model_ids
 
         # All downstream mutations target a per-request copy; never mutate
         # the OWUI-owned body — that dict is reused by OWUI for history,
@@ -1514,6 +1551,28 @@ class Pipe:
                     cfg["voice"] = eff.AUDIO_OUTPUT_VOICE
                 body["audio"] = cfg
             body["stream"] = True
+
+        # Speech-output (TTS) models (kokoro, deepgram/aura, gemini-tts, ...)
+        # are served by the dedicated /audio/speech endpoint (text in → raw
+        # audio bytes out), NOT /chat/completions. Route there and re-host the
+        # returned audio as an OWUI file embedded via block-HTML <audio>.
+        if model_id in speech_models:
+            try:
+                result = await self._run_speech_generation(
+                    body,
+                    model_id,
+                    eff,
+                    __event_emitter__,
+                    __request__,
+                    __user__,
+                    __metadata__,
+                )
+            finally:
+                if __event_emitter__:
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": "", "done": True}}
+                    )
+            return result
 
         # Video-output models (veo, kling, sora, seedance, ...) are NOT
         # served by /chat/completions — that endpoint 500s for them.
@@ -2797,6 +2856,174 @@ class Pipe:
         return await self._owui_upload_bytes(
             request, user, metadata, video_bytes, content_type, "Video"
         )
+
+    async def _run_speech_generation(
+        self,
+        body: dict,
+        model_id: str,
+        valves,
+        emitter,
+        request,
+        user,
+        metadata,
+    ) -> str:
+        """Synthesize speech via OpenRouter's /audio/speech endpoint.
+
+        TTS (speech-output) models — kokoro, deepgram/aura, gemini-tts, etc. —
+        are NOT served by /chat/completions. They use the dedicated
+        ``POST /api/v1/audio/speech`` endpoint which takes ``{model, input,
+        voice, response_format}`` and returns a *raw audio byte stream* (not
+        JSON), plus an ``X-Generation-Id`` header. This method extracts the
+        latest user message as the text to speak, calls the endpoint, enforces
+        the same byte cap as the other media flows, re-hosts the bytes through
+        OWUI's file system, and returns a block-HTML ``<audio>`` embed.
+
+        We always request ``response_format="mp3"`` (the endpoint defaults to
+        raw ``pcm``, which a browser can't play without a WAV wrapper), so the
+        result is universally playable regardless of the model's provider.
+        """
+        # Same "latest user text" extraction the video flow uses — TTS also
+        # takes a flat input string, not a chat history.
+        input_text = self._extract_video_prompt(body)
+        if not input_text:
+            return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
+
+        # Resolve the voice. ``voice`` is a REQUIRED field with no server-side
+        # default, and voice names are provider-specific (kokoro: af_bella/…,
+        # deepgram: aura-2-thalia-en, gemini: Zephyr, …), so a single global
+        # valve can't be right for every model. Prefer the configured voice
+        # when it's valid for THIS model; otherwise fall back to the model's
+        # first advertised voice (dynamic, harvested from the catalog). Only
+        # when we have no voice list for the model do we pass the valve value
+        # through as-is (best effort) — blanked → 'alloy'.
+        configured = (valves.AUDIO_OUTPUT_VOICE or "").strip()
+        supported = self._speech_voices.get(model_id) or []
+        if supported:
+            voice = configured if configured in supported else supported[0]
+        else:
+            voice = configured or "alloy"
+        headers = self._build_headers(model_id=model_id, valves=valves)
+        payload: dict = {
+            "model": model_id,
+            "input": input_text,
+            "voice": voice,
+            "response_format": "mp3",
+        }
+        # Forward an optional playback-speed multiplier if the caller set one.
+        speed = body.get("speed")
+        if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
+            payload["speed"] = speed
+
+        if emitter:
+            try:
+                await emitter(
+                    {
+                        "type": "status",
+                        "data": {"description": "Generating speech...", "done": False},
+                    }
+                )
+            except Exception:
+                pass
+
+        resp = None
+        gen_id = ""
+        try:
+            try:
+                resp = self._session.post(
+                    self.speech_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=valves.REQUEST_TIMEOUT,
+                    stream=True,
+                )
+            except requests.exceptions.Timeout:
+                return f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s."
+            except requests.exceptions.RequestException as exc:
+                return f"OpenRouter Error: Speech synthesis request failed: {exc}"
+
+            if resp.status_code in (401, 403):
+                return f"OpenRouter Error: Authentication failed (HTTP {resp.status_code}). Check OPENROUTER_API_KEY."
+            if resp.status_code == 402:
+                return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model."
+            if resp.status_code == 429:
+                return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
+            if resp.status_code >= 400:
+                detail = ""
+                try:
+                    err = resp.json().get("error", {})
+                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                except Exception:
+                    detail = (resp.text or "")[:300]
+                return f"OpenRouter Error: Speech synthesis failed (HTTP {resp.status_code}). {detail}"
+
+            gen_id = resp.headers.get("X-Generation-Id") or ""
+            # Enforce the audio byte cap BEFORE materializing the full body —
+            # a Content-Length gives us an early reject, and the streamed read
+            # bounds memory if the header is absent or lies.
+            try:
+                _declared_len = int(resp.headers.get("Content-Length") or "0")
+            except (TypeError, ValueError):
+                _declared_len = 0
+            if _declared_len > _AUDIO_MAX_BYTES:
+                return (
+                    "OpenRouter Error: Speech download rejected — declared size "
+                    f"{_declared_len} bytes exceeds {_AUDIO_MAX_BYTES} byte cap."
+                )
+            buf = bytearray()
+            try:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    buf.extend(chunk)
+                    if len(buf) > _AUDIO_MAX_BYTES:
+                        return (
+                            "OpenRouter Error: Speech download exceeded "
+                            f"{_AUDIO_MAX_BYTES} byte cap mid-stream."
+                        )
+            except requests.exceptions.RequestException as exc:
+                return f"OpenRouter Error: Speech download failed: {exc}"
+            audio_bytes = bytes(buf)
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+
+        if not audio_bytes:
+            return "OpenRouter Error: Speech synthesis returned 0 bytes."
+
+        # We always request mp3, so persist as audio/mpeg regardless of the
+        # upstream Content-Type — never trust a relay-supplied header to steer
+        # OWUI's renderer toward a different type.
+        upload = await self._upload_audio_to_owui(
+            request, user, metadata, audio_bytes, content_type="audio/mpeg"
+        )
+        if not upload:
+            return (
+                "OpenRouter Error: Speech generated but could not be persisted to "
+                "Open WebUI storage. Re-run inside an active OWUI chat session."
+            )
+        _file_id, new_url = upload
+        clean_url = new_url.split("?", 1)[0]
+        # Same block-HTML pattern as the audio-gen / video flows: wrap in <div>
+        # so marked emits a block html token and OWUI renders a real
+        # <audio controls> element.
+        audio_tag = f"\n\n<div><audio>{clean_url}</audio></div>\n\n"
+
+        footer = ""
+        if valves.SHOW_GENERATION_ID and gen_id:
+            # Shared helper sanitizes the upstream-supplied ID (strips
+            # backticks/newlines) before embedding it in the code span.
+            footer += _format_generation_id(gen_id)
+        if valves.SHOW_REMAINING_CREDIT:
+            credit_line = self._format_credit_info(
+                self._credit_balance_cached(valves), valves.COST_CURRENCY
+            )
+            if credit_line:
+                footer += credit_line
+
+        return f"{audio_tag}{footer}"
 
     async def _run_video_generation(
         self,
