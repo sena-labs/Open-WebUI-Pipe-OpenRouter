@@ -4409,6 +4409,182 @@ for _fmt, _expected_ct in [("wav", "audio/wav"), ("flac", "audio/flac"), ("opus"
     asyncio.run(_p._materialize_audio_output(_payload_b64, _p.valves, object(), {"id": "u"}, {"chat_id": "c"}))
     _assert(_ct_seen["ct"] == _expected_ct, f"format {_fmt} → MIME {_expected_ct}")
 
+# ── text-to-speech (TTS): detection + /audio/speech routing ───────────────────
+
+_section("text-to-speech (TTS): detection + /audio/speech routing")
+
+# pipes() should populate _speech_model_ids for models whose architecture
+# reports output_modalities=["speech"] (dedicated /audio/speech endpoint),
+# and must NOT conflate them with chat-served audio-output models.
+_p_tts1 = Pipe()
+_fake_tts_data = [
+    {"id": "hexgrad/kokoro-82m", "name": "Kokoro",
+     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
+     "supported_voices": ["af_bella", "af_nova", "am_adam"]},
+    {"id": "deepgram/aura-2", "name": "Aura 2",
+     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]}},
+    {"id": "openai/gpt-audio", "name": "GPT Audio",
+     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "audio"]}},
+    {"id": "openai/whisper-1", "name": "Whisper",
+     "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]}},
+    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude",
+     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]}},
+]
+class _TTSModelsResp:
+    status_code = 200
+    def json(self): return {"data": _fake_tts_data}
+    def raise_for_status(self): pass
+    def close(self): pass
+class _TTSModelsSess:
+    def get(self, *a, **kw): return _TTSModelsResp()
+_p_tts1._session = _TTSModelsSess()
+_p_tts1.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
+_p_tts1.valves.SYNC_PROVIDER_ICONS = False
+_p_tts1.pipes()
+_assert("hexgrad/kokoro-82m" in _p_tts1._speech_model_ids, "pipes() tracks kokoro as speech/TTS")
+_assert("deepgram/aura-2" in _p_tts1._speech_model_ids, "pipes() tracks aura-2 as speech/TTS")
+_assert("openai/gpt-audio" not in _p_tts1._speech_model_ids, "audio-output model is NOT tracked as speech")
+_assert("hexgrad/kokoro-82m" not in _p_tts1._audio_model_ids, "speech model is NOT tracked as chat-audio")
+_assert("anthropic/claude-3.5-sonnet" not in _p_tts1._speech_model_ids, "text-only model is NOT speech")
+# All five modality kinds still land in the catalog (import is complete).
+_assert(len([m for m in _p_tts1.pipes() if m.get("id") != "error"]) == 5,
+        "all speech/audio/transcription/text models imported into catalog")
+# pipes() harvests provider-specific voice lists from `supported_voices`.
+_assert(_p_tts1._speech_voices.get("hexgrad/kokoro-82m") == ["af_bella", "af_nova", "am_adam"],
+        "pipes() captures supported_voices for speech models")
+_assert("deepgram/aura-2" not in _p_tts1._speech_voices,
+        "speech model without supported_voices is absent from the voice map")
+
+# Empty prompt → friendly error, no HTTP call.
+_p_tts2 = Pipe()
+_tts_empty = asyncio.run(_p_tts2._run_speech_generation(
+    {"messages": []}, "hexgrad/kokoro-82m", _p_tts2.valves, None, None, None, None
+))
+_assert("non-empty text prompt" in _tts_empty, "TTS empty prompt → friendly error")
+
+# Success path: POST /audio/speech returns raw mp3 bytes → upload (mock) →
+# block-HTML <div><audio>URL</audio></div>, and the request payload carries
+# model/input/voice/response_format=mp3.
+_p_tts3 = Pipe()
+_p_tts3.valves.AUDIO_OUTPUT_VOICE = "nova"
+_tts_ok_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "X-Generation-Id": "gen-tts-1"})
+_tts_ok_resp.content = b"\xff\xfb\x90\x00fake-mp3-bytes"
+_p_tts3._session = _FakeSession([_tts_ok_resp])
+_tts_up = {"len": None, "ct": None}
+async def _fake_upload_tts(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    _tts_up["len"] = len(audio_bytes)
+    _tts_up["ct"] = content_type
+    return ("tts-abc", "/api/v1/files/tts-abc/content")
+_p_tts3._upload_audio_to_owui = _fake_upload_tts.__get__(_p_tts3, Pipe)  # type: ignore
+_tts_ok = asyncio.run(_p_tts3._run_speech_generation(
+    {"messages": [{"role": "user", "content": "Hello world"}]},
+    "hexgrad/kokoro-82m",
+    _p_tts3.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
+))
+_assert("<div><audio>/api/v1/files/tts-abc/content</audio></div>" in _tts_ok,
+        "TTS success → block-level <div><audio>URL</audio></div> token")
+_assert(_tts_up["ct"] == "audio/mpeg", "TTS persists as audio/mpeg (always mp3)")
+_tts_post = [c for c in _p_tts3._session.calls if c[0] == "POST"]
+_assert(len(_tts_post) == 1 and _tts_post[0][1].endswith("/audio/speech"),
+        "TTS POSTs to the /audio/speech endpoint")
+_tts_body = _tts_post[0][2].get("json") or {}
+_assert(_tts_body.get("model") == "hexgrad/kokoro-82m", "TTS payload carries model id")
+_assert(_tts_body.get("input") == "Hello world", "TTS payload carries the user text as input")
+_assert(_tts_body.get("voice") == "nova", "TTS with no voice list → valve voice passed verbatim")
+_assert(_tts_body.get("response_format") == "mp3", "TTS always requests mp3")
+
+# ── per-provider voice resolution ─────────────────────────────────────────────
+# Helper: run TTS against a fake /audio/speech and return the voice actually sent.
+def _tts_voice_sent(model_id, valve_voice, voice_map):
+    _p = Pipe()
+    _p.valves.AUDIO_OUTPUT_VOICE = valve_voice
+    _p._speech_voices = dict(voice_map)  # type: ignore
+    _r = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+    _r.content = b"\xff\xfbxx"
+    _p._session = _FakeSession([_r])
+    async def _up(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+        return ("x", "/api/v1/files/x/content")
+    _p._upload_audio_to_owui = _up.__get__(_p, Pipe)  # type: ignore
+    asyncio.run(_p._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        model_id, _p.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+    ))
+    return ([c for c in _p._session.calls if c[0] == "POST"][0][2].get("json") or {}).get("voice")
+
+_kv = {"hexgrad/kokoro-82m": ["af_bella", "af_nova", "am_adam"]}
+# Configured voice valid for this model → used as-is.
+_assert(_tts_voice_sent("hexgrad/kokoro-82m", "am_adam", _kv) == "am_adam",
+        "configured voice valid for model → kept")
+# Configured voice invalid for this model (e.g. OpenAI 'alloy' on kokoro) →
+# falls back to the model's first advertised voice instead of 400ing.
+_assert(_tts_voice_sent("hexgrad/kokoro-82m", "alloy", _kv) == "af_bella",
+        "invalid voice → first supported voice for the model")
+# Blank valve + known voice list → first supported voice (not 'alloy').
+_assert(_tts_voice_sent("hexgrad/kokoro-82m", "", _kv) == "af_bella",
+        "blank voice + voice list → first supported voice")
+# Blank valve + no voice list for model → 'alloy' fallback.
+_assert(_tts_voice_sent("minimax/speech-2.8-hd", "", {}) == "alloy",
+        "blank voice + no voice list → 'alloy'")
+
+# Blank voice valve falls back to 'alloy' (voice is a required upstream field).
+_p_tts_v = Pipe()
+_p_tts_v.valves.AUDIO_OUTPUT_VOICE = ""
+_tts_v_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+_tts_v_resp.content = b"\xff\xfbxx"
+_p_tts_v._session = _FakeSession([_tts_v_resp])
+async def _fake_upload_tts_v(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
+    return ("v", "/api/v1/files/v/content")
+_p_tts_v._upload_audio_to_owui = _fake_upload_tts_v.__get__(_p_tts_v, Pipe)  # type: ignore
+asyncio.run(_p_tts_v._run_speech_generation(
+    {"messages": [{"role": "user", "content": "hi"}]},
+    "hexgrad/kokoro-82m", _p_tts_v.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+))
+_tts_v_body = [c for c in _p_tts_v._session.calls if c[0] == "POST"][0][2].get("json") or {}
+_assert(_tts_v_body.get("voice") == "alloy", "blank voice valve → defaults to 'alloy'")
+
+# Upstream error statuses → wrapped, human-readable errors (no bytes uploaded).
+for _code, _needle in [(401, "Authentication failed"), (402, "Insufficient credits"),
+                       (429, "Rate limited")]:
+    _p_e = Pipe()
+    _p_e._session = _FakeSession([_FakeResp(_code, {"error": {"message": "x"}})])
+    _tts_err = asyncio.run(_p_e._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        "hexgrad/kokoro-82m", _p_e.valves, None, None, None, None,
+    ))
+    _assert(_needle in _tts_err, f"TTS HTTP {_code} → '{_needle}' error")
+
+# Generic 400 → wrapped error surfaces upstream detail (e.g. bad voice for provider).
+_p_e400 = Pipe()
+_p_e400._session = _FakeSession([_FakeResp(400, {"error": {"message": "invalid voice 'nova'"}})])
+_tts_400 = asyncio.run(_p_e400._run_speech_generation(
+    {"messages": [{"role": "user", "content": "hi"}]},
+    "deepgram/aura-2", _p_e400.valves, None, None, None, None,
+))
+_assert("Speech synthesis failed" in _tts_400 and "invalid voice" in _tts_400,
+        "TTS 400 → wrapped error with upstream detail")
+
+# No OWUI runtime context (upload returns None) → explanatory persist error.
+_p_tts_noctx = Pipe()
+_tts_nc_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+_tts_nc_resp.content = b"\xff\xfbbytes"
+_p_tts_noctx._session = _FakeSession([_tts_nc_resp])
+_tts_nc = asyncio.run(_p_tts_noctx._run_speech_generation(
+    {"messages": [{"role": "user", "content": "hi"}]},
+    "hexgrad/kokoro-82m", _p_tts_noctx.valves, None, None, None, None,
+))
+_assert("could not be persisted" in _tts_nc, "TTS without OWUI context → persist error message")
+
+# Byte cap enforced mid-stream (declared Content-Length over the cap → reject).
+_p_tts_cap = Pipe()
+_tts_cap_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "Content-Length": str(60 * 1024 * 1024)})
+_tts_cap_resp.content = b"x"
+_p_tts_cap._session = _FakeSession([_tts_cap_resp])
+_tts_cap = asyncio.run(_p_tts_cap._run_speech_generation(
+    {"messages": [{"role": "user", "content": "hi"}]},
+    "hexgrad/kokoro-82m", _p_tts_cap.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
+))
+_assert("byte cap" in _tts_cap, "TTS declared size over cap → rejected before download")
+
 # ── audit fixes: tool-stream media + video 402 + non-stream finalize ─────────
 
 _section("audit fixes: tool-stream media + video 402 + non-stream status finalize")

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-07-24
+
+### Added
+
+- **Text-to-speech (TTS) routing via the dedicated `/audio/speech` endpoint.** OpenRouter serves three distinct "audio-ish" model classes on three different endpoints: audio-gen (`output_modalities: ["audio"]` — gpt-audio, lyria) over `/chat/completions`; TTS (`output_modalities: ["speech"]` — kokoro, deepgram/aura-2, gemini-tts, minimax/speech, x-ai/grok-voice-tts, ...) over `POST /api/v1/audio/speech`; and STT (`output_modalities: ["transcription"]`) over `/audio/transcriptions`. Previously only the audio-gen class was handled — the 15 `speech` models were imported into the catalog but, when selected, fell through to `/chat/completions` (the wrong endpoint) and failed. `pipes()` now tracks them in `_speech_model_ids`, and `pipe()` routes them to the new `_run_speech_generation()`, which extracts the latest user message as `input`, calls `/audio/speech` with `response_format=mp3` (the endpoint defaults to raw `pcm`, which browsers can't play without a WAV wrapper), enforces the same 50 MiB byte cap as the other media flows, re-hosts the returned bytes through OWUI's file system, and embeds them as a block-HTML `<audio>` element. Upstream error statuses (401/402/429/4xx) are mapped to human-readable messages; the `X-Generation-Id` response header feeds the optional `SHOW_GENERATION_ID` footer (sanitized via the shared `_format_generation_id` helper).
+- **Per-model voice auto-selection for TTS.** Voice names are provider-specific (kokoro: `af_bella`/`am_adam`, deepgram: `aura-2-thalia-en`, gemini: `Zephyr`, ...), so the single `AUDIO_OUTPUT_VOICE` valve can't be right for every provider — sending the OpenAI-flavoured default `alloy` to kokoro would 400. `pipes()` now harvests each speech model's `supported_voices` list from the catalog into `_speech_voices` (fully dynamic — no hardcoded table, updates automatically as OpenRouter changes voices). `_run_speech_generation()` keeps the configured voice when it's valid for the selected model, otherwise falls back to that model's first advertised voice; only when a model exposes no voice list does it pass the valve value through as-is (blank → `alloy`).
+
+### Changed
+
+- **Module-level frontmatter + `function.json` description** now document the `/audio/speech` TTS flow, and `function.json` gains a `text-to-speech` tag.
+- **`AUDIO_OUTPUT_VOICE` valve description** clarifies that it drives both gpt-audio and dedicated TTS models, and that TTS models auto-fall back to a valid per-model voice when the configured value isn't one they accept.
+
+### Notes
+
+- **STT (`transcription`) is intentionally not routed.** Those models take audio *input* (`/audio/transcriptions`), which doesn't fit a text-first OWUI chat turn; they remain in the catalog but are not dispatched to a dedicated flow.
+
+### Tests
+
+- New "text-to-speech (TTS)" section in `test_pipe.py`: model detection (speech vs audio vs transcription vs text, catalog completeness), `/audio/speech` routing + payload shape, mp3 enforcement, upstream error mapping, byte cap, missing-OWUI-context handling, and per-provider voice resolution (valid → kept, invalid → first supported, blank → first supported or `alloy`, no list → verbatim). All 971 tests green.
+
 ## [1.10.5] — 2026-06-18
 
 ### Fixed

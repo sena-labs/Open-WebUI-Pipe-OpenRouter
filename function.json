@@ -3,13 +3,13 @@
   "name": "OpenRouter Pipe",
   "type": "manifold",
   "meta": {
-    "description": "The definitive OpenRouter integration for Open WebUI. Full catalog (chat / TTS / audio / image / video / embeddings), with native rendering for every output modality: image-gen models (flux, gemini-image-preview, ...) materialize generated data URLs to internal OWUI files and embed as ![](/api/v1/files/.../content); video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via OWUI's block-HTML <video> token; audio-gen models (lyria, gpt-audio with auto pcm16 → WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed as block-HTML <audio>. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered), auto-discovered provider icons. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.",
+    "description": "The definitive OpenRouter integration for Open WebUI. Full catalog (chat / TTS / audio / image / video / embeddings), with native rendering for every output modality: image-gen models (flux, gemini-image-preview, ...) materialize generated data URLs to internal OWUI files and embed as ![](/api/v1/files/.../content); video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via OWUI's block-HTML <video> token; audio-gen models (lyria, gpt-audio with auto pcm16 → WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed as block-HTML <audio>; TTS/speech models (kokoro, deepgram-aura, gemini-tts, ...) route through the dedicated /api/v1/audio/speech endpoint (text in, raw mp3 bytes out) with per-model voice auto-selection from supported_voices, then re-host and embed as block-HTML <audio>. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal→xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered), auto-discovered provider icons. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.",
     "manifest": {
       "title": "OpenRouter Pipe",
       "author": "Sena Labs",
       "author_url": "https://github.com/sena-labs",
       "funding_url": "https://ko-fi.com/senalabs",
-      "version": "1.10.5",
+      "version": "1.11.0",
       "license": "MIT",
       "required_open_webui_version": "0.4.0",
       "requirements": ["requests>=2.32.4", "pydantic>=2.0"]
@@ -28,6 +28,7 @@
       "image-generation",
       "video-generation",
       "audio-generation",
+      "text-to-speech",
       "middleware"
     ],
     "categories": ["integration", "model-provider"],
@@ -36,6 +37,6 @@
   "content": "openrouter_pipe.py",
   "is_active": true,
   "is_global": true,
-  "updated_at": "2026-05-31T17:00:00.000Z",
+  "updated_at": "2026-07-24T00:00:00.000Z",
   "created_at": "2026-01-21T00:00:00.000Z"
 }
