@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-07-24
+
+### Added
+
+- **TTS reading quality overhaul — the voice now speaks prose, not markup.** A speech model read its `input` verbatim, so `**bold**` was spoken as "asterisk asterisk bold …", `# Heading` as "hash Heading", `[label](https://…)` read the whole URL character-by-character, and emoji / fenced code / reasoning `<details>` panels were all read aloud. New `_clean_tts_text()` reproduces Open WebUI's native TTS cleaning chain (`removeEmojis` + the 15-step `removeFormattings`, plus `<details>` stripping) and adds LaTeX removal (`$…$`, `$$…$$`, `\(…\)`, `\[…\]` — a documented gap in OWUI's own path). Dependency-free (broad Unicode-range emoji regex; the repo keeps its `requests`+`pydantic`-only footprint). It also strips our own `<audio>`/`<video>` embeds so a prior TTS turn is never fed back as text to speak.
+- **Length handling — long text no longer fails.** Previously a single unbounded POST hit OpenRouter's ~4096-char `/audio/speech` cap and returned HTTP 400 (or was silently truncated). New `_split_tts_text()` splits cleaned text into ≤3900-char chunks (OWUI-style: `punctuation` default with a <4-word/<50-char merge pass, `paragraphs`, or `none`; oversize chunks hard-wrapped on whitespace), synthesizes each, and **concatenates the audio back into one clip** — mp3 frames are concatenated directly; a provider that ignores the mp3 request and returns raw PCM (e.g. Gemini-TTS via OpenRouter) has its concatenated samples wrapped once in a WAV container. The cumulative 50 MiB byte cap is enforced across chunks.
+- **`TTS_SOURCE` valve (auto / user / assistant).** Chooses what a speech model reads: `auto` (default) speaks the last assistant reply when the chat has one (the "read that answer aloud" case), otherwise the user's message; `user` and `assistant` force either. `auto` skips our own audio embeds so repeated TTS turns don't try to "speak" a previous clip.
+- **`AUDIO_OUTPUT_SPEED` valve** — forwards a `speed` multiplier to `/audio/speech` (a per-request body `speed` still wins). Empty = provider default.
+- **Per-message `[voice=NAME]` directive** — pick a voice for a single message (validated against the model's `supported_voices`, with the directive stripped from the spoken text) without editing the global valve.
+- **`AUDIO_TTS_SPLIT` valve** (`punctuation` / `paragraphs` / `none`) mirroring OWUI's Response Splitting.
+- **In-memory TTS result cache** keyed on `sha256(model | voice | format | speed | split | cleaned text)` → the hosted clip URL, so regenerating or re-sending identical text is returned instantly without re-billing the provider or re-uploading. Bounded (cleared wholesale past 256 entries).
+
+### Changed
+
+- `_run_speech_generation` refactored around the clean → split → synthesize-each → concatenate → cache pipeline; per-chunk HTTP moved into `_tts_fetch_chunk`. All new valves mirrored into `UserValves` for per-user override. Module + `function.json` descriptions and the `AUDIO_OUTPUT_VOICE` valve doc updated.
+
+### Fixed
+
+- **Tool calling on a non-tool model no longer 404s the whole request.** With any Open WebUI tool enabled (e.g. `get_current_timestamp`), a `tools`/`tool_choice` signal reached every model — but 175 of the ~447 catalog models have no tool-capable endpoint, so OpenRouter rejected the entire request with `HTTP 404 "No endpoints found that support tool use. Try disabling …"`. The model appeared broken even though it simply can't do tools. `pipes()` now tracks tool-capable models (`supported_parameters` containing `tools`/`tool_choice`) in `_tool_capable_ids`, and for a model that isn't tool-capable `pipe()` strips **both** sources of the tool signal — the `tools` array the pipe builds from `__tools__`, **and** the `tools`/`tool_choice` that Open WebUI's native function-calling injects straight into the request body (which `_prepare_payload` would otherwise pass through) — so the model answers normally instead of 404ing (with a status note + log line). Verified end-to-end through the real OWUI HTTP stack: a tool enabled on `perceptron/perceptron-mk1` reproduced the exact 404 before the fix and returns a normal answer after. Virtual variants (`base:nitro`) inherit the base model's capability; when the capability set is unknown (pre-fetch/fetch failure) tools are forwarded as before so tool use is never broken blindly. The generic 404 message was also reworded (it no longer claims "the model ID may be wrong" — it now names the capability-mismatch case).
+
+- **More capability-mismatch fixes (same class as the tool 404), from a full audit of every OpenRouter model kind against the docs.** OpenRouter treats `tools`/`tool_choice`/`response_format(json_schema)/structured_outputs` as *hard routing constraints* — sending one to a model whose endpoints lack it 404s the whole request (everything else, like sampling params or `reasoning`, is silently ignored unless `require_parameters` is set). `pipes()` now also tracks `_structured_output_ids` and `_reasoning_ids`, and `pipe()` gates accordingly (generalized `_model_has_cap`):
+    - **`response_format`** (from the `RESPONSE_FORMAT`/`RESPONSE_SCHEMA` valves or the body) is dropped for a model without structured-output support, instead of 404/400ing (verified: a non-structured model now answers normally with the valve set).
+    - **Orphan `tool_choice`** — a `TOOL_CHOICE=required`/`auto` valve (or body value) with no tools present is now stripped for *every* model; providers 400 on a bare `tool_choice`.
+    - **`reasoning`/`include_reasoning`** (forced on every request via `INCLUDE_REASONING`) is dropped for non-reasoning models, so `REQUIRE_PARAMETERS=true` no longer 404s them (and dead params aren't sent).
+    - **Non-chat models** — embeddings (27), transcription/STT (12) and rerank (4) have no `/chat/completions` endpoint and 400/404 when selected in the chat picker. They now return a clear, actionable message ("'X' is a embeddings-type model … call OpenRouter's /api/v1/embeddings endpoint directly") instead of the raw upstream error. They stay visible in the catalog (per user preference); speech/video/audio/image keep their existing dedicated handling. Image models are left to try chat (many, e.g. gemini-image, return images fine; the ones that don't — new /images-only models like gpt-image — surface OpenRouter's own clear detail).
+
+### Notes
+
+- `/audio/speech` only supports `response_format` `mp3` or `pcm`, so the TTS path stays on mp3 (universally playable + concatenable) rather than honouring `AUDIO_OUTPUT_FORMAT` (wav/flac/opus) — the raw-PCM→WAV fallback covers providers that ignore the mp3 request. STT (`transcription`) remains unrouted (audio-input, doesn't fit a text-first turn).
+
+### Tests
+
+- ~47 new TTS tests: text cleaning (markdown/emoji/ZWJ/code/LaTeX/`<details>`/media-embed), splitting (punctuation merge, paragraphs, none, hard-wrap), source selection (auto/user/assistant + audio-embed skip), `[voice=]` directive, speed valve, end-to-end cleaned input, multi-chunk concatenation, raw-PCM→WAV fallback, and cache reuse (no second POST).
+- ~14 tool-gate tests + ~18 capability-gating tests: `pipes()` capability tracking (`_tool_capable_ids`/`_structured_output_ids`/`_reasoning_ids`/`_nonchat_kind`), `_model_has_cap` semantics (capable / variant / unknown-set), and pipe() end-to-end — tools dropped for a non-tool model (from both `__tools__` and body) but forwarded for a capable one, `response_format` stripped for a non-structured model but kept for a structured one, `reasoning` stripped for a non-reasoning model, orphan `tool_choice` stripped when no tools present, and a clear error for embeddings/rerank/transcription. All 1050 tests green.
+
 ## [1.11.0] — 2026-07-24
 
 ### Added
