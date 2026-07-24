@@ -1,5 +1,5 @@
 """
-title: OpenRouter Pipe
+title: OpenRouter Pipe — Full Catalog (Chat · TTS · Image · Video)
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
