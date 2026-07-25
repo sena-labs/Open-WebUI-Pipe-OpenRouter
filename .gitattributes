@@ -1,0 +1,36 @@
+# Normalize line endings: LF in the repository, native on checkout.
+# Prevents editors/tools on Windows from rewriting whole files as CRLF
+# and producing diffs where every line looks changed.
+* text=auto eol=lf
+
+# Explicit text types
+*.py    text eol=lf diff=python
+*.md    text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.sh    text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+LICENSE        text eol=lf
+
+# Binary — never touch, never diff as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz  binary
+*.db  binary
+
+# Keep repo-hygiene files out of the exported archive/tarball
+.gitattributes  export-ignore
+.gitignore      export-ignore
+.github/        export-ignore

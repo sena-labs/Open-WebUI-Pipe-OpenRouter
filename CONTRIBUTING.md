@@ -161,7 +161,7 @@ using the **Bug report** template and include:
 Before opening a feature request:
 
 1. Check the [OpenRouter API docs](https://openrouter.ai/docs) to confirm the feature exists upstream.
-2. Check the [Open WebUI Pipe docs](https://docs.openwebui.com/features/plugin/functions/pipe) for compatibility constraints.
+2. Check the [Open WebUI Pipe docs](https://docs.openwebui.com/features/extensibility/plugin/functions/pipe) for compatibility constraints.
 3. Open an issue using the **Feature request** template and describe the use case and expected behavior.
 
 ---

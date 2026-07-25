@@ -30,17 +30,61 @@ Desktop.ini
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+!.env.sample
+
+# Credentials, keys and certificates — never commit these
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+secrets.json
+credentials.json
+service-account*.json
+.netrc
+.npmrc
+.pypirc
 
 # Test artifacts
 .pytest_cache/
 htmlcov/
 .coverage
+.coverage.*
+coverage.xml
+.tox/
+.nox/
+
+# Lint / type-check caches
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Node (in case tooling pulls it in)
+node_modules/
 
 # Logs
 *.log
 
 tmpclaude-*
 nul
+
+# Editor / merge leftovers
+*.bak
+*.orig
+*.rej
+
+# Local databases and dumps
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
 
 # Auto Claude data directory
 .auto-claude/
@@ -57,9 +101,24 @@ logs/security/
 .claude/
 .claude-flow/
 .swarm/
+.direnv/
+
+# Other AI coding-agent local state
+.cursor/
+.serena/
+.codex/
+.gemini/
+.opencode/
+.crush/
+.aider*
 
 # Remember plugin history
 .remember/
+
+# Internal implementation plans / design notes written for agentic workers.
+# Kept locally as working notes; not user-facing documentation, so they stay
+# out of the published repo.
+docs/superpowers/
 
 # mypy cache
 .mypy_cache/

@@ -66,7 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`ZDR_MODELS_ONLY` returned 0 models — ID mismatch between `/endpoints/zdr` and `/models`** ([#14](https://github.com/sena-labs/Public/issues/14)). OpenRouter's `/endpoints/zdr` returns entries keyed on the `model_id` field (e.g. `anthropic/claude-4.8-opus-20260528`), but `_load_zdr_model_ids()` only read `id`/`model`, so the ZDR set came back empty and every model was filtered out ("No ZDR-capable models available."). Two changes: (1) `_load_zdr_model_ids()` now extracts `model_id` first, falling back to `id`/`model` for forward-compat; (2) the `pipes()` filter compares **both** the short `/models` `id` and the entry's `canonical_slug` against the ZDR set, since the canonical slug is what the ZDR endpoint keys on and frequently differs from the short id.
+- **`ZDR_MODELS_ONLY` returned 0 models — ID mismatch between `/endpoints/zdr` and `/models`** ([#14](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/issues/14)). OpenRouter's `/endpoints/zdr` returns entries keyed on the `model_id` field (e.g. `anthropic/claude-4.8-opus-20260528`), but `_load_zdr_model_ids()` only read `id`/`model`, so the ZDR set came back empty and every model was filtered out ("No ZDR-capable models available."). Two changes: (1) `_load_zdr_model_ids()` now extracts `model_id` first, falling back to `id`/`model` for forward-compat; (2) the `pipes()` filter compares **both** the short `/models` `id` and the entry's `canonical_slug` against the ZDR set, since the canonical slug is what the ZDR endpoint keys on and frequently differs from the short id.
 
 ### Tests
 
@@ -444,9 +444,19 @@ Identifier-rename release based on a misread of the OWUI portal slugifier. See 1
 - Model prefix customization
 
 <!-- Compare links — only point to tags that exist on GitHub.
-     v1.1.1 and v1.2.0 were documented but never tagged; their content is consolidated under v1.3.0. -->
-[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.3.0...HEAD
+     Tagged: v1.1.0, v1.3.0, v1.9.0, v1.10.0–v1.10.5, v1.11.0, v1.12.0.
+     Documented but never tagged: 0.1.0, 1.0.0, 1.1.1, 1.2.0, 1.4.0–1.8.1. Those
+     headings intentionally have no link definition, so they render as plain text
+     rather than pointing at a tag that would 404. -->
+[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.11.0...v1.12.0
+[1.11.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.5...v1.11.0
+[1.10.5]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.4...v1.10.5
+[1.10.4]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.3...v1.10.4
+[1.10.3]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.2...v1.10.3
+[1.10.2]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.1...v1.10.2
+[1.10.1]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.0...v1.10.1
+[1.10.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.9.0...v1.10.0
+[1.9.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.3.0...v1.9.0
 [1.3.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.1.0...v1.3.0
-[1.1.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v0.1.0...v1.0.0
-[0.1.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/releases/tag/v0.1.0
+[1.1.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/releases/tag/v1.1.0

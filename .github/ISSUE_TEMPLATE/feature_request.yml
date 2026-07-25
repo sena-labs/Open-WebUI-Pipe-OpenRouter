@@ -25,4 +25,4 @@ body:
       label: Pre-submission Checklist
       options:
         - label: I checked [OpenRouter API docs](https://openrouter.ai/docs) to confirm this feature exists upstream
-        - label: I checked [Open WebUI Pipe docs](https://docs.openwebui.com/features/plugin/functions/pipe) for compatibility
+        - label: I checked [Open WebUI Pipe docs](https://docs.openwebui.com/features/extensibility/plugin/functions/pipe) for compatibility
