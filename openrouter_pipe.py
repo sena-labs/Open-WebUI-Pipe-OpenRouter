@@ -3,7 +3,7 @@ title: OpenRouter Pipe — Full Catalog (Chat · TTS · Image · Video)
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.12.0
+version: 1.12.1
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
@@ -1704,6 +1704,16 @@ class Pipe:
         # on a subsequent non-audio request through the same chat.
         body = copy.deepcopy(body)
 
+        # OWUI background tasks (chat-title, follow-up, tags, query, ...
+        # generation) reuse the chat's model unless the admin pins a
+        # dedicated Task Model, and mark the call via metadata["task"].
+        # The speech/video flows below bill real credits per invocation
+        # and their media output is discarded by the task runner, so a
+        # single "generate a video" message otherwise fires 3 paid jobs
+        # (chat + title + follow-up) while the user sees only one result.
+        # Answer task calls with a cheap placeholder instead.
+        is_task_call = bool((__metadata__ or {}).get("task"))
+
         # Audio-output models (lyria, gpt-audio, ...) are served by
         # /chat/completions BUT need explicit modalities=["text","audio"]
         # plus an audio config object plus stream=true; otherwise the
@@ -1734,6 +1744,8 @@ class Pipe:
         # audio bytes out), NOT /chat/completions. Route there and re-host the
         # returned audio as an OWUI file embedded via block-HTML <audio>.
         if model_id in speech_models:
+            if is_task_call:
+                return "Speech Generation"
             try:
                 result = await self._run_speech_generation(
                     body,
@@ -1755,6 +1767,8 @@ class Pipe:
         # served by /chat/completions — that endpoint 500s for them.
         # Route to the async /videos flow instead.
         if model_id in video_models:
+            if is_task_call:
+                return "Video Generation"
             try:
                 result = await self._run_video_generation(
                     body,

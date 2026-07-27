@@ -392,6 +392,17 @@ returned — wait a moment, lower your request rate, or upgrade your OpenRouter 
 
 Add credits at [openrouter.ai/credits](https://openrouter.ai/credits).
 
+### Video/TTS generation bills multiple jobs but shows one result
+
+#### Solution
+
+Open WebUI runs its background tasks (chat-title and follow-up generation) against the chat's own
+model unless a dedicated **Task Model** is configured — so a single video prompt used to submit 3
+paid `/videos` jobs (chat + title + follow-up) with only one result shown. Since v1.12.1 the pipe
+detects these background-task calls and answers them with a cheap placeholder, so only the real
+request is billed. For extra safety you can still pin a cheap Task Model under
+**Admin Panel → Settings → Interface → Tasks** (or disable title/follow-up generation there).
+
 ### "Request timed out"
 
 #### Solution

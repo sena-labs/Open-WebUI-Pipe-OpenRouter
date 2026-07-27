@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-07-27
+
+### Fixed
+
+- **Background tasks no longer bill duplicate media jobs.** Open WebUI fires its background tasks (chat-title, follow-up, tags, query, … generation) against the chat's own model whenever no dedicated Task Model is configured, marking the call via `metadata["task"]`. For a video or speech model each of those calls entered the paid media flow: a single Seedance/Veo prompt submitted **3 billed `/videos` jobs** (chat + title + follow-up) while the user saw only one result — and the discarded jobs ran to completion in the background. `pipe()` now detects task calls and answers them with a cheap placeholder (`"Video Generation"` / `"Speech Generation"`) without touching `/videos` or `/audio/speech`. Normal chats, direct-API calls (no metadata) and non-media models are unaffected. (Reported against Seedance 2.0 Fast.)
+
 ## [1.12.0] — 2026-07-24
 
 ### Added

@@ -4302,6 +4302,66 @@ _video_ids = _p_vg8._video_model_ids
 _assert("google/veo-3.1-fast" in _video_ids, "pipes() tracks video models from output_modalities")
 _assert("anthropic/claude-3.5-sonnet" not in _video_ids, "pipes() does NOT mark text-only models as video")
 
+# ── background-task guard: OWUI title/follow-up calls must not fire paid media jobs ──
+
+_section("background-task guard: metadata['task'] skips video/speech jobs")
+
+# OWUI fires background tasks (title, follow-up, ...) against the chat's own
+# model when no dedicated Task Model is configured, marking the call via
+# metadata["task"]. Without the guard, one video prompt bills 3 jobs
+# (chat + title + follow-up) and the user sees a single result.
+_p_task_v = Pipe()
+_p_task_v._video_model_ids = frozenset({"google/veo-3.1-fast"})  # type: ignore
+_p_task_v._lazy_populated = True
+_p_task_v.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "t" * 50
+_task_v_calls = []
+async def _rec_video(self, *a, **kw):
+    _task_v_calls.append(a)
+    return "real video job"
+_p_task_v._run_video_generation = _rec_video.__get__(_p_task_v, Pipe)  # type: ignore
+_task_body = {
+    "model": "google/veo-3.1-fast",
+    "messages": [{"role": "user", "content": "Create a concise title for the chat history..."}],
+}
+_task_res = asyncio.run(_p_task_v.pipe(
+    _task_body, {"id": "u"}, None, None, object(),
+    {"chat_id": "c", "task": "title_generation"},
+))
+_assert(_task_res == "Video Generation", "task call on video model → placeholder, no job")
+_assert(not _task_v_calls, "task call on video model never reaches _run_video_generation")
+
+# Normal chat call (metadata without "task") still routes to the video flow.
+_chat_res = asyncio.run(_p_task_v.pipe(
+    dict(_task_body), {"id": "u"}, None, None, object(), {"chat_id": "c"},
+))
+_assert(_chat_res == "real video job", "non-task call on video model still routes to video flow")
+_assert(len(_task_v_calls) == 1, "non-task call reached _run_video_generation exactly once")
+
+# __metadata__=None (direct API call) must not trip the guard either.
+_none_res = asyncio.run(_p_task_v.pipe(
+    dict(_task_body), {"id": "u"}, None, None, object(), None,
+))
+_assert(_none_res == "real video job", "__metadata__=None does not trip the task guard")
+_assert(len(_task_v_calls) == 2, "__metadata__=None still routes to video flow")
+
+# Same guard on the speech (TTS) flow.
+_p_task_s = Pipe()
+_p_task_s._speech_model_ids = frozenset({"hexgrad/kokoro-82m"})  # type: ignore
+_p_task_s._lazy_populated = True
+_p_task_s.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "s" * 50
+_task_s_calls = []
+async def _rec_speech(self, *a, **kw):
+    _task_s_calls.append(a)
+    return "real speech job"
+_p_task_s._run_speech_generation = _rec_speech.__get__(_p_task_s, Pipe)  # type: ignore
+_task_s_res = asyncio.run(_p_task_s.pipe(
+    {"model": "hexgrad/kokoro-82m", "messages": [{"role": "user", "content": "suggest follow-ups"}]},
+    {"id": "u"}, None, None, object(),
+    {"chat_id": "c", "task": "follow_up_generation"},
+))
+_assert(_task_s_res == "Speech Generation", "task call on speech model → placeholder, no job")
+_assert(not _task_s_calls, "task call on speech model never reaches _run_speech_generation")
+
 # ── audio output: detection + materialize + block-HTML embed ──────────────────
 
 _section("audio output: model detection + materialize")
