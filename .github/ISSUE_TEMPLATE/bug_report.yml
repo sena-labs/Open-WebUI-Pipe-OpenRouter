@@ -12,7 +12,7 @@ body:
     id: owui-version
     attributes:
       label: Open WebUI Version
-      placeholder: "e.g. 0.4.5"
+      placeholder: "e.g. 0.11.4"
     validations:
       required: true
 
@@ -28,7 +28,15 @@ body:
     id: pipe-version
     attributes:
       label: Pipe Version
-      placeholder: "e.g. 1.3.0"
+      placeholder: "Frontmatter version from the source you installed"
+    validations:
+      required: true
+
+  - type: input
+    id: deployment
+    attributes:
+      label: Deployment and install method
+      placeholder: "Exact Docker image/tag, Helm or pip; pasted Python, imported URL or community hub"
     validations:
       required: true
 
@@ -56,5 +64,5 @@ body:
     id: logs
     attributes:
       label: Error Logs
-      description: "Check server logs for `[OpenRouter Pipe]` messages"
+      description: "Paste backend logs immediately after reproducing; redact secrets. Save failures may say `Failed to create a new function`, `Error loading module`, or show pip/formatter errors before the pipe loads."
       render: shell

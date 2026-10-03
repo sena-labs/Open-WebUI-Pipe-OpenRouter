@@ -8,15 +8,45 @@ then work through each section in order against a live Open WebUI instance.
 - **Open WebUI** ≥ 0.4.0 running locally or in Docker.
 - A valid **OpenRouter API key** (starts with `sk-or-`).
 
+Current automated OWUI compatibility targets: `v0.11.4-slim` and stable `main-slim`.
+The save/schema smoke below needs no OpenRouter key; manual generation and
+`integration_test.py` use the live API and can spend credits.
+
 ---
 
 ## 0. Automated tests
 
 ```bash
 python test_pipe.py
+python -m unittest -v test_maintenance
 ```
 
 Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, **do not release**.
+
+Install the same hashed dependencies as CI when checking a release:
+
+```bash
+python -m pip install --require-hashes -r requirements-ci.txt
+```
+
+### Real OWUI save/update smoke
+
+Run on a disposable empty container, not an existing user deployment:
+
+```bash
+docker run -d --name openrouter-smoke -p 127.0.0.1:3001:8080 \
+  -e WEBUI_SECRET_KEY=isolated-smoke-secret \
+  -e ENABLE_SIGNUP=true -e DO_NOT_TRACK=true \
+  ghcr.io/open-webui/open-webui:v0.11.4-slim
+python smoke_owui.py --base-url http://127.0.0.1:3001
+docker logs openrouter-smoke
+docker rm -f openrouter-smoke
+```
+
+The script creates the first admin account, saves the actual Python source,
+checks admin/user schemas, persists valves, updates the function and removes
+it. On failure, acquire backend logs before classifying an OWUI incompatibility.
+The script deliberately refuses a deployment where its signup is not admin.
 
 ---
 
@@ -296,10 +326,35 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 
 ---
 
+## 26. Dedicated speech/TTS
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 26.1 | Select a speech model; send markdown, emoji and a code block | Voice reads cleaned prose, not markup or code |
+| 26.2 | Set `TTS_SOURCE` to `auto`, `user`, then `assistant` | Correct source is spoken; prior media embeds skipped |
+| 26.3 | Use a valid `[voice=NAME]` directive and set `AUDIO_OUTPUT_SPEED` | Provider receives voice/speed; directive is not spoken |
+| 26.4 | Send more than 3900 characters with `AUDIO_TTS_SPLIT=paragraphs` | Bounded chunks synthesized and concatenated into one playable clip |
+| 26.5 | Regenerate identical speech in same user/chat within five minutes | Existing file reused without another synthesis job |
+| 26.6 | Repeat as another user, in another chat, or after API-key rotation | Separate authorized file generated; no cross-user cached URL |
+| 26.7 | Delete cached OWUI file or wait more than five minutes; regenerate | File regenerated instead of returning a stale URL |
+| 26.8 | Run a slow TTS request while another user opens a chat | Event loop remains responsive |
+
+## 27. Video and media lifecycle
+
+| # | Action | Expected result |
+|---|--------|-----------------|
+| 27.1 | Generate video with background title/follow-up tasks enabled | One real video job; task calls do not submit extra paid jobs |
+| 27.2 | Generate video while another request runs | Submit, poll and download do not block the event loop |
+| 27.3 | Exercise HTTP errors, timeout and over-size downloads with mocks | Friendly errors, byte caps enforced and responses closed |
+| 27.4 | Exercise media redirects with mocks | Redirect rejected; no redirected media request |
+
 ## Quick pre-release checklist
 
-- [ ] `python test_pipe.py` → 939 passed, 0 failed
-- [ ] `python integration_test.py` → 44/44
+- [ ] `python test_pipe.py` → 0 failed
+- [ ] `python -m unittest -v test_maintenance` → OK
+- [ ] `python smoke_owui.py --base-url http://127.0.0.1:3001` → all real OWUI endpoint checks pass
+- [ ] CI Python matrix, both OWUI images and CodeQL pass
+- [ ] `python integration_test.py` → 0 failed (live, optional; can spend credits)
 - [ ] Empty API key → clear error message in model selector
 - [ ] Valid API key → 400+ models with provider icons
 - [ ] Non-streaming chat works
@@ -317,3 +372,7 @@ Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, *
 - [ ] Open WebUI internal fields removed from payload
 - [ ] API key stored encrypted at rest (`encrypted:` prefix) when `WEBUI_SECRET_KEY` is set
 - [ ] Per-user UserValves override admin defaults; admin key inherited when the user key is blank
+- [ ] Dedicated TTS source/voice/speed/cleaning and multi-chunk synthesis work
+- [ ] Cached speech never reuses another user/chat/key's file; deleted/expired files regenerate
+- [ ] Speech and video leave concurrent requests responsive
+- [ ] Media background tasks do not submit duplicate paid jobs

@@ -47,15 +47,17 @@ By participating, you agree to uphold this code.
 
 ### Prerequisites
 
-- **Python** ≥ 3.10 (matches the CI matrix).
-- **`requests`** ≥ 2.20.
+- **Python** ≥ 3.10 (CI covers 3.10–3.14).
+- **`requests`** ≥ 2.32.4.
 - **`pydantic`** ≥ 2.0.
 
 ### Useful commands
 
 | Command | Description |
 | --- | --- |
-| `python test_pipe.py` | Run the full unit test suite (939 tests) |
+| `python test_pipe.py` | Run the procedural assertion suite |
+| `python -m unittest -v test_maintenance` | Run cache ownership, invalidation and concurrency regressions |
+| `python smoke_owui.py --base-url http://127.0.0.1:3001` | Test save/update/schema/valves on a fresh disposable OWUI instance |
 | `python integration_test.py` | Run live API tests (requires `OPENROUTER_API_KEY`) |
 
 ## Deliverable-PR playbook
@@ -74,12 +76,13 @@ of value. The playbook:
    incidental refactors.
 
 3. **Add or update tests.** A change without test coverage needs a written justification
-   in the PR body. The unit test suite must remain at 939/939.
+   in the PR body. Both automated suites must pass without reducing coverage.
 
 4. **Validate locally** using the same commands CI runs:
 
    ```bash
    python test_pipe.py
+   python -m unittest -v test_maintenance
    python integration_test.py   # optional, requires a valid API key
    ```
 
@@ -134,14 +137,24 @@ test: add retry exhaustion coverage
 
 ## Testing
 
-- **Framework:** Python `unittest` (stdlib).
+- **Framework:** `test_pipe.py` is a procedural assertion harness; `test_maintenance.py`
+  uses Python `unittest` (stdlib) for asynchronous maintenance regressions.
 - **Mock strategy:** `unittest.mock.patch` for HTTP calls and Open WebUI internals.
 - **Conventions:**
-  - Test path mirrors source: `openrouter_pipe.py` ↔ `test_pipe.py`.
-  - Each test class covers one unit (`TestPreparePayload`, `TestStreamResponse`, etc.).
-  - Use descriptive method names: `test_fallback_deduplication_removes_duplicates`.
-- **Run the suite the same way CI does:** `python test_pipe.py`. Integration tests require a
-  live API key and are optional for most contributions.
+  - Keep existing `_section` / `_assert` conventions in `test_pipe.py`.
+  - Group maintenance regression methods by behavior; prefer ownership and
+    scheduling checks over assertions that mirror private implementation details.
+- **CI:** both suites run on Python 3.10–3.14 using a hashed dependency snapshot.
+  Real OWUI compatibility checks cover pinned `v0.11.4-slim` and current stable
+  `main-slim`. Tests and CodeQL also run weekly. Live OpenRouter API tests are
+  optional and can spend credits; OWUI smoke needs no API key.
+
+To refresh the reproducible snapshot after changing `requirements-ci.in`:
+
+```bash
+uv pip compile --python-version 3.10 --generate-hashes --no-header --output-file requirements-ci.txt requirements-ci.in
+python -m pip install --require-hashes -r requirements-ci.txt
+```
 
 ## Reporting bugs
 

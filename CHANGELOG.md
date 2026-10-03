@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.2] — 2026-10-03
+
+### Fixed
+
+- **TTS file ownership isolation.** Speech cache fingerprints now include user,
+  chat, endpoint and resolved API-key hash. Another user/chat or a rotated key
+  can no longer reuse the first user's OWUI file URL. Entries expire after five
+  minutes; cached file metadata is checked before reuse and deleted files regenerate.
+- **Non-blocking media HTTP.** TTS synthesis and video submit, polling, JSON parsing,
+  download iteration and response cleanup run in worker threads, leaving the
+  Open WebUI event loop responsive to concurrent requests.
+- **Media redirects rejected.** Speech/video requests disable redirects and
+  explicitly reject 3xx responses instead of following unchecked locations.
+- Live API integration-test output no longer exposes API-key prefixes/suffixes.
+
+### Maintenance
+
+- Added ownership, invalidation and concurrency regression tests and a real
+  OWUI HTTP smoke covering function create/update, admin/user schemas and valve
+  persistence without billed model generation.
+- CI covers Python 3.10–3.14 with pinned, hashed dependencies; OWUI compatibility
+  jobs cover `v0.11.4-slim` and current stable `main-slim`. Weekly and manual runs
+  check upstream changes even without new commits.
+- Updated and commit-pinned GitHub Actions, weekly grouped Dependabot updates
+  and Python CodeQL `security-extended` analysis.
+- Refreshed TTS/configuration/compatibility documentation, security support
+  versions, cache/storage disclosures, bug-report inputs and release checklists.
+
 ## [1.12.1] — 2026-07-27
 
 ### Fixed
@@ -450,11 +478,12 @@ Identifier-rename release based on a misread of the OWUI portal slugifier. See 1
 - Model prefix customization
 
 <!-- Compare links — only point to tags that exist on GitHub.
-     Tagged: v1.1.0, v1.3.0, v1.9.0, v1.10.0–v1.10.5, v1.11.0, v1.12.0, v1.12.1.
+     Tagged: v1.1.0, v1.3.0, v1.9.0, v1.10.0–v1.10.5, v1.11.0, v1.12.0–v1.12.2.
      Documented but never tagged: 0.1.0, 1.0.0, 1.1.1, 1.2.0, 1.4.0–1.8.1. Those
      headings intentionally have no link definition, so they render as plain text
      rather than pointing at a tag that would 404. -->
-[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.1...HEAD
+[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.2...HEAD
+[1.12.2]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.10.5...v1.11.0

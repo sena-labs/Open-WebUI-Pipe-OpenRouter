@@ -25,7 +25,9 @@
 
 ## Testing
 
-- [ ] All unit tests pass (`python test_pipe.py` — 939/939 ✓)
+- [ ] Assertion suite passes (`python test_pipe.py`)
+- [ ] Maintenance regressions pass (`python -m unittest -v test_maintenance`)
+- [ ] OWUI compatibility smoke passes — when save/runtime integration is affected
 - [ ] New tests added for the changes
 - [ ] Integration tests pass (`python integration_test.py`) — if applicable
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`

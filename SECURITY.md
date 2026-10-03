@@ -7,9 +7,9 @@ critical-only fixes on the previous one.
 
 | Version | Status              | Security fixes |
 | ------- | ------------------- | -------------- |
-| 1.8.x   | :white_check_mark:  | active         |
-| 1.7.x   | :white_check_mark:  | critical only  |
-| < 1.7   | :x:                 | end-of-life    |
+| 1.12.x  | :white_check_mark:  | active         |
+| 1.11.x  | :white_check_mark:  | critical only  |
+| < 1.11  | :x:                 | end-of-life    |
 
 ## Reporting a Vulnerability
 
@@ -60,16 +60,32 @@ The pipe implements the following security practices:
 
 - **No key logging** — `OPENROUTER_API_KEY` is never written to logs or included in error messages.
 - **Pre-flight validation** — invalid keys are caught at model-fetch time via the `/models` response, before any user message is sent.
-- **TLS enforced by default** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; the Pydantic validator requires the value to start with `https://` or `http://` and rejects any other scheme.
+- **HTTPS by default** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; custom HTTP endpoints are allowed, and non-HTTP(S) schemes are rejected.
 - **Internal key stripping** — Open WebUI internal fields (`chat_id`, `title`, `task`, `metadata`, `files`, `tool_ids`, `session_id`, `message_id`) are removed from the payload before forwarding.
-- **No data persistence** — the pipe does not store user messages, model responses, or API keys beyond the scope of a single request.
+- **Bounded in-memory caches** — the pipe retains model metadata, authorization headers,
+  credit balances and hashed TTS fingerprints. Speech-file URLs are scoped to user,
+  chat, endpoint and resolved API key, expire after five minutes and are checked
+  against OWUI file metadata before reuse. Generated media is stored by OWUI.
+- **Key storage** — OWUI persists valves; pipe API keys are Fernet-encrypted when
+  `WEBUI_SECRET_KEY` and `cryptography` are available, otherwise stored in plaintext
+  with a warning. Authorization headers necessarily contain decrypted credentials
+  in server memory; neither full keys nor key fragments belong in test output.
+- **Media redirects rejected** — speech/video HTTP calls do not follow redirects,
+  so an upstream redirect cannot bypass media URL restrictions.
 - **Deep-copy payload** — `copy.deepcopy` is used on the request body to prevent mutation of Open WebUI's internal state.
 
 ### Automated Security Gates
 
-Every push to `main` and every pull request runs:
+Every push to `main`, pull request and weekly scheduled run executes:
 
-- **Unit tests** (`.github/workflows/tests.yml`) — 727 tests across Python 3.10–3.13. Failures block merge.
+- **Unit and regression suites** (`.github/workflows/tests.yml`) across Python 3.10–3.14,
+  with pinned and hashed CI dependencies.
+- **Real OWUI compatibility smoke** — create/update a function, generate valve
+  schemas and persist valves on pinned and current stable disposable containers.
+- **CodeQL** (`.github/workflows/codeql.yml`) — Python `security-extended` analysis.
+
+Dependabot checks Python dependencies and GitHub Actions weekly. GitHub secret
+scanning, push protection and private vulnerability reporting are enabled.
 
 ## Disclosure Policy
 
