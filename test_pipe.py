@@ -1,5 +1,5 @@
 """
-Comprehensive test suite for OpenRouter Pipe v1.8.2
+Comprehensive assertion suite for OpenRouter Pipe
 Runs with: python test_pipe.py
 
 Author: Sena Labs (https://github.com/sena-labs)
@@ -18,7 +18,7 @@ import os
 import sys
 from types import ModuleType
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Ensure UTF-8 output on Windows (avoids cp1252 UnicodeEncodeError)
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
@@ -5093,8 +5093,9 @@ async def _up_cache(self, request, user, metadata, audio_bytes, content_type="au
     return ("c", "/api/v1/files/c/content")
 _p_cache._upload_audio_to_owui = _up_cache.__get__(_p_cache, Pipe)  # type: ignore
 _cbody = {"messages": [{"role": "user", "content": "cache me please"}]}
-_c1 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
-_c2 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
+with patch.object(_p_cache, "_speech_file_exists", new=AsyncMock(return_value=True)):
+    _c1 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
+    _c2 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
 _cache_posts = [c for c in _p_cache._session.calls if c[0] == "POST"]
 _assert(len(_cache_posts) == 1, "cache: second identical request makes NO new POST")
 _assert("/api/v1/files/c/content" in _c2, "cache: second request returns the cached clip URL")
@@ -5879,7 +5880,8 @@ class _SessTimeoutLoop:
                                  "status": "pending"})
     def get(self, *a, **kw):
         return _FakeResp(200, {"id": "longjob", "status": "in_progress"})
-# Override time to force deadline expiry quickly
+# Override only the pipe's clock: patching time.monotonic globally freezes
+# asyncio's own scheduling clock and hangs sleeps once transport is off-loop.
 import time as _time_d
 _p_t4._session = _SessTimeoutLoop()
 _orig_mono = _time_d.monotonic
@@ -5890,15 +5892,14 @@ def _fake_mono():
         _fake_mono._calls = 0
     _fake_mono._calls += 1
     return _t0 + (1000 if _fake_mono._calls > 2 else 0)
-_time_d.monotonic = _fake_mono  # type: ignore
-try:
+_pipe_clock = MagicMock(wraps=_time_d)
+_pipe_clock.monotonic.side_effect = _fake_mono
+with patch.object(mod, "time", _pipe_clock):
     _vg_to = asyncio.run(_p_t4._run_video_generation(
         {"messages": [{"role": "user", "content": "x"}]},
         "google/veo-3.1-fast",
         _p_t4.valves, None, None, None, None,
     ))
-finally:
-    _time_d.monotonic = _orig_mono  # type: ignore
 _assert("timed out" in _vg_to and "longjob" in _vg_to,
         "polling deadline → 'timed out' + job id in message")
 _assert("https://" not in _vg_to,

@@ -3,12 +3,12 @@ title: OpenRouter Pipe — Full Catalog (Chat · TTS · Image · Video)
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.12.1
+version: 1.12.2
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
 required_open_webui_version: 0.4.0
 requirements: requests>=2.32.4, pydantic>=2.0
-description: The definitive OpenRouter integration for Open WebUI. Full catalog (chat, TTS, audio input + generation, image generation, video generation, embeddings) with native OWUI rendering for every output modality. Image-gen models (flux, gemini-image-preview) materialise data: URLs into OWUI files and embed as markdown images. Video-gen models (veo, kling, sora, seedance, hailuo, wan, grok-imagine) route through the async /api/v1/videos endpoint with polling, then re-host the MP4 and embed via block-HTML video. Audio-gen models (lyria, gpt-audio with auto pcm16 -> WAV wrap) stream base64 chunks via /chat/completions modalities=['text','audio'] and embed via block-HTML audio. TTS/speech models (kokoro, deepgram-aura, gemini-tts, ...) route through the dedicated /api/v1/audio/speech endpoint: the spoken text is cleaned first (strip markdown/emoji/code/LaTeX/<details> so the voice reads prose not markup, OWUI-style), split past the ~3900-char provider cap and concatenated back into one clip (raw-PCM providers auto-wrapped as WAV), with per-model voice auto-selection, per-message [voice=NAME] directive, AUDIO_OUTPUT_SPEED, TTS_SOURCE (auto/user/assistant), and an in-memory result cache; re-hosted and embedded via block-HTML audio. SSRF-guarded media downloads (openrouter.ai-only whitelist + 100MiB/50MiB byte caps + MIME post-download whitelist). Variant routing (:nitro/:exacto/:thinking/:online/:free/:extended), web search plugin with domain filters, server-side category filter, deprecation warnings, extended reasoning (minimal..xhigh + max_tokens + summary), Anthropic interleaved thinking + cache TTL, ZDR enforcement, tool/free-tier filters, provider preferences (only/quantizations/max_price/allow_fallbacks), service tier routing (flex/priority), generation-ID auditability, cached-input cost breakdown, model fallbacks, middle-out compression, citations (URL-scheme filtered). 55+ hardcoded provider icons plus a 5-layer fallback chain (registry, alias, provider-domain favicon, deterministic letter-SVG) for 99.3% real-brand coverage. Per-user API keys and preferences via UserValves, with at-rest key encryption (Fernet, keyed on WEBUI_SECRET_KEY) and cached decrypt. Native function/tool calling (parallel execution, streaming + non-streaming) with a tool-iteration cap, and an opt-in OpenRouter remaining-credit footer (pre-warmed off the event loop so the SSE stream is never blocked). Transient 429/5xx retries with Retry-After awareness, HTTPAdapter pool sized for concurrent users, atomic routing-set swap so concurrent refreshes never expose an empty model list.
+description: Full OpenRouter catalog in Open WebUI with streaming chat, reasoning, provider routing, fallbacks, citations, ZDR, prompt caching, cost/credit footers and native tool calling. Compatible image, audio and video outputs are re-hosted as OWUI files and rendered inline. Dedicated TTS uses /audio/speech with text cleaning, splitting, provider-aware voices, speed and source selection. TTS cache is isolated by user, chat, endpoint and API key, expires after five minutes and regenerates deleted files. Speech and video HTTP transport runs off the event loop; media redirects are rejected and downloads are byte-capped. Per-user Valves support personal API keys with optional Fernet encryption at rest. Embedding, reranking and transcription models are discovery-only catalog entries, not chat endpoints.
 """
 
 import asyncio
@@ -94,6 +94,7 @@ _AUDIO_FORMAT_TO_MIME = {
 # stripping (a documented gap in OWUI's own path). All patterns are compiled
 # once at import time — cleaning runs on every TTS request.
 _TTS_MAX_CHARS = 3900  # OpenAI-style /audio/speech input cap (~4096) with margin
+_SPEECH_CACHE_TTL = 300.0
 
 # Strip <details>…</details> first (reasoning / tool_call / code_interpreter
 # panels) so internal chain-of-thought is never spoken.
@@ -1191,9 +1192,9 @@ class Pipe:
         # per model instead of blindly sending an OpenAI voice everywhere.
         # Reassigned wholesale (atomic under the GIL) on each pipes() refresh.
         self._speech_voices: dict = {}
-        # TTS result cache: {sha256(model|voice|format|speed|split|cleaned text)
-        # → OWUI file URL}. Avoids re-billing + re-synthesizing identical text
-        # on regenerate/re-send. Bounded; cleared wholesale past the cap.
+        # TTS cache is scoped to user, chat, endpoint and resolved API key.
+        # Values hold (file_id, URL, monotonic timestamp); deleted files and
+        # entries older than five minutes are regenerated instead of reused.
         self._speech_cache: dict = {}
         # Model IDs whose catalog `supported_parameters` include tools/tool_choice.
         # pipe() consults this before forwarding `tools`: a non-tool model 404s
@@ -3335,7 +3336,7 @@ class Pipe:
     def _tts_fetch_chunk(
         self, chunk_text, model_id, voice, speed, headers, valves, max_bytes
     ) -> tuple:
-        """POST one text chunk to /audio/speech (sync, like the video flow).
+        """POST one text chunk to /audio/speech in a worker thread.
 
         Returns ``(error_or_None, audio_bytes, content_type, gen_id)``. Reads
         are capped at ``max_bytes`` (the remaining cumulative budget) so a long
@@ -3358,6 +3359,7 @@ class Pipe:
                     json=payload,
                     timeout=valves.REQUEST_TIMEOUT,
                     stream=True,
+                    allow_redirects=False,
                 )
             except requests.exceptions.Timeout:
                 return (f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s.", b"", "", "")
@@ -3370,6 +3372,8 @@ class Pipe:
                 return ("OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model.", b"", "", "")
             if resp.status_code == 429:
                 return ("OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.", b"", "", "")
+            if 300 <= resp.status_code < 400:
+                return ("OpenRouter Error: Speech synthesis redirect rejected.", b"", "", "")
             if resp.status_code >= 400:
                 detail = ""
                 try:
@@ -3411,6 +3415,23 @@ class Pipe:
                     resp.close()
                 except Exception:
                     pass
+
+    async def _speech_file_exists(self, file_id: str) -> bool:
+        """Check cached OWUI file metadata without blocking the event loop."""
+        try:
+            from open_webui.models.files import Files
+
+            if inspect.iscoroutinefunction(Files.get_file_by_id):
+                file_item = await Files.get_file_by_id(file_id)
+            else:
+                file_item = await asyncio.to_thread(Files.get_file_by_id, file_id)
+                if inspect.isawaitable(file_item):
+                    file_item = await file_item
+            return file_item is not None
+        except Exception:
+            # A missing runtime/helper or database failure must not make a
+            # stale file look valid. Regenerate rather than return a dead URL.
+            return False
 
     async def _run_speech_generation(
         self,
@@ -3480,16 +3501,33 @@ class Pipe:
         if not chunks:
             return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
 
-        # Cache: identical (model, voice, format, speed, split, cleaned text) →
-        # reuse the previously hosted clip; skip the POST + re-upload entirely.
-        cache_key = hashlib.sha256(
-            "\x00".join(
-                [model_id, voice, "mp3", str(speed), split_mode, input_text]
-            ).encode("utf-8")
-        ).hexdigest()
-        cached_url = self._speech_cache.get(cache_key)
-        if cached_url:
-            return f"\n\n<div><audio>{cached_url}</audio></div>\n\n" + self._tts_footer(valves, "")
+        headers = self._build_headers(model_id=model_id, valves=valves)
+        user_id = user.get("id") if isinstance(user, dict) else None
+        chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
+        # No cache without an ownership context. Hash resolved credentials,
+        # not randomized Fernet ciphertext, so re-saving the same key works.
+        cache_key = None
+        if user_id and chat_id:
+            key_hash = hashlib.sha256(
+                headers.get("Authorization", "").encode("utf-8")
+            ).hexdigest()
+            cache_key = hashlib.sha256(json.dumps(
+                [str(user_id), str(chat_id), self.speech_url, key_hash,
+                 model_id, voice, "mp3", speed, split_mode, input_text],
+                ensure_ascii=False, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            cached = self._speech_cache.get(cache_key)
+            if cached:
+                file_id, cached_url, created_at = cached
+                if (
+                    time.monotonic() - created_at < _SPEECH_CACHE_TTL
+                    and await self._speech_file_exists(file_id)
+                ):
+                    return (
+                        f"\n\n<div><audio>{cached_url}</audio></div>\n\n"
+                        + self._tts_footer(valves, "")
+                    )
+                self._speech_cache.pop(cache_key, None)
 
         if emitter:
             try:
@@ -3499,7 +3537,6 @@ class Pipe:
             except Exception:
                 pass
 
-        headers = self._build_headers(model_id=model_id, valves=valves)
         combined = bytearray()
         gen_id = ""
         pcm_ct = ""  # first raw-PCM Content-Type seen (drives WAV wrapping + rate)
@@ -3513,8 +3550,9 @@ class Pipe:
                 except Exception:
                     pass
             remaining = _AUDIO_MAX_BYTES - len(combined)
-            err, audio_bytes, content_type, cg = self._tts_fetch_chunk(
-                chunk, model_id, voice, speed, headers, valves, remaining
+            err, audio_bytes, content_type, cg = await asyncio.to_thread(
+                self._tts_fetch_chunk,
+                chunk, model_id, voice, speed, headers, valves, remaining,
             )
             if err:
                 return err
@@ -3554,19 +3592,122 @@ class Pipe:
                 "OpenRouter Error: Speech generated but could not be persisted to "
                 "Open WebUI storage. Re-run inside an active OWUI chat session."
             )
-        _file_id, new_url = upload
+        file_id, new_url = upload
         clean_url = new_url.split("?", 1)[0]
         # Bounded cache of hosted URLs — clear wholesale past the cap (same
         # strategy as the auth-header cache) so it can't grow unboundedly.
-        if len(self._speech_cache) >= 256:
-            self._speech_cache.clear()
-        self._speech_cache[cache_key] = clean_url
+        if cache_key:
+            if len(self._speech_cache) >= 256:
+                self._speech_cache.clear()
+            self._speech_cache[cache_key] = (file_id, clean_url, time.monotonic())
 
         # Same block-HTML pattern as the audio-gen / video flows: wrap in <div>
         # so marked emits a block html token and OWUI renders a real
         # <audio controls> element.
         audio_tag = f"\n\n<div><audio>{clean_url}</audio></div>\n\n"
         return f"{audio_tag}{self._tts_footer(valves, gen_id)}"
+
+    def _video_submit_job(self, payload: dict, headers: dict, valves) -> tuple:
+        """Submit a video job and close its response, entirely off-loop."""
+        response = None
+        try:
+            response = self._session.post(
+                self.videos_url, headers=headers, json=payload,
+                timeout=valves.REQUEST_TIMEOUT, allow_redirects=False,
+            )
+            if response.status_code in (401, 403):
+                return (f"OpenRouter Error: Authentication failed (HTTP {response.status_code}). Check OPENROUTER_API_KEY.", None)
+            if response.status_code == 402:
+                return ("OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model.", None)
+            if response.status_code == 429:
+                return ("OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.", None)
+            if 300 <= response.status_code < 400:
+                return ("OpenRouter Error: Video submit redirect rejected.", None)
+            if response.status_code >= 400:
+                try:
+                    err = response.json().get("error", {})
+                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                except Exception:
+                    detail = (response.text or "")[:300]
+                return (f"OpenRouter Error: Failed to start video job (HTTP {response.status_code}). {detail}", None)
+            try:
+                job = response.json()
+            except Exception as exc:
+                return (f"OpenRouter Error: Video submit returned non-JSON response: {exc}", None)
+            if not isinstance(job, dict):
+                return ("OpenRouter Error: Video submit returned an invalid job.", None)
+            return (None, job)
+        except requests.exceptions.Timeout:
+            return (f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s.", None)
+        except requests.exceptions.RequestException as exc:
+            return (f"OpenRouter Error: Video submit failed: {exc}", None)
+        finally:
+            if response is not None:
+                response.close()
+
+    def _video_poll_job(self, url: str, headers: dict, valves) -> tuple:
+        """Read and close one polling response in a worker thread."""
+        response = None
+        try:
+            response = self._session.get(
+                url, headers=headers, timeout=valves.REQUEST_TIMEOUT,
+                allow_redirects=False,
+            )
+            if 300 <= response.status_code < 400:
+                return ("OpenRouter Error: Video polling redirect rejected.", None)
+            response.raise_for_status()
+            job = response.json()
+            if not isinstance(job, dict):
+                return ("OpenRouter Error: Video polling returned an invalid job.", None)
+            return (None, job)
+        except requests.exceptions.RequestException as exc:
+            return (f"OpenRouter Error: Video polling failed: {exc}", None)
+        except ValueError as exc:
+            return (f"OpenRouter Error: Video polling returned non-JSON response: {exc}", None)
+        finally:
+            if response is not None:
+                response.close()
+
+    def _video_download(self, url: str, headers: dict, valves) -> tuple:
+        """Download bounded video bytes; transport and iteration stay off-loop."""
+        response = None
+        try:
+            response = self._session.get(
+                url, headers=headers, timeout=valves.REQUEST_TIMEOUT,
+                stream=True, allow_redirects=False,
+            )
+            if 300 <= response.status_code < 400:
+                return ("OpenRouter Error: Video download redirect rejected.", b"", "")
+            response.raise_for_status()
+            try:
+                declared_len = int(response.headers.get("Content-Length") or "0")
+            except (TypeError, ValueError):
+                declared_len = 0
+            if declared_len > _VIDEO_MAX_BYTES:
+                return (
+                    "OpenRouter Error: Video download rejected — declared size "
+                    f"{declared_len} bytes exceeds {_VIDEO_MAX_BYTES} byte cap.", b"", "",
+                )
+            buf = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    buf.extend(chunk)
+                    if len(buf) > _VIDEO_MAX_BYTES:
+                        return (
+                            "OpenRouter Error: Video download exceeded "
+                            f"{_VIDEO_MAX_BYTES} byte cap mid-stream.", b"", "",
+                        )
+            if not buf:
+                return ("OpenRouter Error: Video download returned 0 bytes.", b"", "")
+            content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type not in _VIDEO_MIME_WHITELIST:
+                content_type = "video/mp4"
+            return (None, bytes(buf), content_type)
+        except requests.exceptions.RequestException as exc:
+            return (f"OpenRouter Error: Video download failed: {exc}", b"", "")
+        finally:
+            if response is not None:
+                response.close()
 
     async def _run_video_generation(
         self,
@@ -3601,45 +3742,9 @@ class Pipe:
             if key in body and body[key] is not None:
                 payload[key] = body[key]
 
-        submit_resp = None
-        try:
-            try:
-                submit_resp = self._session.post(
-                    self.videos_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=valves.REQUEST_TIMEOUT,
-                )
-            except requests.exceptions.Timeout:
-                return f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s."
-            except requests.exceptions.RequestException as exc:
-                return f"OpenRouter Error: Video submit failed: {exc}"
-
-            if submit_resp.status_code in (401, 403):
-                return f"OpenRouter Error: Authentication failed (HTTP {submit_resp.status_code}). Check OPENROUTER_API_KEY."
-            if submit_resp.status_code == 402:
-                return "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model."
-            if submit_resp.status_code == 429:
-                return "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment."
-            if submit_resp.status_code >= 400:
-                detail = ""
-                try:
-                    err = submit_resp.json().get("error", {})
-                    detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                except Exception:
-                    detail = (submit_resp.text or "")[:300]
-                return f"OpenRouter Error: Failed to start video job (HTTP {submit_resp.status_code}). {detail}"
-
-            try:
-                job = submit_resp.json()
-            except Exception as exc:
-                return f"OpenRouter Error: Video submit returned non-JSON response: {exc}"
-        finally:
-            if submit_resp is not None:
-                try:
-                    submit_resp.close()
-                except Exception:
-                    pass
+        error, job = await asyncio.to_thread(self._video_submit_job, payload, headers, valves)
+        if error:
+            return error
 
         job_id = job.get("id")
         upstream_polling = job.get("polling_url")
@@ -3682,24 +3787,9 @@ class Pipe:
                     except Exception:
                         pass
             await asyncio.sleep(poll_interval)
-            poll_resp = None
-            try:
-                try:
-                    poll_resp = self._session.get(
-                        polling_url, headers=headers, timeout=valves.REQUEST_TIMEOUT
-                    )
-                    poll_resp.raise_for_status()
-                    job = poll_resp.json()
-                except requests.exceptions.RequestException as exc:
-                    return f"OpenRouter Error: Video polling failed: {exc}"
-                except ValueError as exc:
-                    return f"OpenRouter Error: Video polling returned non-JSON response: {exc}"
-            finally:
-                if poll_resp is not None:
-                    try:
-                        poll_resp.close()
-                    except Exception:
-                        pass
+            error, job = await asyncio.to_thread(self._video_poll_job, polling_url, headers, valves)
+            if error:
+                return error
 
             status = (job.get("status") or "").lower()
             if status == "completed":
@@ -3727,57 +3817,11 @@ class Pipe:
             print("[OpenRouter Pipe] Refusing to download video from non-OpenRouter host.")
             return "OpenRouter Error: Video download URL rejected (untrusted host)."
 
-        try:
-            dl_resp = self._session.get(
-                unsigned[0],
-                headers=headers,
-                timeout=valves.REQUEST_TIMEOUT,
-                stream=True,
-            )
-            dl_resp.raise_for_status()
-            # Enforce a hard byte cap BEFORE materializing the full body.
-            # Streamed reads with an explicit limit prevent a malicious or
-            # compromised upstream from exhausting OWUI memory by serving
-            # a multi-GB blob. Content-Length, when present, gives us an
-            # early reject path.
-            try:
-                _declared_len = int(dl_resp.headers.get("Content-Length") or "0")
-            except (TypeError, ValueError):
-                _declared_len = 0
-            if _declared_len > _VIDEO_MAX_BYTES:
-                return (
-                    "OpenRouter Error: Video download rejected — declared size "
-                    f"{_declared_len} bytes exceeds {_VIDEO_MAX_BYTES} byte cap."
-                )
-            buf = bytearray()
-            for chunk in dl_resp.iter_content(chunk_size=64 * 1024):
-                if not chunk:
-                    continue
-                buf.extend(chunk)
-                if len(buf) > _VIDEO_MAX_BYTES:
-                    return (
-                        "OpenRouter Error: Video download exceeded "
-                        f"{_VIDEO_MAX_BYTES} byte cap mid-stream."
-                    )
-            video_bytes = bytes(buf)
-        except requests.exceptions.RequestException as exc:
-            return f"OpenRouter Error: Video download failed: {exc}"
-        finally:
-            try:
-                dl_resp.close()
-            except Exception:
-                pass
-        if not video_bytes:
-            return "OpenRouter Error: Video download returned 0 bytes."
-
-        # Don't trust the upstream Content-Type for the file we persist.
-        # If the server reports a video MIME from our whitelist, use it;
-        # otherwise fall back to the canonical video/mp4 — never let a
-        # spoofed image/* or text/html slip through to OWUI's renderer.
-        content_type = "video/mp4"
-        dl_ct = (dl_resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-        if dl_ct in _VIDEO_MIME_WHITELIST:
-            content_type = dl_ct
+        error, video_bytes, content_type = await asyncio.to_thread(
+            self._video_download, unsigned[0], headers, valves,
+        )
+        if error:
+            return error
 
         upload = await self._upload_video_to_owui(
             request, user, metadata, video_bytes, content_type=content_type

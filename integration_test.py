@@ -1,5 +1,5 @@
 """
-Integration test for OpenRouter Pipe v1.8.2
+Integration test for OpenRouter Pipe
 Tests the pipe against the LIVE OpenRouter API.
 
 Usage:
@@ -65,8 +65,7 @@ if not API_KEY:
     print("    python integration_test.py\n")
     sys.exit(1)
 
-print(f"\n  API key: {API_KEY[:12]}...{API_KEY[-4:]}")
-print(f"  Key length: {len(API_KEY)} chars")
+print("\n  OpenRouter API key configured (value redacted)")
 
 
 # Quick preflight chat call to detect account-level "native web search" config
