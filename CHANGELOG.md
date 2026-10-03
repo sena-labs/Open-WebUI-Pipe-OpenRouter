@@ -5,8 +5,6 @@ All notable changes to **OpenRouter Pipe** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [1.12.2] — 2026-10-03
 
 ### Fixed
@@ -484,7 +482,6 @@ Identifier-rename release based on a misread of the OWUI portal slugifier. See 1
      Documented but never tagged: 0.1.0, 1.0.0, 1.1.1, 1.2.0, 1.4.0–1.8.1. Those
      headings intentionally have no link definition, so they render as plain text
      rather than pointing at a tag that would 404. -->
-[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.2...HEAD
 [1.12.2]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.11.0...v1.12.0

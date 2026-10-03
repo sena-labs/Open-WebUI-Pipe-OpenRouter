@@ -30,7 +30,7 @@
 - [ ] OWUI compatibility smoke passes — when save/runtime integration is affected
 - [ ] New tests added for the changes
 - [ ] Integration tests pass (`python integration_test.py`) — if applicable
-- [ ] `CHANGELOG.md` updated under `[Unreleased]`
+- [ ] User-visible changes recorded in `CHANGELOG.md`; create `[Unreleased]` only when adding pending entries
 
 ## Screenshots / Demo
 
