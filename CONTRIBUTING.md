@@ -86,8 +86,11 @@ of value. The playbook:
    python integration_test.py   # optional, requires a valid API key
    ```
 
-5. **Update `CHANGELOG.md`.** Prepend a bullet under `## [Unreleased]` describing the
-   user-visible impact.
+5. **Update `CHANGELOG.md`.** Record user-visible changes under `## [Unreleased]`.
+   If it does not exist, create that section above the latest release only when
+   adding pending entries, with a compare link from the latest tag to `HEAD`.
+   When publishing, move those entries into the dated version section and remove
+   the empty `Unreleased` heading and its compare link.
 
 6. **Commit with Conventional Commits** (see [Commit messages](#commit-messages)) and push:
 
