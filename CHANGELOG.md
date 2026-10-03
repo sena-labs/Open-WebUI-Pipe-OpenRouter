@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check upstream changes even without new commits.
 - Updated and commit-pinned GitHub Actions, weekly grouped Dependabot updates
   and Python CodeQL `security-extended` analysis.
+- CI snapshot refreshed to pydantic 2.13.5 and cryptography 50.0.2; ordinary
+  dependency updates preserve runtime lower bounds that already admit new versions.
 - Refreshed TTS/configuration/compatibility documentation, security support
   versions, cache/storage disclosures, bug-report inputs and release checklists.
 

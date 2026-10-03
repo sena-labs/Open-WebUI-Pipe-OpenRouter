@@ -4,6 +4,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Keep runtime lower bounds when they already admit the new release.
+    versioning-strategy: increase-if-necessary
     open-pull-requests-limit: 5
     groups:
       python-dependencies:
