@@ -3,4 +3,4 @@
 requests==2.34.2
 pydantic==2.13.4
 # Optional runtime dependency, bundled by OWUI; exercise encryption in CI.
-cryptography==48.0.0
+cryptography==50.0.0
