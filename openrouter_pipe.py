@@ -16,6 +16,7 @@ import base64
 import copy
 import email.utils
 import hashlib
+import hmac
 import inspect
 import json
 import math
@@ -1341,6 +1342,24 @@ class Pipe:
         """Return the full URL for the text-to-speech (TTS) endpoint."""
         return f"{self._base}{_API_PATH_AUDIO_SPEECH}"
 
+    # Random per-process secret for keyed fingerprints of credentials.
+    # Cache/scope keys must not be guessable or reversible to the bearer
+    # token; a keyed HMAC provides that without storing the secret.
+    _fp_secret: bytes = None
+
+    @classmethod
+    def _credential_fingerprint(cls, credential: str) -> str:
+        """Keyed HMAC-SHA256 digest used as a cache/scope key.
+
+        Distinct from password hashing (CodeQL py/hashing-sensitive-data):
+        this is a fingerprint for in-memory cache identity, never stored,
+        never used for authentication, and salted with a per-process random
+        key so the digest is not comparable across restarts or processes.
+        """
+        if cls._fp_secret is None:
+            cls._fp_secret = os.urandom(32)
+        return hmac.new(cls._fp_secret, credential.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
 
@@ -1348,11 +1367,7 @@ class Pipe:
         in long-lived strings that may end up in logs or memory dumps.
         """
         _resolved_key = EncryptedStr.decrypt(self.valves.OPENROUTER_API_KEY or "")
-        api_key_hash = (
-            hashlib.sha256(_resolved_key.encode("utf-8")).hexdigest()[:16]
-            if _resolved_key
-            else ""
-        )
+        api_key_hash = self._credential_fingerprint(_resolved_key) if _resolved_key else ""
         return (
             f"{api_key_hash}|{self.valves.FREE_MODEL_FILTER}|"
             f"{self.valves.MODEL_PROVIDERS}|{self.valves.INVERT_PROVIDER_LIST}|"
@@ -1719,7 +1734,7 @@ class Pipe:
             if valves.OPENROUTER_API_KEY:
                 return "API key could not be decrypted. Re-enter it in Valves."
             return None  # Public catalog supports installations with personal keys.
-        fingerprint = (self._base, hashlib.sha256(key.encode()).hexdigest())
+        fingerprint = (self._base, self._credential_fingerprint(key))
         cached = self._key_validation_cache.get(fingerprint)
         if cached and time.monotonic() - cached[0] < 60:
             return cached[1]
@@ -3202,7 +3217,7 @@ class Pipe:
         key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
         if not key:
             return None
-        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        key_hash = self._credential_fingerprint(key)
         cached = self._credit_cache.get(key_hash)
         if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
             return cached[0]
@@ -3242,7 +3257,7 @@ class Pipe:
         key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
         if not key:
             return None
-        key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        key_hash = self._credential_fingerprint(key)
         cached = self._credit_cache.get(key_hash)
         if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
             return cached[0]
@@ -3775,7 +3790,7 @@ class Pipe:
                  self._media_preferences(body, valves),
                  {k: getattr(valves, k) for k in ("AUDIO_OUTPUT_VOICE", "AUDIO_OUTPUT_SPEED", "AUDIO_TTS_SPLIT", "TTS_SOURCE",
                                                 "SHOW_COST_INFO", "SHOW_GENERATION_ID", "SHOW_REMAINING_CREDIT")},
-                 hashlib.sha256(self._build_headers(valves=valves)["Authorization"].encode()).hexdigest()]
+                 self._credential_fingerprint(self._build_headers(valves=valves)["Authorization"])]
         key = hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
         task = self._speech_inflight.get(key)
         if task is None:
@@ -3911,9 +3926,9 @@ class Pipe:
         # not randomized Fernet ciphertext, so re-saving the same key works.
         cache_key = None
         if user_id and chat_id:
-            key_hash = hashlib.sha256(
-                headers.get("Authorization", "").encode("utf-8")
-            ).hexdigest()
+            key_hash = self._credential_fingerprint(
+                headers.get("Authorization", "")
+            )
             cache_key = hashlib.sha256(json.dumps(
                 [str(user_id), str(chat_id), self.speech_url, key_hash,
                   model_id, voice, "mp3", speed, split_mode, input_text, request_options],

@@ -6212,11 +6212,8 @@ _assert(_p_cc._credit_balance_cached(_p_cc.valves) is None,
         "_credit_balance_cached returns None on cache miss")
 
 # After populating cache directly, cached read works without HTTP
-import hashlib as _hl
 import time as _time_t
-_dec_key = "sk-or-v1-" + "x" * 50
-_hk = _hl.sha256(_dec_key.encode()).hexdigest()[:16]
-_p_cc._credit_cache[_hk] = (9.99, _time_t.monotonic())
+_p_cc._credit_cache[_p_cc._credential_fingerprint("sk-or-v1-" + "x" * 50)] = (9.99, _time_t.monotonic())
 _assert(_p_cc._credit_balance_cached(_p_cc.valves) == 9.99,
         "_credit_balance_cached returns cached value, no HTTP call")
 
