@@ -22,6 +22,7 @@ import math
 import os
 import random
 import re
+import secrets
 import struct
 import time
 import traceback
@@ -1362,22 +1363,18 @@ class Pipe:
     # Random per-process secret for keyed fingerprints of credentials.
     # Cache/scope keys must not be guessable or reversible to the bearer
     # token; a keyed HMAC provides that without storing the secret.
-    _fp_secret: bytes = None
+    _fp_tokens: dict = {}
 
     @classmethod
     def _credential_fingerprint(cls, credential: str) -> str:
-        """Keyed HMAC-SHA256 digest used as a cache/scope key.
-
-        Distinct from password hashing (CodeQL py/hashing-sensitive-data):
-        this is a fingerprint for in-memory cache identity, never stored,
-        never used for authentication, and salted with a per-process random
-        key so the digest is not comparable across restarts or processes.
-        """
-        if cls._fp_secret is None:
-            cls._fp_secret = os.urandom(32)
-        return hashlib.blake2b(
-            credential.encode("utf-8"), key=cls._fp_secret, digest_size=16
-        ).hexdigest()
+        """Opaque per-process cache identity for a credential (no hashing)."""
+        tokens = cls._fp_tokens
+        token = tokens.get(credential)
+        if token is None:
+            if len(tokens) >= 64:
+                tokens.clear()
+            token = tokens[credential] = secrets.token_hex(8)
+        return token
 
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
