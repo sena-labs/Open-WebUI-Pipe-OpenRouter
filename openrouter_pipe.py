@@ -18,6 +18,7 @@ import email.utils
 import hashlib
 import inspect
 import json
+import math
 import os
 import random
 import re
@@ -46,6 +47,7 @@ _API_PATH_VIDEOS = "/videos"
 _API_PATH_AUDIO_SPEECH = "/audio/speech"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
+_API_PATH_KEY = "/key"
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -178,8 +180,11 @@ _ANTHROPIC_INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 # OpenRouter variant suffixes that route to specialized providers/profiles.
 # https://openrouter.ai/docs/features/preset-routing
 _RECOGNISED_VARIANT_TAGS = frozenset(
-    {"free", "thinking", "online", "nitro", "exacto", "extended"}
+    {"free", "thinking", "online", "nitro", "floor", "exacto", "extended"}
 )
+_ROUTING_VARIANT_TAGS = frozenset({"online", "nitro", "floor", "exacto"})
+_CATALOG_VARIANT_TAGS = frozenset({"free", "batch", "thinking", "extended"})
+_REASONING_EFFORTS = frozenset({"max", "xhigh", "high", "medium", "low", "minimal", "none"})
 
 # Cache TTL for model list (seconds)
 _MODELS_CACHE_TTL = 300.0  # 5 minutes
@@ -197,7 +202,7 @@ _PROVIDER_REGISTRY_FAIL_TTL = 300.0  # 5 minutes
 # OpenRouter's frontend provider registry — gives us icon URLs for ~70 providers
 # (hosted SVG/PNG when available, gstatic favicons otherwise). Used as a
 # dynamic fallback when a model's author isn't in _PROVIDER_ICONS.
-_PROVIDER_REGISTRY_URL = "https://openrouter.ai/api/frontend/all-providers"
+_PROVIDER_REGISTRY_URL = "https://openrouter.ai/api/frontend/v1/all-providers"
 
 # Provider icons — synced into the Open WebUI Models database by
 # _sync_model_icons() so the frontend can serve them via
@@ -428,7 +433,8 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     if cost is not None:
         try:
             cost_f = float(cost)
-            symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
+            # OpenRouter reports USD. A display preference is not an FX rate.
+            symbol = "$"
             if cost_f == 0:
                 cost_str = f"{symbol}0.00"
             elif cost_f < 0.0001:
@@ -440,8 +446,61 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
             parts.append(f"**Cost:** {cost_str}")
         except (ValueError, TypeError):
             pass
+    if usage.get("cost_incomplete"):
+        parts.append("cost unavailable for some rounds")
 
     return f"\n\n---\n*{' · '.join(parts)}*"
+
+
+def _add_usage(total: dict, usage: dict) -> None:
+    """Accumulate billable counters, including nested cache/reasoning details."""
+    if not isinstance(usage, dict):
+        return
+    for key, value in usage.items():
+        if isinstance(value, dict):
+            target = total.setdefault(key, {})
+            if isinstance(target, dict):
+                _add_usage(target, value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if math.isfinite(value):
+                total[key] = total.get(key, 0) + value
+        elif key == "cost" and isinstance(value, str):
+            try:
+                number = float(value)
+                if math.isfinite(number):
+                    total[key] = total.get(key, 0) + number
+            except ValueError:
+                pass
+
+
+def _assistant_tool_message(message: dict, tool_calls: list) -> dict:
+    """Replay protocol data, not refusal/legacy/provider response decoration."""
+    result = {"role": "assistant", "content": message.get("content"),
+              "tool_calls": copy.deepcopy(tool_calls)}
+    for key in ("reasoning", "reasoning_details", "reasoning_content"):
+        if message.get(key) is not None:
+            result[key] = copy.deepcopy(message[key])
+    return result
+
+
+def _accumulate_reasoning(state: dict, details: list) -> None:
+    """Assemble streaming reasoning blocks by index without changing signatures."""
+    if not isinstance(details, list):
+        return
+    acc = state.setdefault("_reasoning_acc", {})
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        index = detail.get("index")
+        # Unindexed blocks are complete independent records; do not merge them.
+        slot_key = (detail.get("type"), index) if index is not None else ("record", len(acc))
+        slot = acc.setdefault(slot_key, {})
+        for key, value in detail.items():
+            if key in ("text", "summary", "data") and isinstance(value, str):
+                slot[key] = slot.get(key, "") + value
+            else:
+                slot[key] = copy.deepcopy(value)
+    state["reasoning_details"] = list(acc.values())
 
 
 def _format_generation_id(generation_id: Optional[str]) -> str:
@@ -567,12 +626,14 @@ class Pipe:
                 "input": {
                     "type": "select",
                     "options": [
-                        {"value": "", "label": "Disabled"},
+                        {"value": "", "label": "Model default"},
+                        {"value": "none", "label": "Off (when supported)"},
                         {"value": "minimal", "label": "Minimal"},
                         {"value": "low", "label": "Low"},
                         {"value": "medium", "label": "Medium"},
                         {"value": "high", "label": "High"},
                         {"value": "xhigh", "label": "Extra High"},
+                        {"value": "max", "label": "Maximum"},
                     ],
                 }
             },
@@ -682,10 +743,10 @@ class Pipe:
             description=(
                 "Comma-separated `base_id:variant` entries to expose as virtual "
                 "models that inherit the base model's metadata (name, icon). "
-                "Example: 'openai/gpt-4o:nitro, anthropic/claude-3.5-sonnet:thinking'. "
-                "Recognised tags: free, thinking, online, nitro, exacto, extended. "
-                "OpenRouter routes the suffixed ID specially "
-                "(see https://openrouter.ai/docs/features/preset-routing)."
+                "Routing tags: nitro, floor, exacto, online (deprecated). "
+                "Catalog tags free/thinking/extended must already exist. "
+                "Combined routing tags keep the catalog variant's metadata. "
+                "No virtual variants are created for dedicated media models."
             ),
         )
         MODEL_CATEGORY: str = Field(
@@ -1011,7 +1072,7 @@ class Pipe:
         )
         COST_CURRENCY: str = Field(
             default=os.getenv("OPENROUTER_COST_CURRENCY", "USD"),
-            description="Currency label shown in cost display (display only; OpenRouter bills in USD)",
+            description="Legacy preference; actual cost and credit amounts are always shown in USD (no FX conversion)",
             json_schema_extra={
                 "input": {
                     "type": "select",
@@ -1169,6 +1230,10 @@ class Pipe:
         self._models_cache: Optional[List[dict]] = None
         self._models_cache_ts: float = 0.0
         self._models_cache_key: str = ""
+        self._catalog: dict = {}
+        self._model_lookup_failures: dict = {}
+        self._key_validation_cache: dict = {}
+        self._speech_inflight: dict = {}
         # Cleaned model IDs whose architecture.output_modalities includes
         # "video". Populated during pipes(). These attribute names hold
         # frozenset instances that are SWAPPED atomically (a fresh
@@ -1294,7 +1359,7 @@ class Pipe:
             f"{self.valves.MODEL_PREFIX}|{self.valves.OUTPUT_MODALITIES}|"
             f"{self.valves.TOOL_CALLING_FILTER}|{self.valves.ZDR_MODELS_ONLY}|"
             f"{self.valves.MODEL_VARIANTS}|{self.valves.MODEL_CATEGORY}|"
-            f"{self.valves.HIDE_DEPRECATED_MODELS}"
+            f"{self.valves.HIDE_DEPRECATED_MODELS}|{self._base}"
         )
 
     def _models_cache_valid(self) -> bool:
@@ -1314,8 +1379,9 @@ class Pipe:
 
     def pipes(self) -> List[dict]:
         """Fetch and return the list of available OpenRouter models."""
-        if not self.valves.OPENROUTER_API_KEY:
-            return [{"id": "error", "name": "OpenRouter API key not configured. Set it in Settings."}]
+        auth_error = self._validate_api_key(self.valves)
+        if auth_error:
+            return [{"id": "error", "name": auth_error}]
 
         # Return cached models if still valid
         if self._models_cache_valid() and self._models_cache is not None:
@@ -1335,6 +1401,8 @@ class Pipe:
             return self._models_cache
 
         headers = self._build_headers(include_content_type=False, valves=self.valves)
+        if not self.valves.OPENROUTER_API_KEY:
+            headers.pop("Authorization", None)
         modalities = (self.valves.OUTPUT_MODALITIES or "all").strip() or "all"
         params: dict = {"output_modalities": modalities}
         category = (self.valves.MODEL_CATEGORY or "").strip()
@@ -1351,7 +1419,7 @@ class Pipe:
             )
             # Detect auth errors from the models endpoint itself
             # 502 from Clerk usually means the key format is invalid
-            if response.status_code in (401, 403, 502):
+            if response.status_code in (401, 403):
                 detail = ""
                 try:
                     detail = response.json().get("error", {}).get("message", "")
@@ -1364,6 +1432,8 @@ class Pipe:
                 return [{"id": "error", "name": msg}]
             response.raise_for_status()
             data = response.json().get("data", [])
+            if not isinstance(data, list):
+                raise ValueError("Invalid model catalog response")
         except requests.exceptions.Timeout:
             return [{"id": "error", "name": "Timeout fetching models. Try again or increase REQUEST_TIMEOUT."}]
         except requests.exceptions.HTTPError as exc:
@@ -1410,19 +1480,67 @@ class Pipe:
         reason_ids: set = set()
         nonchat_kind: dict = {}
 
+        # Index before display filters. A hidden model remains routable in an
+        # existing chat, and absence from a filtered picker is not incapability.
+        catalog = {}
+        for entry in data:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            mid = entry["id"]
+            catalog[mid] = entry
+            output = (entry.get("architecture") or {}).get("output_modalities") or []
+            params_supported = entry.get("supported_parameters") or []
+            if "video" in output:
+                video_ids.add(mid)
+            if "audio" in output:
+                audio_ids.add(mid)
+            if "speech" in output:
+                speech_ids.add(mid)
+                voices = entry.get("supported_voices")
+                if isinstance(voices, list):
+                    speech_voices[mid] = [v for v in voices if isinstance(v, str) and v]
+            if any(p in params_supported for p in ("tools", "tool_choice")):
+                tool_ids.add(mid)
+            if any(p in params_supported for p in ("structured_outputs", "response_format")):
+                struct_ids.add(mid)
+            if any(p in params_supported for p in ("reasoning", "include_reasoning", "reasoning_effort")) or isinstance(entry.get("reasoning"), dict):
+                reason_ids.add(mid)
+            kinds = [x for x in output if x in {"embeddings", "rerank", "transcription", "moderation", "decisions"}]
+            if kinds and not any(x in output for x in {"text", "image", "audio", "speech", "video"}):
+                nonchat_kind[mid] = kinds[0]
+            if "batch" in mid.split(":")[1:]:
+                nonchat_kind[mid] = "batch"
+        self._catalog = catalog
+        # Publish even when the display filters yield no selectable entries.
+        self._video_model_ids = frozenset(video_ids)
+        self._audio_model_ids = frozenset(audio_ids)
+        self._speech_model_ids = frozenset(speech_ids)
+        self._speech_voices = speech_voices
+        self._tool_capable_ids = frozenset(tool_ids)
+        self._structured_output_ids = frozenset(struct_ids)
+        self._reasoning_ids = frozenset(reason_ids)
+        self._nonchat_kind = nonchat_kind
+        self._lazy_populated = True
+
         for model in data:
+            if not isinstance(model, dict):
+                continue
             model_id = model.get("id")
             if not model_id:
                 continue
 
             if free_filter in ("only", "exclude"):
-                is_free = ":free" in model_id.lower()
+                is_free = "free" in model_id.lower().split(":")[1:]
                 if not is_free:
                     pricing = model.get("pricing") or {}
                     try:
                         is_free = (
                             float(pricing.get("prompt", 1)) == 0
                             and float(pricing.get("completion", 1)) == 0
+                            and all(float(pricing.get(key, 0)) == 0 for key in (
+                                "image", "image_token", "image_output", "request",
+                                "audio", "audio_input", "audio_output", "internal_reasoning",
+                            ))
                         )
                     except (ValueError, TypeError):
                         is_free = False
@@ -1533,7 +1651,7 @@ class Pipe:
             # rerank / transcription): they 404/400 at /chat/completions. speech,
             # video, audio and image DO have handling, so they're not flagged.
             if isinstance(out_modalities, list) and out_modalities:
-                nonchat = {"embeddings", "rerank", "transcription", "moderation"}
+                nonchat = {"embeddings", "rerank", "transcription", "moderation", "decisions"}
                 chatty = {"text", "image", "audio", "speech", "video"}
                 kinds = [x for x in out_modalities if x in nonchat]
                 if kinds and not any(x in chatty for x in out_modalities):
@@ -1594,6 +1712,90 @@ class Pipe:
 
         return models
 
+    def _validate_api_key(self, valves: "Pipe.Valves") -> Optional[str]:
+        """Validate an admin credential on /key, independently of public discovery."""
+        key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
+        if not key:
+            if valves.OPENROUTER_API_KEY:
+                return "API key could not be decrypted. Re-enter it in Valves."
+            return None  # Public catalog supports installations with personal keys.
+        fingerprint = (self._base, hashlib.sha256(key.encode()).hexdigest())
+        cached = self._key_validation_cache.get(fingerprint)
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
+        response = None
+        error = None
+        try:
+            response = self._session.get(
+                f"{self._base}{_API_PATH_KEY}",
+                headers=self._build_headers(include_content_type=False, valves=valves),
+                timeout=min(valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+            )
+            if response.status_code in (401, 403):
+                detail = (response.json().get("error") or {}).get("message", "")
+                error = f"Invalid API key (HTTP {response.status_code}). {detail}"
+            elif response.status_code != 200:
+                return f"HTTP {response.status_code} validating API key. Try again."
+        except requests.exceptions.Timeout:
+            return "Timeout validating API key. Try again."
+        except (requests.exceptions.RequestException, ValueError):
+            return "Unable to validate API key. Try again."
+        finally:
+            if response is not None:
+                response.close()
+        if len(self._key_validation_cache) >= 32:
+            self._key_validation_cache.clear()
+        self._key_validation_cache[fingerprint] = (time.monotonic(), error)
+        return error
+
+    def _lookup_model(self, requested_id: str) -> None:
+        """Resolve metadata missing from a server-filtered catalog, without auth."""
+        mid = self._catalog_id(requested_id)
+        if not re.fullmatch(r"~?[A-Za-z0-9_.-]+/[A-Za-z0-9_.:+-]+", mid) or any(p in (".", "..") for p in mid.split("/")):
+            return  # Presets/private naming may have no public catalog entry.
+        failed = self._model_lookup_failures.get((self._base, mid), 0)
+        if failed and time.monotonic() - failed < _MODELS_CACHE_TTL:
+            return
+        response = None
+        try:
+            response = self._session.get(
+                f"{self._base}/model/{urlparse.quote(requested_id, safe='/~:')}",
+                timeout=min(self.valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+            )
+            if response.status_code != 200:
+                raise ValueError("Metadata unavailable")
+            entry = response.json().get("data")
+            if not isinstance(entry, dict) or not entry.get("id"):
+                raise ValueError("Invalid model metadata")
+            self._catalog = {**self._catalog, mid: entry}
+            output = (entry.get("architecture") or {}).get("output_modalities") or []
+            supported = entry.get("supported_parameters") or []
+            capabilities = (
+                ("_audio_model_ids", "audio" in output),
+                ("_video_model_ids", "video" in output),
+                ("_speech_model_ids", "speech" in output),
+                ("_tool_capable_ids", any(p in supported for p in ("tools", "tool_choice"))),
+                ("_structured_output_ids", any(p in supported for p in ("response_format", "structured_outputs"))),
+                ("_reasoning_ids", "reasoning" in supported or "include_reasoning" in supported or isinstance(entry.get("reasoning"), dict)),
+            )
+            for attribute, enabled in capabilities:
+                if enabled:
+                    setattr(self, attribute, getattr(self, attribute) | {mid})
+            voices = entry.get("supported_voices")
+            if isinstance(voices, list):
+                self._speech_voices = {**self._speech_voices, mid: [v for v in voices if isinstance(v, str) and v]}
+            kind = "batch" if "batch" in mid.split(":")[1:] else next(
+                (x for x in output if x in {"decisions", "embeddings", "rerank", "transcription", "moderation"}), None)
+            if kind and (kind == "batch" or not any(x in output for x in {"text", "image", "audio", "speech", "video"})):
+                self._nonchat_kind = {**self._nonchat_kind, mid: kind}
+        except (requests.exceptions.RequestException, ValueError, TypeError):
+            if len(self._model_lookup_failures) >= 256:
+                self._model_lookup_failures.clear()
+            self._model_lookup_failures[(self._base, mid)] = time.monotonic()
+        finally:
+            if response is not None:
+                response.close()
+
     @staticmethod
     def _clean_model_id(model_id: str) -> str:
         """Strip the manifold prefix from a model ID.
@@ -1634,6 +1836,11 @@ class Pipe:
         for key, val in data.items():
             if val is not None and hasattr(eff, key):
                 setattr(eff, key, val)
+        # Request/user preferences cannot weaken the admin's privacy policy.
+        if self.valves.ZDR_ENFORCE:
+            eff.ZDR_ENFORCE = True
+        if self.valves.DATA_COLLECTION.strip().lower() == "deny":
+            eff.DATA_COLLECTION = "deny"
         return eff
 
     async def pipe(
@@ -1692,6 +1899,9 @@ class Pipe:
             except Exception as exc:
                 print(f"[OpenRouter Pipe] Lazy model-list fetch failed: {exc}")
 
+        if self._catalog and self._catalog_id(model_id) not in self._catalog:
+            await asyncio.to_thread(self._lookup_model, model_id)
+
         # Snapshot the routing sets atomically so a concurrent pipes()
         # refresh (which clears and rebuilds them) can't make us miss the
         # audio-modality injection mid-rebuild.
@@ -1704,6 +1914,12 @@ class Pipe:
         # title generation, etc., and stale injected keys would re-leak
         # on a subsequent non-audio request through the same chat.
         body = copy.deepcopy(body)
+        user_id = (__user__ or {}).get("id") if isinstance(__user__, dict) else None
+        chat_id = (__metadata__ or {}).get("chat_id") if isinstance(__metadata__, dict) else None
+        if user_id and chat_id:
+            # Never forward OWUI's session identifier or raw user/chat IDs.
+            scope = json.dumps([self._base, str(user_id), str(chat_id)])
+            body["openrouter_session_id"] = "owui-" + hashlib.sha256(scope.encode()).hexdigest()
 
         # OWUI background tasks (chat-title, follow-up, tags, query, ...
         # generation) reuse the chat's model unless the admin pins a
@@ -1714,6 +1930,17 @@ class Pipe:
         # (chat + title + follow-up) while the user sees only one result.
         # Answer task calls with a cheap placeholder instead.
         is_task_call = bool((__metadata__ or {}).get("task"))
+        catalog_id = self._catalog_id(model_id)
+        model_meta = self._catalog.get(catalog_id, {})
+        output_modalities = (model_meta.get("architecture") or {}).get("output_modalities") or []
+        if is_task_call and (catalog_id in audio_models or "image" in output_modalities):
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+            return "Media Generation"
+        if "batch" in catalog_id.split(":")[1:]:
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+            return f"OpenRouter Error: '{model_id}' is a batch model; use OpenRouter's /api/v1/batches dedicated endpoint."
 
         # Audio-output models (lyria, gpt-audio, ...) are served by
         # /chat/completions BUT need explicit modalities=["text","audio"]
@@ -1728,7 +1955,7 @@ class Pipe:
         # Lyria accept mp3 fine. Pick the format based on the model owner;
         # PCM bytes are wrapped in a WAV container after the stream
         # finishes so the browser can play them.
-        if model_id in audio_models:
+        if catalog_id in audio_models:
             if not body.get("modalities"):
                 body["modalities"] = ["text", "audio"]
             if not isinstance(body.get("audio"), dict):
@@ -1744,8 +1971,10 @@ class Pipe:
         # are served by the dedicated /audio/speech endpoint (text in → raw
         # audio bytes out), NOT /chat/completions. Route there and re-host the
         # returned audio as an OWUI file embedded via block-HTML <audio>.
-        if model_id in speech_models:
+        if catalog_id in speech_models:
             if is_task_call:
+                if __event_emitter__:
+                    await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
                 return "Speech Generation"
             try:
                 result = await self._run_speech_generation(
@@ -1767,8 +1996,10 @@ class Pipe:
         # Video-output models (veo, kling, sora, seedance, ...) are NOT
         # served by /chat/completions — that endpoint 500s for them.
         # Route to the async /videos flow instead.
-        if model_id in video_models:
+        if catalog_id in video_models:
             if is_task_call:
+                if __event_emitter__:
+                    await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
                 return "Video Generation"
             try:
                 result = await self._run_video_generation(
@@ -1791,21 +2022,30 @@ class Pipe:
         # /chat/completions endpoint — OpenRouter 400/404s them. Return a clear,
         # actionable message instead of the raw upstream error. (speech/video/
         # audio/image are handled by their own flows above.)
-        _nonchat = self._nonchat_kind.get(model_id)
+        _nonchat = self._nonchat_kind.get(catalog_id)
         if _nonchat:
             _endpoint = {
                 "embeddings": "/api/v1/embeddings",
                 "rerank": "/api/v1/rerank",
                 "transcription": "/api/v1/audio/transcriptions",
                 "moderation": "/api/v1/chat/completions moderation flow",
+                "decisions": "/api/alpha/decisions",
+                "batch": "/api/v1/batches",
             }.get(_nonchat, "a dedicated endpoint")
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
             return (
                 f"OpenRouter Error: '{model_id}' is a {_nonchat}-type model with no "
                 f"/chat/completions endpoint, so it can't be used in a chat. Call "
                 f"OpenRouter's {_endpoint} endpoint directly instead."
             )
 
-        payload = self._prepare_payload(body, eff)
+        try:
+            payload = self._prepare_payload(body, eff)
+        except ValueError as exc:
+            if __event_emitter__:
+                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+            return f"OpenRouter Error: {exc}"
         headers = self._build_headers(model_id=payload.get("model"), valves=eff)
         stream = body.get("stream", False)
 
@@ -1821,6 +2061,11 @@ class Pipe:
         if not supports_tools:
             dropped = payload.pop("tools", None)
             dropped_tc = payload.pop("tool_choice", None)
+            server_tools = [t for t in dropped or [] if isinstance(t, dict) and t.get("type") != "function"]
+            if server_tools:
+                payload["tools"] = server_tools
+                if dropped_tc in ("auto", "required", "none"):
+                    payload["tool_choice"] = dropped_tc
             if tools_payload or dropped is not None or dropped_tc is not None:
                 if __event_emitter__:
                     try:
@@ -1841,7 +2086,7 @@ class Pipe:
                 )
             tools_payload = None
         if tools_payload:
-            payload["tools"] = tools_payload
+            payload["tools"] = self._merge_tools(payload.get("tools"), tools_payload)
 
         # response_format (json_object/json_schema) is another HARD routing
         # constraint: a model whose endpoints lack structured-output support
@@ -2505,20 +2750,28 @@ class Pipe:
         seen_variant_ids = {entry.get("id") for entry in models}
         appended: List[dict] = []
         for base_id, tag in specs:
-            base_entry = by_id.get(base_id)
+            variant_id = f"{base_id}:{tag}"
+            catalog_id = self._catalog_id(variant_id)
+            routing_tags = [t for t in variant_id.split(":")[1:] if t in _ROUTING_VARIANT_TAGS]
+            base_entry = by_id.get(catalog_id)
             if base_entry is None:
                 print(
                     f"[OpenRouter Pipe] Variant base not in catalog: "
                     f"{base_id} (skipping :{tag})"
                 )
                 continue
-            variant_id = f"{base_id}:{tag}"
+            if not routing_tags:
+                continue  # Catalog variants are real entries, never synthesized.
+            entry_meta = self._catalog.get(catalog_id) or {}
+            outputs = (entry_meta.get("architecture") or {}).get("output_modalities") or []
+            if outputs and "text" not in outputs:
+                continue  # Routing variants are chat features, not media options.
             if variant_id in seen_variant_ids:
                 continue
             base_name = base_entry.get("name", base_id)
             # If the user set a prefix it's already in base_name; we only need
             # to suffix the tag label.
-            tag_label = tag.capitalize()
+            tag_label = " + ".join(t.capitalize() for t in routing_tags)
             appended.append(
                 {
                     "id": variant_id,
@@ -2536,6 +2789,9 @@ class Pipe:
         # Strip Open WebUI internal keys
         for key in _OWUI_INTERNAL_KEYS:
             payload.pop(key, None)
+        session_id = payload.pop("openrouter_session_id", None)
+        if isinstance(session_id, str) and session_id.strip():
+            payload["session_id"] = session_id
 
         # Open WebUI sends 'user' as a dict; OpenRouter expects a string id.
         user_val = payload.get("user")
@@ -2553,19 +2809,34 @@ class Pipe:
 
         # --- Reasoning ---
         if valves.INCLUDE_REASONING:
-            payload["include_reasoning"] = True
+            payload.setdefault("include_reasoning", True)
 
         effort = valves.REASONING_EFFORT.strip().lower()
         summary = valves.REASONING_SUMMARY_MODE.strip().lower()
-        reasoning_cfg: dict = {}
-        if effort in ("minimal", "low", "medium", "high", "xhigh"):
-            reasoning_cfg["effort"] = effort
+        reasoning_cfg: dict = copy.deepcopy(payload.get("reasoning")) if isinstance(payload.get("reasoning"), dict) else {}
+        explicit_reasoning = dict(reasoning_cfg)
+        reasoning_on = explicit_reasoning.get("enabled") is not False and explicit_reasoning.get("effort") != "none"
+        if (reasoning_on and effort in _REASONING_EFFORTS
+                and "max_tokens" not in explicit_reasoning
+                and not (effort == "none" and explicit_reasoning.get("enabled") is True)):
+            reasoning_cfg.setdefault("effort", effort)
         if summary in ("auto", "concise", "detailed"):
-            reasoning_cfg["summary"] = summary
-        if valves.REASONING_MAX_TOKENS > 0:
-            reasoning_cfg["max_tokens"] = int(valves.REASONING_MAX_TOKENS)
+            reasoning_cfg.setdefault("summary", summary)
+        if reasoning_on and valves.REASONING_MAX_TOKENS > 0 and "effort" not in explicit_reasoning:
+            reasoning_cfg.setdefault("max_tokens", int(valves.REASONING_MAX_TOKENS))
+            # Explicit token budget is preferred over an effort default.
+            if "effort" not in explicit_reasoning:
+                reasoning_cfg.pop("effort", None)
+        reasoning_meta = (self._catalog.get(self._catalog_id(payload.get("model", "")), {}).get("reasoning") or {})
+        if reasoning_meta.get("mandatory") and (reasoning_cfg.get("effort") == "none" or reasoning_cfg.get("enabled") is False):
+            raise ValueError("Selected model requires reasoning and cannot disable it.")
+        efforts = reasoning_meta.get("supported_efforts")
+        if isinstance(efforts, list) and reasoning_cfg.get("effort") and reasoning_cfg["effort"] not in efforts:
+            raise ValueError("Unsupported reasoning effort for selected model; supported: " + ", ".join(efforts))
         if reasoning_cfg:
             payload["reasoning"] = reasoning_cfg
+            if reasoning_cfg.get("exclude") or reasoning_cfg.get("effort") == "none" or reasoning_cfg.get("enabled") is False:
+                payload.pop("include_reasoning", None)
 
         # --- Service tier ---
         # OpenRouter documents only "flex" and "priority" as supported values.
@@ -2574,7 +2845,7 @@ class Pipe:
             payload["service_tier"] = tier
 
         # --- Provider routing ---
-        provider: dict = {}
+        provider: dict = copy.deepcopy(payload.get("provider")) if isinstance(payload.get("provider"), dict) else {}
 
         sort_val = valves.PROVIDER_SORT.strip().lower()
         if sort_val in ("price", "throughput", "latency"):
@@ -2601,13 +2872,18 @@ class Pipe:
         if not valves.PROVIDER_ALLOW_FALLBACKS:
             provider["allow_fallbacks"] = False
 
-        max_price: dict = {}
+        max_price: dict = copy.deepcopy(provider.get("max_price")) if isinstance(provider.get("max_price"), dict) else {}
         prompt_cap = (valves.PROVIDER_MAX_PRICE_PROMPT or "").strip()
-        if prompt_cap:
-            max_price["prompt"] = prompt_cap
         completion_cap = (valves.PROVIDER_MAX_PRICE_COMPLETION or "").strip()
-        if completion_cap:
-            max_price["completion"] = completion_cap
+        for name, cap in (("prompt", prompt_cap), ("completion", completion_cap)):
+            if not cap:
+                continue
+            try:
+                if name in max_price and float(max_price[name]) <= float(cap):
+                    continue  # Keep the stricter request-level spending limit.
+            except (ValueError, TypeError):
+                pass
+            max_price[name] = cap
         if max_price:
             provider["max_price"] = max_price
 
@@ -2693,6 +2969,44 @@ class Pipe:
             payload["tool_choice"] = tc
 
         return payload
+
+    def _media_preferences(self, body: dict, valves: "Pipe.Valves") -> dict:
+        """Speech accepts privacy/options, not the chat routing preferences."""
+        original = body.get("provider") if isinstance(body.get("provider"), dict) else {}
+        provider = {}
+        if valves.ZDR_ENFORCE or original.get("zdr") is True:
+            provider["zdr"] = True
+        if valves.DATA_COLLECTION.strip().lower() == "deny" or original.get("data_collection") == "deny":
+            provider["data_collection"] = "deny"
+        if isinstance(original.get("options"), dict):
+            provider["options"] = copy.deepcopy(original["options"])
+        result = {"provider": provider} if provider else {}
+        if body.get("openrouter_session_id"):
+            result["session_id"] = body["openrouter_session_id"]
+        return result
+
+    @staticmethod
+    def _catalog_id(model_id: str) -> str:
+        """Keep catalog variants; strip all routing suffixes for metadata only."""
+        parts = model_id.split(":")
+        return ":".join([parts[0]] + [p for p in parts[1:] if p not in _ROUTING_VARIANT_TAGS])
+
+    @staticmethod
+    def _merge_tools(existing: Optional[list], client_tools: Optional[list]) -> list:
+        """Union by function name/server type, including named server workers."""
+        merged = {}
+        for tool in list(existing or []) + list(client_tools or []):
+            if not isinstance(tool, dict):
+                continue
+            kind = tool.get("type")
+            if kind == "function":
+                block = tool.get("function")
+                identity = (kind, block.get("name") if isinstance(block, dict) else None)
+            else:
+                block = tool.get("parameters")
+                identity = (kind, block.get("name") if isinstance(block, dict) else None)
+            merged[identity] = copy.deepcopy(tool)
+        return list(merged.values())
 
     def _inject_cache_control(self, payload: dict, valves) -> None:
         """Inject Anthropic cache_control on the longest text chunk.
@@ -2810,8 +3124,7 @@ class Pipe:
                 out.append({"type": "function", "function": spec})
         return out or None
 
-    @staticmethod
-    def _model_has_cap(model_id: str, cap_ids: frozenset) -> bool:
+    def _model_has_cap(self, model_id: str, cap_ids: frozenset) -> bool:
         """Whether ``model_id`` is in ``cap_ids`` (a per-capability model set).
 
         Returns True when ``cap_ids`` is empty (unknown — ``pipes()`` hasn't
@@ -2819,11 +3132,14 @@ class Pipe:
         strip when we POSITIVELY know the model lacks the capability. Virtual
         variants (``base:nitro``) inherit the base model's capability.
         """
-        if not cap_ids:
+        catalog_id = self._catalog_id(model_id)
+        if self._catalog and catalog_id not in self._catalog:
+            return True  # Presets/custom/filtered-out metadata is unknown.
+        if not cap_ids and not self._catalog:
             return True
         if model_id in cap_ids:
             return True
-        return model_id.rsplit(":", 1)[0] in cap_ids
+        return catalog_id in cap_ids
 
     def _model_supports_tools(self, model_id: str) -> bool:
         """Whether ``model_id`` has a tool-calling endpoint, per the catalog."""
@@ -2858,7 +3174,10 @@ class Pipe:
                 return {"role": "tool", "tool_call_id": call_id, "content": f"Error: invalid tool arguments — {exc}"}
             try:
                 callable_fn = entry.get("callable")
-                result = callable_fn(**args)
+                if inspect.iscoroutinefunction(callable_fn):
+                    result = callable_fn(**args)
+                else:
+                    result = await asyncio.to_thread(callable_fn, **args)
                 if inspect.isawaitable(result):
                     result = await result
             except Exception as exc:
@@ -2934,7 +3253,7 @@ class Pipe:
         """Format the remaining-credit footer line."""
         if remaining is None:
             return ""
-        symbol = _CURRENCY_SYMBOLS.get(currency, f"{currency} ")
+        symbol = "$"
         return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
 
     @staticmethod
@@ -3318,13 +3637,19 @@ class Pipe:
                     pass
         return 24000
 
-    def _tts_footer(self, valves, gen_id: str) -> str:
+    def _tts_footer(
+        self, valves: "Pipe.Valves", gen_id: Union[str, List[str]],
+        usage: Optional[dict] = None,
+    ) -> str:
         """Build the optional gen-id + remaining-credit footer for a TTS reply."""
         footer = ""
+        if valves.SHOW_COST_INFO and usage:
+            footer += _format_cost_info(usage)
         if valves.SHOW_GENERATION_ID and gen_id:
             # Shared helper sanitizes the upstream-supplied ID (strips
             # backticks/newlines) before embedding it in the code span.
-            footer += _format_generation_id(gen_id)
+            for gid in gen_id if isinstance(gen_id, list) else [gen_id]:
+                footer += _format_generation_id(gid)
         if valves.SHOW_REMAINING_CREDIT:
             credit_line = self._format_credit_info(
                 self._credit_balance_cached(valves), valves.COST_CURRENCY
@@ -3334,7 +3659,8 @@ class Pipe:
         return footer
 
     def _tts_fetch_chunk(
-        self, chunk_text, model_id, voice, speed, headers, valves, max_bytes
+        self, chunk_text, model_id, voice, speed, headers, valves, max_bytes,
+        request_options=None,
     ) -> tuple:
         """POST one text chunk to /audio/speech in a worker thread.
 
@@ -3345,9 +3671,11 @@ class Pipe:
         payload: dict = {
             "model": model_id,
             "input": chunk_text,
-            "voice": voice,
             "response_format": "mp3",
         }
+        if voice:
+            payload["voice"] = voice
+        payload.update(copy.deepcopy(request_options or self._media_preferences({}, valves)))
         if speed is not None:
             payload["speed"] = speed
         resp = None
@@ -3434,6 +3762,66 @@ class Pipe:
             return False
 
     async def _run_speech_generation(
+        self, body: dict, model_id: str, valves: "Pipe.Valves",
+        emitter: Optional[Callable], request: object,
+        user: Optional[dict], metadata: Optional[dict],
+    ) -> str:
+        """Single-flight identical requests within an authenticated ownership scope."""
+        uid = user.get("id") if isinstance(user, dict) else None
+        chat = metadata.get("chat_id") if isinstance(metadata, dict) else None
+        if not uid or not chat:
+            return await self._synthesize_speech(body, model_id, valves, emitter, request, user, metadata)
+        scope = [self.speech_url, str(uid), str(chat), model_id, body,
+                 self._media_preferences(body, valves),
+                 {k: getattr(valves, k) for k in ("AUDIO_OUTPUT_VOICE", "AUDIO_OUTPUT_SPEED", "AUDIO_TTS_SPLIT", "TTS_SOURCE",
+                                                "SHOW_COST_INFO", "SHOW_GENERATION_ID", "SHOW_REMAINING_CREDIT")},
+                 hashlib.sha256(self._build_headers(valves=valves)["Authorization"].encode()).hexdigest()]
+        key = hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
+        task = self._speech_inflight.get(key)
+        if task is None:
+            if len(self._speech_inflight) >= 256:
+                return "OpenRouter Error: Speech request queue is full. Try again later."
+            task = asyncio.create_task(self._synthesize_speech(
+                body, model_id, valves, emitter, request, user, metadata))
+            self._speech_inflight[key] = task
+
+            def finished(done):
+                if self._speech_inflight.get(key) is done:
+                    self._speech_inflight.pop(key, None)
+                if not done.cancelled():
+                    done.exception()  # Retrieve exceptions if the consumer disconnected.
+
+            task.add_done_callback(finished)
+        # A disconnected consumer must not release the in-flight submission
+        # while its worker still generates a billable clip.
+        return await asyncio.shield(task)
+
+    def _generation_usage(
+        self, generation_id: str, valves: "Pipe.Valves",
+    ) -> Optional[dict]:
+        """Read actual TTS billing; never estimate a price as though it were billed."""
+        response = None
+        try:
+            response = self._session.get(
+                f"{self._base}/generation", params={"id": generation_id},
+                headers=self._build_headers(include_content_type=False, valves=valves),
+                timeout=min(valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json().get("data") or {}
+            if data.get("total_cost") is None:
+                return None
+            return {"cost": float(data["total_cost"]),
+                    "prompt_tokens": data.get("tokens_prompt") or 0,
+                    "completion_tokens": data.get("tokens_completion") or 0}
+        except (requests.exceptions.RequestException, TypeError, ValueError):
+            return None
+        finally:
+            if response is not None:
+                response.close()
+
+    async def _synthesize_speech(
         self,
         body: dict,
         model_id: str,
@@ -3466,10 +3854,15 @@ class Pipe:
         single WAV container instead — raw PCM concatenation is exact.
         """
         source = getattr(valves, "TTS_SOURCE", None) or "auto"
+        catalog_id = self._catalog_id(model_id)
+        is_seed_audio = catalog_id == "bytedance-seed/seed-audio-1-0"
+        if is_seed_audio and source == "auto":
+            source = "user"
         raw_text = self._extract_tts_text(body, source)
         # Parse + strip the voice directive BEFORE cleaning so it isn't spoken.
         directive_voice, raw_text = self._parse_voice_directive(raw_text)
-        input_text = self._clean_tts_text(raw_text)
+        # Seed Audio interprets a prompt, not literal prose to read aloud.
+        input_text = raw_text.strip() if is_seed_audio else self._clean_tts_text(raw_text)
         if not input_text:
             return (
                 "OpenRouter Error: Text-to-speech requires a non-empty text prompt "
@@ -3480,15 +3873,20 @@ class Pipe:
         # the model's advertised supported_voices (provider-specific names), with
         # a fallback to the model's first voice, or 'alloy' when no list exists.
         configured = (directive_voice or valves.AUDIO_OUTPUT_VOICE or "").strip()
-        supported = self._speech_voices.get(model_id) or []
+        supported = self._speech_voices.get(catalog_id) or []
         if supported:
             voice = configured if configured in supported else supported[0]
         else:
-            voice = configured or "alloy"
+            voice = None if is_seed_audio and not directive_voice and configured in ("", "alloy") else (configured or "alloy")
 
         # Speed: a per-request body 'speed' wins, else the AUDIO_OUTPUT_SPEED valve.
         speed = None
         b_speed = body.get("speed")
+        if is_seed_audio and b_speed is not None and (
+            isinstance(b_speed, bool) or not isinstance(b_speed, (int, float))
+            or not 0.5 <= b_speed <= 2.0
+        ):
+            return "OpenRouter Error: Seed Audio speed must be between 0.5 and 2.0."
         if isinstance(b_speed, (int, float)) and not isinstance(b_speed, bool) and b_speed > 0:
             speed = float(b_speed)
         else:
@@ -3497,11 +3895,16 @@ class Pipe:
                 speed = float(v_speed)
 
         split_mode = getattr(valves, "AUDIO_TTS_SPLIT", None) or "punctuation"
-        chunks = self._split_tts_text(input_text, _TTS_MAX_CHARS, split_mode)
+        if is_seed_audio and speed is not None and not 0.5 <= speed <= 2.0:
+            return "OpenRouter Error: Seed Audio speed must be between 0.5 and 2.0."
+        if is_seed_audio and len(input_text) > 3000:
+            return "OpenRouter Error: Seed Audio prompts are limited to 3000 characters; shorten the prompt."
+        chunks = [input_text] if is_seed_audio else self._split_tts_text(input_text, _TTS_MAX_CHARS, split_mode)
         if not chunks:
             return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
 
         headers = self._build_headers(model_id=model_id, valves=valves)
+        request_options = self._media_preferences(body, valves)
         user_id = user.get("id") if isinstance(user, dict) else None
         chat_id = metadata.get("chat_id") if isinstance(metadata, dict) else None
         # No cache without an ownership context. Hash resolved credentials,
@@ -3513,7 +3916,7 @@ class Pipe:
             ).hexdigest()
             cache_key = hashlib.sha256(json.dumps(
                 [str(user_id), str(chat_id), self.speech_url, key_hash,
-                 model_id, voice, "mp3", speed, split_mode, input_text],
+                  model_id, voice, "mp3", speed, split_mode, input_text, request_options],
                 ensure_ascii=False, separators=(",", ":"),
             ).encode("utf-8")).hexdigest()
             cached = self._speech_cache.get(cache_key)
@@ -3523,9 +3926,10 @@ class Pipe:
                     time.monotonic() - created_at < _SPEECH_CACHE_TTL
                     and await self._speech_file_exists(file_id)
                 ):
+                    await self._prefetch_credit_if_enabled(valves)
                     return (
                         f"\n\n<div><audio>{cached_url}</audio></div>\n\n"
-                        + self._tts_footer(valves, "")
+                        + self._tts_footer(valves, "", {"cost": 0} if valves.SHOW_COST_INFO else None)
                     )
                 self._speech_cache.pop(cache_key, None)
 
@@ -3538,7 +3942,8 @@ class Pipe:
                 pass
 
         combined = bytearray()
-        gen_id = ""
+        generation_ids = []
+        total_usage: dict = {}
         pcm_ct = ""  # first raw-PCM Content-Type seen (drives WAV wrapping + rate)
         total = len(chunks)
         for idx, chunk in enumerate(chunks):
@@ -3553,13 +3958,20 @@ class Pipe:
             err, audio_bytes, content_type, cg = await asyncio.to_thread(
                 self._tts_fetch_chunk,
                 chunk, model_id, voice, speed, headers, valves, remaining,
+                request_options,
             )
             if err:
                 return err
             if not audio_bytes:
                 return "OpenRouter Error: Speech synthesis returned 0 bytes."
-            if not gen_id and cg:
-                gen_id = cg
+            if cg:
+                generation_ids.append(cg)
+            if valves.SHOW_COST_INFO:
+                usage = await asyncio.to_thread(self._generation_usage, cg, valves) if cg else None
+                if usage is None:
+                    total_usage["cost_incomplete"] = True
+                else:
+                    _add_usage(total_usage, usage)
             ct_main = content_type.split(";", 1)[0].strip().lower()
             if any(tok in ct_main for tok in _TTS_PCM_CT_TOKENS):
                 pcm_ct = pcm_ct or content_type
@@ -3605,7 +4017,8 @@ class Pipe:
         # so marked emits a block html token and OWUI renders a real
         # <audio controls> element.
         audio_tag = f"\n\n<div><audio>{clean_url}</audio></div>\n\n"
-        return f"{audio_tag}{self._tts_footer(valves, gen_id)}"
+        await self._prefetch_credit_if_enabled(valves)
+        return f"{audio_tag}{self._tts_footer(valves, generation_ids, total_usage)}"
 
     def _video_submit_job(self, payload: dict, headers: dict, valves) -> tuple:
         """Submit a video job and close its response, entirely off-loop."""
@@ -3730,6 +4143,10 @@ class Pipe:
         ready to be persisted (an HTML ``<video>`` tag pointing at the
         re-hosted OWUI file URL, optionally followed by a cost footer).
         """
+        preferences = self._media_preferences(body, valves)
+        provider = preferences.get("provider") or {}
+        if provider.get("zdr") or provider.get("data_collection") == "deny":
+            return "OpenRouter Error: Video generation retains data and cannot satisfy the requested privacy policy."
         prompt = self._extract_video_prompt(body)
         if not prompt:
             return "OpenRouter Error: Video generation requires a non-empty text prompt."
@@ -3738,6 +4155,10 @@ class Pipe:
         # /videos expects flat params, not chat messages. Forward only the
         # video-specific knobs OpenRouter recognizes if the caller set them.
         payload: dict = {"model": model_id, "prompt": prompt}
+        if provider.get("options"):
+            payload["provider"] = {"options": provider["options"]}
+        if preferences.get("session_id"):
+            payload["session_id"] = preferences["session_id"]
         for key in ("duration", "resolution", "aspect_ratio", "generate_audio", "seed"):
             if key in body and body[key] is not None:
                 payload[key] = body[key]
@@ -3795,10 +4216,10 @@ class Pipe:
             if status == "completed":
                 final = job
                 break
-            if status == "failed":
+            if status in ("failed", "cancelled", "expired"):
                 err = job.get("error") or {}
                 msg = err.get("message", "unknown") if isinstance(err, dict) else str(err)
-                return f"OpenRouter Error: Video generation failed: {msg}"
+                return f"OpenRouter Error: Video generation {status}: {msg} (job id {job_id})."
 
         if final is None:
             # Don't leak the upstream polling URL to the chat bubble; the
@@ -3857,7 +4278,7 @@ class Pipe:
         if valves.SHOW_COST_INFO and cost is not None:
             try:
                 cost_val = float(cost)
-                symbol = _CURRENCY_SYMBOLS.get(valves.COST_CURRENCY, f"{valves.COST_CURRENCY} ")
+                symbol = "$"
                 if cost_val < 0.0001:
                     cost_str = f"{symbol}{cost_val:.6f}"
                 else:
@@ -3867,11 +4288,14 @@ class Pipe:
                 pass
 
         if valves.SHOW_REMAINING_CREDIT:
+            await self._prefetch_credit_if_enabled(valves)
             credit_line = self._format_credit_info(
                 self._credit_balance_cached(valves), valves.COST_CURRENCY
             )
             if credit_line:
                 footer += credit_line
+        if valves.SHOW_GENERATION_ID:
+            footer += _format_generation_id(final.get("generation_id"))
 
         return f"{video_tag}{footer}"
 
@@ -4012,9 +4436,10 @@ class Pipe:
                 final_parts.append(cost_info)
 
         if valves.SHOW_GENERATION_ID:
-            gen_footer = _format_generation_id(res.get("id"))
-            if gen_footer:
-                final_parts.append(gen_footer)
+            for gid in res.get("generation_ids") or [res.get("id")]:
+                gen_footer = _format_generation_id(gid)
+                if gen_footer:
+                    final_parts.append(gen_footer)
 
         if valves.SHOW_REMAINING_CREDIT:
             credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
@@ -4099,14 +4524,27 @@ class Pipe:
     async def _run_tools_nonstream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None) -> str:
         """Drive the non-streaming native-tool loop: request → execute → repeat."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
+        total_usage: dict = {}
+        generation_ids = []
+
+        def account(res):
+            usage = res.get("usage") or {}
+            _add_usage(total_usage, usage)
+            if valves.SHOW_COST_INFO and "cost" not in usage:
+                total_usage["cost_incomplete"] = True
+            if res.get("id") and res["id"] not in generation_ids:
+                generation_ids.append(res["id"])
+            res["usage"] = copy.deepcopy(total_usage)
+            res["generation_ids"] = list(generation_ids)
+
         for _ in range(max_iter):
             try:
                 resp = await self._call_request_async(False, headers, payload, valves)
                 try:
-                    res = resp.json()
+                    res = await asyncio.to_thread(resp.json)
                 finally:
                     if hasattr(resp, "close"):
-                        resp.close()
+                        await asyncio.to_thread(resp.close)
             except requests.exceptions.Timeout:
                 return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
             except requests.exceptions.HTTPError as exc:
@@ -4120,6 +4558,7 @@ class Pipe:
                 return f"OpenRouter Error: {msg}"
 
             choices = res.get("choices") or []
+            account(res)
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
@@ -4132,14 +4571,9 @@ class Pipe:
             # Build a clean assistant message instead of forwarding the
             # raw upstream dict: it can carry provider-specific keys
             # (``refusal``, legacy ``function_call``, ``annotations``,
-            # vendor reasoning blobs) that some downstream models reject
-            # on re-submission. The stream-tool path already builds the
-            # message this way (see _run_tools_stream).
-            assistant_msg = {
-                "role": "assistant",
-                "content": message.get("content") if isinstance(message.get("content"), str) else None,
-                "tool_calls": tool_calls,
-            }
+            # response decoration) that downstream models reject. Replay
+            # signed/encrypted reasoning as protocol data, unmodified.
+            assistant_msg = _assistant_tool_message(message, tool_calls)
             payload.setdefault("messages", []).append(assistant_msg)
             payload["messages"].extend(tool_msgs)
 
@@ -4149,12 +4583,15 @@ class Pipe:
         # ``Exception`` and dropped to a generic message even for plain
         # network timeouts.
         try:
-            resp = await self._call_request_async(False, headers, payload, valves)
+            final_payload = copy.deepcopy(payload)
+            final_payload.pop("tools", None)
+            final_payload.pop("tool_choice", None)
+            resp = await self._call_request_async(False, headers, final_payload, valves)
             try:
-                res = resp.json()
+                res = await asyncio.to_thread(resp.json)
             finally:
                 if hasattr(resp, "close"):
-                    resp.close()
+                    await asyncio.to_thread(resp.close)
         except requests.exceptions.Timeout:
             return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
         except requests.exceptions.HTTPError as exc:
@@ -4162,6 +4599,7 @@ class Pipe:
         except Exception as exc:  # pragma: no cover
             return f"OpenRouter Error: {exc}"
         _choices = res.get("choices") or []
+        account(res)
         _msg = _choices[0].get("message", {}) if _choices else {}
         await self._emit_image_files(__event_emitter__, _msg, __request__, __user__, __metadata__)
         await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
@@ -4235,14 +4673,21 @@ class Pipe:
                     slot = tool_acc.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
                     if tc.get("id"):
                         slot["id"] = tc["id"]
+                    if tc.get("extra_content") is not None:
+                        slot["extra_content"] = copy.deepcopy(tc["extra_content"])
                     fn = tc.get("function") or {}
                     if fn.get("name"):
                         slot["function"]["name"] = fn["name"]
                     if fn.get("arguments"):
                         slot["function"]["arguments"] += fn["arguments"]
 
-                reasoning = delta.get("reasoning", "")
+                _accumulate_reasoning(state, delta.get("reasoning_details"))
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
                 content = delta.get("content") or ""
+                if reasoning:
+                    state["reasoning"] = state.get("reasoning", "") + reasoning
+                if content:
+                    state["content"] = state.get("content", "") + content
 
                 # Capture media-output payloads (image data URLs, audio
                 # base64 chunks) so the tool-loop caller can materialize
@@ -4273,9 +4718,15 @@ class Pipe:
             if ct:
                 yield ct
         except requests.exceptions.Timeout:
+            ct = _close_think()
+            if ct:
+                yield ct
             yield f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
             state["error"] = True
         except requests.exceptions.HTTPError as exc:
+            ct = _close_think()
+            if ct:
+                yield ct
             # The errored response is the streaming response from
             # _retryable_request (which does not close it on the final
             # raise). Cache its body then close it so the pooled
@@ -4293,6 +4744,10 @@ class Pipe:
             state["error"] = True
         except Exception as exc:  # pragma: no cover
             print(f"[OpenRouter Pipe] Stream round error: {exc}")
+            ct = _close_think()
+            if ct:
+                yield ct
+            yield "OpenRouter Error: Internal stream error (see server logs)."
             state["error"] = True
         finally:
             if tool_acc:
@@ -4341,6 +4796,19 @@ class Pipe:
     async def _run_tools_stream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None):
         """Async generator: stream rounds, executing tools between them."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
+        total_usage: dict = {}
+        generation_ids = []
+
+        def account(state):
+            usage = state.get("usage") or {}
+            _add_usage(total_usage, usage)
+            if valves.SHOW_COST_INFO and "cost" not in usage:
+                total_usage["cost_incomplete"] = True
+            if state.get("generation_id") and state["generation_id"] not in generation_ids:
+                generation_ids.append(state["generation_id"])
+            state["usage"] = copy.deepcopy(total_usage)
+            state["generation_ids"] = list(generation_ids)
+
         for _ in range(max_iter):
             state: dict = {}
             it = iter(self._stream_one_round(headers, payload, valves, state))
@@ -4351,6 +4819,7 @@ class Pipe:
                 yield piece
             if state.get("error"):
                 return
+            account(state)
             tool_calls = state.get("tool_calls")
             if not tool_calls:
                 media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
@@ -4361,18 +4830,22 @@ class Pipe:
                 yield self._stream_footer(state, valves)
                 return
             tool_msgs = await self._execute_tool_calls(tool_calls, __tools__, __event_emitter__)
-            assistant_msg = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+            assistant_msg = _assistant_tool_message(state, tool_calls)
             payload.setdefault("messages", []).append(assistant_msg)
             payload["messages"].extend(tool_msgs)
 
         state = {}
-        it = iter(self._stream_one_round(headers, payload, valves, state))
+        final_payload = copy.deepcopy(payload)
+        final_payload.pop("tools", None)
+        final_payload.pop("tool_choice", None)
+        it = iter(self._stream_one_round(headers, final_payload, valves, state))
         while True:
             piece = await asyncio.to_thread(next, it, _STREAM_DONE)
             if piece is _STREAM_DONE:
                 break
             yield piece
         if not state.get("error"):
+            account(state)
             media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
             if media_md:
                 yield media_md
@@ -4392,9 +4865,10 @@ class Pipe:
             if ci:
                 parts.append(ci)
         if valves.SHOW_GENERATION_ID:
-            gf = _format_generation_id(state.get("generation_id"))
-            if gf:
-                parts.append(gf)
+            for gid in state.get("generation_ids") or [state.get("generation_id")]:
+                gf = _format_generation_id(gid)
+                if gf:
+                    parts.append(gf)
         if valves.SHOW_REMAINING_CREDIT:
             credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
             if credit_line:

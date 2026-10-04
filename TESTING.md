@@ -18,7 +18,7 @@ The save/schema smoke below needs no OpenRouter key; manual generation and
 
 ```bash
 python test_pipe.py
-python -m unittest -v test_maintenance
+python -m unittest -v test_maintenance test_alignment
 ```
 
 Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, **do not release**.
@@ -47,6 +47,27 @@ The script creates the first admin account, saves the actual Python source,
 checks admin/user schemas, persists valves, updates the function and removes
 it. On failure, acquire backend logs before classifying an OWUI incompatibility.
 The script deliberately refuses a deployment where its signup is not admin.
+
+### Paid end-to-end checks (budget guarded)
+
+`e2e_live.py` bills real credits: chat + tool loop on three vendors, TTS and
+video transport. It reads `/credits` before/after every scenario and aborts
+when spend exceeds the cap or the remaining balance falls under $0.10.
+
+```bash
+OPENROUTER_API_KEY=sk-or-... python -B e2e_live.py --budget 0.50 \
+  [--model-claude anthropic/claude-3.5-haiku] \
+  [--model-openai openai/gpt-4o-mini] \
+  [--model-gemini google/gemini-2.0-flash-001] \
+  [--model-tts openai/gpt-4o-mini-tts] \
+  [--model-video google/veo-3-fast] \
+  [--skip-tts] [--skip-video] [--skip-tools] [--skip-reasoning]
+```
+
+Run it only with a disposable key with a small balance. Media checks drive
+the same transport helpers the OWUI flows use (`_tts_fetch_chunk`,
+`_video_submit_job`/`_video_poll_job`/`_video_download`); the OWUI re-host
+step needs a live session and stays covered by the smoke above.
 
 ---
 
@@ -97,7 +118,8 @@ The script deliberately refuses a deployment where its signup is not admin.
 | 5.2 | Set `INCLUDE_REASONING = false` | The `include_reasoning` field does **not** appear in payload |
 | 5.3 | Set `REASONING_EFFORT = high` | Payload contains `"reasoning": {"effort": "high"}` |
 | 5.4 | Set `REASONING_EFFORT = ""` (empty) | No `reasoning` field in payload |
-| 5.5 | Try effort `low`, `medium`, `high` | Accepted. Any other value is ignored |
+| 5.5 | Try model-supported effort levels, including `max` / `none` | Supported values accepted; mandatory reasoning cannot be disabled |
+| 5.6 | Set effort and token-budget defaults together | Budget takes precedence; explicit request-level reasoning fields remain intact |
 
 ---
 
@@ -351,8 +373,9 @@ The script deliberately refuses a deployment where its signup is not admin.
 ## Quick pre-release checklist
 
 - [ ] `python test_pipe.py` → 0 failed
-- [ ] `python -m unittest -v test_maintenance` → OK
+- [ ] `python -m unittest -v test_maintenance test_alignment` → OK
 - [ ] `python smoke_owui.py --base-url http://127.0.0.1:3001` → all real OWUI endpoint checks pass
+- [ ] (optional, paid) `python -B e2e_live.py --budget …` → ALL LIVE CHECKS PASSED
 - [ ] CI Python matrix, both OWUI images and CodeQL pass
 - [ ] `python integration_test.py` → 0 failed (live, optional; can spend credits)
 - [ ] Empty API key → clear error message in model selector
@@ -366,6 +389,14 @@ The script deliberately refuses a deployment where its signup is not admin.
 - [ ] Fallback models present in payload
 - [ ] Middle-out present in payload
 - [ ] Cache control applied on list-type message content
+- [ ] Provider/reasoning merge preserves privacy, options and explicit controls
+- [ ] Speech carries supported privacy policy; incompatible video sends no submit
+- [ ] Signed reasoning survives streamed/non-streamed native-tool rounds
+- [ ] Cost footer includes all tool rounds/TTS chunks in USD
+- [ ] Paid media with zero text-token prices is excluded from free-only selection
+- [ ] Personal-key-only discovery and combined catalog/routing variants work
+- [ ] Concurrent/disconnected TTS consumers do not duplicate synthesis
+- [ ] Background media tasks and cancelled/expired video jobs terminate correctly
 - [ ] Retry on timeout, no retry on 4xx errors
 - [ ] Errors formatted correctly (no raw tracebacks)
 - [ ] No secrets in logs or error messages
