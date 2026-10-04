@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +41,7 @@ def http_json(path: str, key: str) -> dict:
 
 
 def remaining_credits(key: str) -> float:
-    data = http_json("/credits", key)
+    data = http_json("/credits", key).get("data", {})
     return float(data.get("total_credits", 0)) - float(data.get("total_usage", 0))
 
 
@@ -122,6 +123,7 @@ async def scenario_chat_tools(
         __user__={"id": "e2e-user", "email": "e2e@example.com"},
     )
     label = f"chat {model} tools={with_tools} reasoning={bool(reasoning)}"
+    budget.checkpoint(f"pre {label}")
     if is_error(result):
         check(label, False, result[:200])
     else:

@@ -16,7 +16,6 @@ import base64
 import copy
 import email.utils
 import hashlib
-import hmac
 import inspect
 import json
 import math
@@ -49,6 +48,7 @@ _API_PATH_AUDIO_SPEECH = "/audio/speech"
 _API_PATH_ZDR_ENDPOINTS = "/endpoints/zdr"
 _API_PATH_CREDITS = "/credits"
 _API_PATH_KEY = "/key"
+_DEFAULT_BASE = "https://openrouter.ai/api/v1"
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
@@ -493,14 +493,31 @@ def _accumulate_reasoning(state: dict, details: list) -> None:
         if not isinstance(detail, dict):
             continue
         index = detail.get("index")
-        # Unindexed blocks are complete independent records; do not merge them.
-        slot_key = (detail.get("type"), index) if index is not None else ("record", len(acc))
-        slot = acc.setdefault(slot_key, {})
-        for key, value in detail.items():
-            if key in ("text", "summary", "data") and isinstance(value, str):
-                slot[key] = slot.get(key, "") + value
-            else:
-                slot[key] = copy.deepcopy(value)
+        if index is not None:
+            # Indexed blocks are stream fragments: merge into one slot.
+            slot = acc.setdefault(("idx", index), {})
+            for key, value in detail.items():
+                if key in ("text", "summary", "data") and isinstance(value, str):
+                    slot[key] = slot.get(key, "") + value
+                elif key not in slot or value is not None:
+                    slot[key] = copy.deepcopy(value)
+        else:
+            # Unindexed: fragments of the same record merge into the previous
+            # unindexed slot; a new id or an already-complete payload
+            # (signature/data) starts a new record.
+            last = state.get("_reasoning_last")
+            slot = acc.get(last) if last is not None else None
+            if (slot is None or slot.get("type") != detail.get("type")
+                    or (detail.get("id") is not None and detail.get("id") != slot.get("id"))
+                    or detail.get("signature") is not None or detail.get("data") is not None):
+                last = ("record", len(acc))
+                slot = acc.setdefault(last, {})
+                state["_reasoning_last"] = last
+            for key, value in detail.items():
+                if key in ("text", "summary", "data") and isinstance(value, str):
+                    slot[key] = slot.get(key, "") + value
+                else:
+                    slot[key] = copy.deepcopy(value)
     state["reasoning_details"] = list(acc.values())
 
 
@@ -1358,7 +1375,9 @@ class Pipe:
         """
         if cls._fp_secret is None:
             cls._fp_secret = os.urandom(32)
-        return hmac.new(cls._fp_secret, credential.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+        return hashlib.blake2b(
+            credential.encode("utf-8"), key=cls._fp_secret, digest_size=16
+        ).hexdigest()
 
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
@@ -1728,12 +1747,19 @@ class Pipe:
         return models
 
     def _validate_api_key(self, valves: "Pipe.Valves") -> Optional[str]:
-        """Validate an admin credential on /key, independently of public discovery."""
+        """Validate an admin credential on /key, independently of public discovery.
+
+        Only meaningful against the canonical OpenRouter API: custom bases
+        (OPENROUTER_BASE_URL → compatible proxies) may not implement /key,
+        and a failure there must not block the model list.
+        """
         key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
         if not key:
             if valves.OPENROUTER_API_KEY:
                 return "API key could not be decrypted. Re-enter it in Valves."
             return None  # Public catalog supports installations with personal keys.
+        if self._base.rstrip("/") != _DEFAULT_BASE.rstrip("/"):
+            return None  # Custom base: assume valid; /key may not exist there.
         fingerprint = (self._base, self._credential_fingerprint(key))
         cached = self._key_validation_cache.get(fingerprint)
         if cached and time.monotonic() - cached[0] < 60:

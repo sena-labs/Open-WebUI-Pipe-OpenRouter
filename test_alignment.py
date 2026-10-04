@@ -12,6 +12,8 @@ import requests
 import openrouter_pipe as mod
 from test_maintenance import MediaResponse
 
+_accumulate_reasoning = mod._accumulate_reasoning
+
 
 def sse(value):
     return b"data: " + json.dumps(value).encode()
@@ -132,6 +134,23 @@ class AlignmentTests(unittest.IsolatedAsyncioTestCase):
         self.pipe.valves.OPENROUTER_API_KEY = "rotated"
         self.pipe._validate_api_key(self.pipe.valves)
         self.assertEqual(self.pipe._session.get.call_count, 2)
+
+    def test_custom_base_skips_key_validation(self):
+        response = MediaResponse({"data": {}}, status=200)
+        self.pipe._session.get = Mock(return_value=response)
+        self.pipe.valves.OPENROUTER_BASE_URL = "https://proxy.example.com/api/v1"
+        self.assertIsNone(self.pipe._validate_api_key(self.pipe.valves))
+        self.pipe._session.get.assert_not_called()
+
+    def test_unindexed_reasoning_records_do_not_duplicate_or_merge(self):
+        state = {}
+        _accumulate_reasoning(state, [{"type": "text", "id": "a", "text": "Think "}])
+        _accumulate_reasoning(state, [{"type": "text", "text": "about it"}])
+        _accumulate_reasoning(state, [{"type": "text", "id": "b", "text": "Second record"}])
+        details = state["reasoning_details"]
+        texts = sorted(d.get("text", "") for d in details)
+        self.assertEqual(texts, ["Second record", "Think about it"])
+        self.assertTrue(all("index" not in d for d in details))
 
     def test_public_models_do_not_prove_credential_validity(self):
         response = MediaResponse({"error": {"message": "Unauthorized"}}, status=401)
