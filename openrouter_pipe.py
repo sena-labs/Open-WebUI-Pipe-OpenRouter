@@ -504,13 +504,17 @@ def _accumulate_reasoning(state: dict, details: list) -> None:
                     slot[key] = copy.deepcopy(value)
         else:
             # Unindexed: fragments of the same record merge into the previous
-            # unindexed slot; a new id or an already-complete payload
-            # (signature/data) starts a new record.
+            # unindexed slot. A new id, a different type, or a previous slot
+            # already sealed by its signature starts a new record. The seal is
+            # read off the accumulated slot, not off the incoming fragment: a
+            # trailing signature-only delta completes the block it signs, so
+            # splitting it out would strand the signature away from the text
+            # and providers that verify signed reasoning reject the replay.
             last = state.get("_reasoning_last")
             slot = acc.get(last) if last is not None else None
             if (slot is None or slot.get("type") != detail.get("type")
                     or (detail.get("id") is not None and detail.get("id") != slot.get("id"))
-                    or detail.get("signature") is not None or detail.get("data") is not None):
+                    or slot.get("signature") is not None):
                 last = ("record", len(acc))
                 slot = acc.setdefault(last, {})
                 state["_reasoning_last"] = last

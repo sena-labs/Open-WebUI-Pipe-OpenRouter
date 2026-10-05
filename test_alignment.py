@@ -152,6 +152,34 @@ class AlignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(texts, ["Second record", "Think about it"])
         self.assertTrue(all("index" not in d for d in details))
 
+    def test_trailing_signature_stays_with_the_reasoning_it_signs(self):
+        """A signature-only delta seals the streamed block, not a new record."""
+        state = {}
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "text": "Let me "}])
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "text": "think."}])
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "signature": "sig-abc"}])
+        self.assertEqual(state["reasoning_details"],
+                         [{"type": "reasoning.text", "text": "Let me think.",
+                           "signature": "sig-abc"}])
+
+    def test_block_after_a_signed_one_starts_a_new_record(self):
+        """Once sealed, a slot no longer absorbs the next block's fragments."""
+        state = {}
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "text": "First", "signature": "s1"}])
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "text": "Second"}])
+        _accumulate_reasoning(state, [{"type": "reasoning.text", "signature": "s2"}])
+        self.assertEqual(state["reasoning_details"],
+                         [{"type": "reasoning.text", "text": "First", "signature": "s1"},
+                          {"type": "reasoning.text", "text": "Second", "signature": "s2"}])
+
+    def test_unindexed_encrypted_payload_fragments_concatenate(self):
+        """Encrypted blocks arrive in pieces; only a signature seals them."""
+        state = {}
+        _accumulate_reasoning(state, [{"type": "reasoning.encrypted", "data": "AAA"}])
+        _accumulate_reasoning(state, [{"type": "reasoning.encrypted", "data": "BBB"}])
+        self.assertEqual(state["reasoning_details"],
+                         [{"type": "reasoning.encrypted", "data": "AAABBB"}])
+
     def test_public_models_do_not_prove_credential_validity(self):
         response = MediaResponse({"error": {"message": "Unauthorized"}}, status=401)
         self.pipe._session.get = Mock(return_value=response)
