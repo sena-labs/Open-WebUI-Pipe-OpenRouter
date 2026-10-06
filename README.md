@@ -9,7 +9,8 @@
 Browse the **full OpenRouter catalog** directly inside Open WebUI. Compatible chat, TTS,
 audio, image and video models support provider routing, reasoning tokens, streaming,
 fallbacks and native media rendering. Embedding, reranking and transcription models are
-listed for discovery but cannot be invoked as chat models.
+listed for discovery but cannot be invoked as chat models. Decision models and
+batch-priced catalog entries are also discovery-only in this chat integration.
 
 ## Table of Contents
 
@@ -75,7 +76,7 @@ Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine
 - **Audio generation** — `google/lyria-3-*-preview` (music) and `openai/gpt-audio*` (speech, auto pcm16 → WAV wrap for streaming) inject the required `modalities=["text","audio"]` + `audio={format,voice}` payload automatically, capture the base64 chunks, decode, upload, and embed as inline `<audio controls>`.
 - **SSRF-guarded media downloads** — polling URLs and signed download URLs are restricted to `openrouter.ai`; downloads are byte-capped (100 MiB video / 50 MiB audio) and MIME-whitelisted post-fetch.
 - **Web search plugin** — attach OpenRouter's `web` plugin to any model with domain allow/deny lists, custom search prompt, and result-count limits.
-- **Variant routing** — surface virtual `:nitro`/`:exacto`/`:thinking`/`:online`/`:free`/`:extended` model entries that route to OpenRouter's specialized profiles.
+- **Variant routing** — surface chat routing variants `:nitro`/`:floor`/`:exacto` (and deprecated `:online`), including combinations. Catalog variants such as `:free` use their own existing catalog entry and metadata; unavailable variants are never fabricated.
 - **Service tier hint** — forward `flex` (cheaper/slower) or `priority` (faster) tiers to compatible providers.
 - **Generation auditability** — optional generation ID footer maps each response to OpenRouter's `/generation?id=` activity API.
 - **Cached-input savings** — surface cached vs. non-cached prompt tokens in the cost footer (Anthropic prompt caching, OpenAI implicit caching, Gemini context caching).
@@ -93,10 +94,13 @@ Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine
 - **Provider preferences** — `PROVIDER_ONLY` allowlist, `PROVIDER_QUANTIZATIONS`, `PROVIDER_ALLOW_FALLBACKS`, and `PROVIDER_MAX_PRICE_PROMPT/COMPLETION` price caps.
 - **Free-tier filter** — `FREE_MODEL_FILTER` shows all / only / excludes free-tier models (`:free` suffix or `0/0` pricing).
 - **Retry logic** — exponential backoff with proportional jitter on timeout/connection errors and on HTTP 429/502/503/504 (honours `Retry-After`).
-- **Cost transparency** — `SHOW_COST_INFO` appends token usage + cost (currency configurable via `COST_CURRENCY`).
-- **Pre-flight validation** — invalid API keys are caught at model-fetch time, not after sending a message.
+- **Cost transparency** — `SHOW_COST_INFO` appends token usage + cost in USD, including every native-tool round. TTS chunks use actual generation billing when available; incomplete accounting is identified explicitly.
+- **Pre-flight validation** — admin keys are checked on authenticated `/key`, separately from public model discovery. Catalog access also works for installations using only personal keys.
 - **Scoped TTS cache** — identical speech requests reuse a file only within the same user, chat, endpoint and API-key context. Entries expire after five minutes; deleted files are regenerated.
 - **Non-blocking media transport** — speech synthesis and video submit, polling and download run in worker threads rather than blocking Open WebUI's event loop.
+- **Protocol-safe native tools** — signed/encrypted reasoning and assistant content survive tool rounds; server tools coexist with OWUI client functions. Synchronous functions execute off the event loop.
+- **Media privacy enforcement** — speech forwards supported data policy/options; video is rejected before submission when strict ZDR or deny-data policy cannot be satisfied.
+- **Concurrent TTS deduplication** — identical owner/chat/credential requests share one synthesis, including when a consumer disconnects. Changing policy invalidates cached results.
 
 ## Requirements
 
@@ -138,7 +142,7 @@ git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
 python test_pipe.py
-python -m unittest -v test_maintenance
+python -m unittest -v test_maintenance test_alignment
 ```
 
 ## Usage
@@ -160,7 +164,7 @@ an environment variable fallback (see [Configuration](#configuration)).
 | Generate music (Lyria) | select `google/lyria-3-clip-preview` (~$0.04 / 30 s clip) — output renders inline as `<audio>` |
 | Generate speech (gpt-audio) | select `openai/gpt-audio-mini`, optionally set `AUDIO_OUTPUT_VOICE = nova` |
 | Surface remaining OpenRouter credit | `SHOW_REMAINING_CREDIT = true` |
-| Show cost + cached-token savings | `SHOW_COST_INFO = true`, `COST_CURRENCY = EUR` |
+| Show actual USD cost + cached-token savings | `SHOW_COST_INFO = true` |
 | Enforce Zero Data Retention routing | `ZDR_ENFORCE = true`, optional `ZDR_MODELS_ONLY = true` to hide non-ZDR models |
 
 ### Reasoning tokens
@@ -169,8 +173,11 @@ When `INCLUDE_REASONING` is enabled (default), the pipe requests reasoning token
 support them. The internal reasoning appears inside `<think>…</think>` blocks before the main
 response.
 
-Set `REASONING_EFFORT` to `low`, `medium`, or `high` to control how much compute the model
-allocates to reasoning. Leave it empty to let the model decide.
+Set `REASONING_EFFORT` to a supported effort (`minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, or `none`). Mandatory-reasoning models reject disable controls;
+advertised model effort options are validated. Empty means model default.
+An explicit request-level reasoning configuration wins over defaults. A token
+budget default takes precedence over an effort default instead of sending both.
 
 ### Citations
 
@@ -194,7 +201,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | Valve | Env Var | Default | Description |
 | --- | --- | --- | --- |
 | `INCLUDE_REASONING` | `OPENROUTER_INCLUDE_REASONING` | `true` | Request reasoning tokens (`<think>` blocks) |
-| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Effort level: `minimal`, `low`, `medium`, `high`, `xhigh`, or empty |
+| `REASONING_EFFORT` | `OPENROUTER_REASONING_EFFORT` | `""` | Model-supported `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or empty |
 | `REASONING_SUMMARY_MODE` | `OPENROUTER_REASONING_SUMMARY_MODE` | `disabled` | Reasoning-summary verbosity: `auto`, `concise`, `detailed`, `disabled` |
 | `REASONING_MAX_TOKENS` | `OPENROUTER_REASONING_MAX_TOKENS` | `0` | Hard cap on reasoning tokens per response (0 disables the cap) |
 | `ENABLE_ANTHROPIC_INTERLEAVED_THINKING` | `OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING` | `true` | Auto-inject `anthropic-beta: interleaved-thinking-2025-05-14` for `anthropic/*` models |
@@ -209,7 +216,7 @@ Every valve accepts an environment variable fallback. The table below lists both
 | `FREE_MODEL_FILTER` | `OPENROUTER_FREE_MODEL_FILTER` | `all` | Free-tier filter: `all` / `only` / `exclude` |
 | `TOOL_CALLING_FILTER` | `OPENROUTER_TOOL_CALLING_FILTER` | `all` | Tool-capable filter (reads `supported_parameters`): `all` / `only` / `exclude` |
 | `OUTPUT_MODALITIES` | `OPENROUTER_OUTPUT_MODALITIES` | `all` | Output modalities to fetch from `/models`. `all` (default) lists every model. Restrict with `text`, `image`, `audio`, `video`, `embeddings`, or a comma list (e.g. `text,image,video`) |
-| `MODEL_VARIANTS` | `OPENROUTER_MODEL_VARIANTS` | `""` | Comma-separated `base_id:tag` entries that surface virtual variant models (e.g. `openai/gpt-4o:nitro`). Tags: `free`, `thinking`, `online`, `nitro`, `exacto`, `extended` |
+| `MODEL_VARIANTS` | `OPENROUTER_MODEL_VARIANTS` | `""` | Comma-separated routing variants, e.g. `openai/gpt-4o:floor`. Supports `nitro`, `floor`, `exacto`, deprecated `online` and combinations. Catalog suffixes require a real entry; dedicated media variants are not synthesized |
 | `MODEL_CATEGORY` | `OPENROUTER_MODEL_CATEGORY` | `""` | Server-side category filter (`?category=`). Common values: `programming`, `roleplay`, `marketing`, `science`, `legal`, `finance`, `health`, `academia` |
 | `HIDE_DEPRECATED_MODELS` | `OPENROUTER_HIDE_DEPRECATED_MODELS` | `false` | Hide models with a non-null `expiration_date`. When False, deprecated models are tagged `⚠ {name} (deprecated)` |
 | `ZDR_MODELS_ONLY` | `OPENROUTER_ZDR_MODELS_ONLY` | `false` | Catalog-side: hide models without a ZDR endpoint (reads `/endpoints/zdr`) |
@@ -250,6 +257,10 @@ Use `[voice=NAME]` in a message to override the voice for that turn. TTS strips
 markdown, emoji, code, LaTeX and reasoning panels before synthesis. Dedicated
 `/audio/speech` requests use mp3; raw PCM responses are wrapped in WAV.
 
+Seed Audio 1.0 is prompt-driven: it preserves the latest user prompt, omits the
+OpenAI `alloy` default, validates speed 0.5–2.0, and rejects prompts over 3000
+characters before synthesis rather than splitting a scene into multiple jobs.
+
 ### Advanced
 
 | Valve | Env Var | Default | Description |
@@ -285,7 +296,7 @@ markdown, emoji, code, LaTeX and reasoning panels before synthesis. Dedicated
 | Valve | Env Var | Default | Description |
 | --- | --- | --- | --- |
 | `SHOW_COST_INFO` | — | `false` | Append token usage and cost to each response (also requests `usage` so streaming responses include cost) |
-| `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Currency label for the cost display (display only; OpenRouter bills in USD) |
+| `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Legacy preference retained for stored configurations; actual cost and credit amounts are always USD, with no FX conversion |
 | `SHOW_REMAINING_CREDIT` | `OPENROUTER_SHOW_REMAINING_CREDIT` | `false` | Append remaining OpenRouter credit after the cost line (cached ~60s `GET /credits` call; independent of Show Cost Info) |
 
 > **Migration (v1.5.0):** the old boolean `FREE_ONLY` valve was replaced by `FREE_MODEL_FILTER` (`all` / `only` / `exclude`). Set `FREE_MODEL_FILTER = only` to preserve the old `FREE_ONLY = true` behaviour. For backward compatibility, the legacy `OPENROUTER_FREE_ONLY=true` environment variable is still honoured when `FREE_MODEL_FILTER` is unset.
@@ -300,6 +311,18 @@ On a shared Open WebUI instance, each user can override the admin defaults with 
 Catalog and display settings (model filters, `MODEL_PREFIX`, provider-icon sync, `OPENROUTER_BASE_URL`) are **admin-global** — the model list is built once without a user context, so per-user overrides of those would have no effect and are intentionally not exposed.
 
 The merge is concurrency-safe: each request works on a copy of the admin valves, so users never affect each other's settings or keys.
+
+Request-level `reasoning` fields override defaults; provider options are merged
+instead of replaced wholesale. Configured routing fields override their matching
+request fields, except a stricter explicit price cap is retained. Admin
+`ZDR_ENFORCE` and `DATA_COLLECTION=deny` cannot be weakened by user preferences.
+Speech forwards only the privacy/options contract supported by its endpoint.
+Video rejects those strict policies before submit instead of silently ignoring them.
+
+OWUI-internal `session_id` remains stripped. Authenticated chat context maps to
+a stable pseudonymous OpenRouter session scoped by user/chat/endpoint. Direct
+callers can provide an explicit `openrouter_session_id`, which becomes the
+upstream `session_id`; the internal OWUI identifier is never passed through.
 
 ### API key encryption at rest
 
@@ -343,6 +366,7 @@ Open-WebUI-Pipe-OpenRouter/
 ├── function.json           # Open WebUI community manifest
 ├── test_pipe.py            # Procedural assertion suite
 ├── test_maintenance.py     # Ownership, invalidation and concurrency regressions
+├── test_alignment.py       # API contracts, policy, replay, variants and accounting
 ├── smoke_owui.py           # Real OWUI save/update/schema/valve checks
 ├── integration_test.py     # Live API integration tests (44 assertions)
 ├── TESTING.md              # Manual pre-release checklist
@@ -372,13 +396,14 @@ _OWUI_INTERNAL_KEYS = {
 }
 ```
 
-It also removes `user` when sent as a dict (Open WebUI format) since OpenRouter expects a string.
+When `user` is a dict, its `id` is forwarded as a string; a dict without an ID
+is removed. OWUI's internal session identifier is handled separately as above.
 
 ## Development
 
 ```bash
 python test_pipe.py                       # Procedural assertion suite
-python -m unittest -v test_maintenance     # Maintenance regressions
+python -m unittest -v test_maintenance test_alignment  # Maintenance + API contracts
 python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
 ```
 
@@ -416,7 +441,7 @@ standalone Python import does not verify the real OWUI loader and database path.
 Set your API key in **Admin Panel → Functions → OpenRouter Pipe → Valves** (⚙️), or set the
 `OPENROUTER_API_KEY` environment variable on the server and restart Open WebUI.
 
-### "Invalid API key (HTTP 401 / 502)"
+### "Invalid API key (HTTP 401 / 403)"
 
 #### Solution
 
@@ -488,9 +513,10 @@ needs no pipe support — it works the same as before.
 **Q: Why does `FREE_MODEL_FILTER = only` include models without a `:free` suffix?**
 
 A: Some models are listed as free on OpenRouter without carrying a `:free` suffix in their
-ID. The pipe uses a two-pass check: first it looks for the `:free` suffix, then it falls
-back to inspecting the `pricing.prompt` and `pricing.completion` fields returned by the
-OpenRouter `/models` endpoint — if both are `0`, the model is treated as free.
+ID. The pipe checks the real `:free` catalog suffix, then zero prompt/completion
+pricing. Positive image, audio, request or reasoning charges prevent a model
+being labelled free even when its text-token rates are zero. Optional tools and
+web search can still add charges to an otherwise free inference model.
 
 **Q: Can I use multiple provider filters at once?**
 

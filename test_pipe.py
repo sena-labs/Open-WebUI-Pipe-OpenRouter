@@ -39,6 +39,10 @@ spec.loader.exec_module(mod)
 sys.modules["openrouter_pipe"] = mod
 
 Pipe = mod.Pipe
+# This procedural suite mocks catalog transport. Dedicated /key contract tests
+# live in test_alignment.py, so they do not consume catalog response fixtures.
+_auth_patch = patch.object(Pipe, "_validate_api_key", return_value=None)
+_auth_patch.start()
 
 def _run(coro):
     return asyncio.run(coro)
@@ -1117,9 +1121,10 @@ _assert(models[0]["name"].startswith("🔥 "), "pipes prefix: name prefixed")
 
 # 15f. No API key
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="")
-models = pipe.pipes()
-_assert(len(models) == 1, "pipes no key: 1 error entry")
-_assert(models[0]["id"] == "error", "pipes no key: error id")
+with patch.object(pipe._session, "get", return_value=mock_resp):
+    models = pipe.pipes()
+_assert(len(models) > 1, "pipes no admin key: public catalog available")
+_assert(models[0]["id"] != "error", "pipes no admin key: personal-key installs can select models")
 
 # 15g. Timeout
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
@@ -1170,13 +1175,14 @@ _assert("User not found" in models[0]["name"], "pipes invalid key 401: detail in
 mock_auth_502 = MagicMock()
 mock_auth_502.status_code = 502
 mock_auth_502.json.return_value = {"error": {"message": "Failed to authenticate request with Clerk"}}
+mock_auth_502.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=mock_auth_502)
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=mock_auth_502):
     models = pipe.pipes()
 _assert(len(models) == 1, "pipes invalid key 502: 1 error entry")
 _assert(models[0]["id"] == "error", "pipes invalid key 502: error id")
-_assert("Invalid API key" in models[0]["name"], "pipes invalid key 502: message")
+_assert("HTTP 502" in models[0]["name"], "pipes upstream 502: not misclassified as invalid credentials")
 _assert("502" in models[0]["name"], "pipes invalid key 502: status code")
 
 # 15k. Network error returns error entry
@@ -1283,8 +1289,8 @@ _assert(
 )
 re_options = re_field.json_schema_extra.get("input", {}).get("options", [])
 _assert(
-    len(re_options) == 6,
-    "REASONING_EFFORT: 6 options (disabled, minimal, low, medium, high, xhigh)",
+    len(re_options) == 8,
+    "REASONING_EFFORT: defaults, none, minimal, low, medium, high, xhigh, max",
 )
 re_values = [o["value"] for o in re_options]
 _assert("minimal" in re_values, "REASONING_EFFORT: minimal option present")
@@ -1588,7 +1594,7 @@ _var_ids = {m["id"] for m in _var_models}
 _assert("openai/gpt-4o" in _var_ids, "MODEL_VARIANTS: base model preserved")
 _assert("openai/gpt-4o:nitro" in _var_ids, "MODEL_VARIANTS: :nitro variant added")
 _assert("openai/gpt-4o:exacto" in _var_ids, "MODEL_VARIANTS: :exacto variant added")
-_assert("anthropic/claude-3.5-sonnet:thinking" in _var_ids, "MODEL_VARIANTS: :thinking variant added")
+_assert("anthropic/claude-3.5-sonnet:thinking" not in _var_ids, "MODEL_VARIANTS: unavailable catalog variant never fabricated")
 _nitro_entry = next(m for m in _var_models if m["id"] == "openai/gpt-4o:nitro")
 _assert("Nitro" in _nitro_entry["name"], "MODEL_VARIANTS: tag label appended to display name")
 _assert("GPT-4o" in _nitro_entry["name"], "MODEL_VARIANTS: base name retained")
@@ -2598,8 +2604,8 @@ _pipe_rmt.valves = Pipe.Valves(
 )
 _p_rmt = _pipe_rmt._prepare_payload({"model": "openai/o1", "messages": []}, _pipe_rmt.valves)
 _assert(
-    _p_rmt.get("reasoning") == {"effort": "high", "max_tokens": 2048},
-    "reasoning.max_tokens emitted alongside effort",
+    _p_rmt.get("reasoning") == {"max_tokens": 2048},
+    "reasoning token budget takes precedence over an effort default",
 )
 
 _pipe_rmt.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_MAX_TOKENS=0)
@@ -2975,15 +2981,15 @@ _assert("$0.0567" in _result_normal, "_format_cost_info: normal cost 4 decimal p
 
 # 33g. EUR currency symbol
 _result_eur = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "EUR")
-_assert("€" in _result_eur, "_format_cost_info: EUR symbol shown")
+_assert("$" in _result_eur and "€" not in _result_eur, "_format_cost_info: upstream USD is never relabelled EUR")
 
 # 33h. GBP currency symbol
 _result_gbp = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "GBP")
-_assert("£" in _result_gbp, "_format_cost_info: GBP symbol shown")
+_assert("$" in _result_gbp and "£" not in _result_gbp, "_format_cost_info: upstream USD is never relabelled GBP")
 
 # 33i. Unknown currency → uses currency string as prefix
 _result_unknown = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.01}, "XYZ")
-_assert("XYZ " in _result_unknown, "_format_cost_info: unknown currency → code as prefix")
+_assert("$" in _result_unknown, "_format_cost_info: unknown preference still reports USD")
 
 # 33j. Invalid cost value (string) → tokens shown, cost silently skipped
 _result_bad_cost = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": "invalid"})
@@ -3049,7 +3055,7 @@ _mock_cost_eur.json.return_value = {
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_cost_eur):
     _result_eur_resp = pipe._non_stream_response({}, {}, pipe.valves)
-_assert("€" in _result_eur_resp, "non-stream SHOW_COST_INFO=True EUR: euro symbol shown")
+_assert("$" in _result_eur_resp and "€" not in _result_eur_resp, "non-stream: actual USD cost despite legacy EUR preference")
 
 # 33r. SHOW_COST_INFO=True but response has no usage → no cost appended (no crash)
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
@@ -6082,8 +6088,8 @@ _p_zdr.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "y" * 50
 _p_zdr.valves.ZDR_MODELS_ONLY = True
 _p_zdr.valves.SYNC_PROVIDER_ICONS = False
 _models_zdr = _p_zdr.pipes()
-_assert("google/veo-3.1-fast" not in _p_zdr._video_model_ids,
-        "ZDR-filtered video model NOT added to _video_model_ids")
+_assert("google/veo-3.1-fast" in _p_zdr._video_model_ids,
+        "hidden video retains metadata; request privacy is enforced before submit")
 
 # ── batch-1 audit fixes: SSRF guard + atomic set swap + body deepcopy ─────────
 
@@ -6206,11 +6212,8 @@ _assert(_p_cc._credit_balance_cached(_p_cc.valves) is None,
         "_credit_balance_cached returns None on cache miss")
 
 # After populating cache directly, cached read works without HTTP
-import hashlib as _hl
 import time as _time_t
-_dec_key = "sk-or-v1-" + "x" * 50
-_hk = _hl.sha256(_dec_key.encode()).hexdigest()[:16]
-_p_cc._credit_cache[_hk] = (9.99, _time_t.monotonic())
+_p_cc._credit_cache[_p_cc._credential_fingerprint("sk-or-v1-" + "x" * 50)] = (9.99, _time_t.monotonic())
 _assert(_p_cc._credit_balance_cached(_p_cc.valves) == 9.99,
         "_credit_balance_cached returns cached value, no HTTP call")
 

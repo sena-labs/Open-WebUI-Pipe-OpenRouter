@@ -56,8 +56,9 @@ By participating, you agree to uphold this code.
 | Command | Description |
 | --- | --- |
 | `python test_pipe.py` | Run the procedural assertion suite |
-| `python -m unittest -v test_maintenance` | Run cache ownership, invalidation and concurrency regressions |
+| `python -m unittest -v test_maintenance test_alignment` | Run ownership/concurrency and API contract regressions |
 | `python smoke_owui.py --base-url http://127.0.0.1:3001` | Test save/update/schema/valves on a fresh disposable OWUI instance |
+| `OPENROUTER_API_KEY=… python -B e2e_live.py --budget 0.50` | Paid live checks (chat/tools, TTS, video) with spend cap — see TESTING.md |
 | `python integration_test.py` | Run live API tests (requires `OPENROUTER_API_KEY`) |
 
 ## Deliverable-PR playbook
@@ -82,7 +83,7 @@ of value. The playbook:
 
    ```bash
    python test_pipe.py
-   python -m unittest -v test_maintenance
+   python -m unittest -v test_maintenance test_alignment
    python integration_test.py   # optional, requires a valid API key
    ```
 
@@ -140,14 +141,15 @@ test: add retry exhaustion coverage
 
 ## Testing
 
-- **Framework:** `test_pipe.py` is a procedural assertion harness; `test_maintenance.py`
-  uses Python `unittest` (stdlib) for asynchronous maintenance regressions.
+- **Framework:** `test_pipe.py` is a procedural assertion harness;
+  `test_maintenance.py` and `test_alignment.py` use Python `unittest` (stdlib)
+  for maintenance and API contract regressions.
 - **Mock strategy:** `unittest.mock.patch` for HTTP calls and Open WebUI internals.
 - **Conventions:**
   - Keep existing `_section` / `_assert` conventions in `test_pipe.py`.
   - Group maintenance regression methods by behavior; prefer ownership and
     scheduling checks over assertions that mirror private implementation details.
-- **CI:** both suites run on Python 3.10–3.14 using a hashed dependency snapshot.
+- **CI:** all suites run on Python 3.10–3.14 using a hashed dependency snapshot.
   Real OWUI compatibility checks cover pinned `v0.11.4-slim` and current stable
   `main-slim`. Tests and CodeQL also run weekly. Live OpenRouter API tests are
   optional and can spend credits; OWUI smoke needs no API key.

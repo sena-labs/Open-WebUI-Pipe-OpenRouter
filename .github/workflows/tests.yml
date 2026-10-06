@@ -41,7 +41,7 @@ jobs:
       - name: Run tests
         run: |
           python test_pipe.py
-          python -m unittest -v test_maintenance
+          python -m unittest -v test_maintenance test_alignment
 
   compatibility:
     name: OWUI smoke (${{ matrix.owui-tag }})
