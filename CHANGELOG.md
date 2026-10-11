@@ -5,6 +5,36 @@ All notable changes to **OpenRouter Pipe** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve request provider/options and reasoning controls when applying Valves;
+  retain stricter price caps and prevent personal preferences weakening admin privacy.
+- Forward the speech endpoint's privacy/options contract; reject video requests
+  whose required ZDR or deny-data policy cannot be satisfied before submitting a job.
+- Replay signed/encrypted reasoning and assistant content through native tool
+  rounds, preserve server tools alongside OWUI functions, and offload sync callables.
+- Accumulate usage, cost and generation IDs across tool rounds and TTS chunks.
+  Actual amounts remain USD instead of being relabelled as another currency.
+- Resolve combined routing suffixes separately from real catalog variants;
+  recognize `:floor`, never fabricate `:free`, and retain hidden model metadata.
+- Validate credentials via `/key`, refresh the provider registry URL, and allow
+  public catalog discovery with personal-key-only installations.
+- Treat Decisions and Batch entries as discovery-only; guard music/audio/image
+  background tasks and terminate video polling on cancelled/expired jobs.
+- Enforce Seed Audio's prompt/speed limits without inserting an invalid default
+  voice or splitting a single sound prompt into multiple generations.
+- Exclude paid media with zero text-token rates from the free-model filter.
+- Isolate pseudonymous OpenRouter sessions from OWUI-internal session identifiers.
+
+### Added
+
+- Scoped single-flight TTS synthesis surviving consumer disconnection; privacy
+  changes invalidate hosted-result cache entries.
+- API alignment regressions in `test_alignment.py`, included in the Python CI matrix.
+- Consolidated audit and phased implementation plan in `docs/`.
+
 ## [1.12.2] — 2026-10-03
 
 ### Fixed
@@ -482,6 +512,7 @@ Identifier-rename release based on a misread of the OWUI portal slugifier. See 1
      Documented but never tagged: 0.1.0, 1.0.0, 1.1.1, 1.2.0, 1.4.0–1.8.1. Those
      headings intentionally have no link definition, so they render as plain text
      rather than pointing at a tag that would 404. -->
+[Unreleased]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.2...HEAD
 [1.12.2]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/compare/v1.11.0...v1.12.0
