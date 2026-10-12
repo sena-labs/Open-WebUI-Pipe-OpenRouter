@@ -88,7 +88,9 @@ Container images exercised:
 - `v0.11.4-slim`: `sha256:0487ad4a5a4b986062dedace806c3ef1e88fec38c10d1e64d6a5501c66671e5e`
 - `main-slim`: `sha256:6d72fda4b01e1216d1c7bc8d69ea9f4b27934b5ab0a9a56cec651ac0ffebcb0f`
 
-These are local results, not a claim that the unpublished patch has run on GitHub CI.
+These were local remediation results. Runtime commit `62456b3` has since passed
+the full GitHub matrix and CodeQL; [live provider results](LIVE-VERIFICATION-2026-10-12.md)
+document successful ZDR-compatible chat/tools/TTS and the video policy restriction.
 
 ```bash
 python test_pipe.py
