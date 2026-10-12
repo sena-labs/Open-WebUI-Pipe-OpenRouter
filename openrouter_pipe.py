@@ -3,10 +3,10 @@ title: OpenRouter Pipe — Full Catalog (Chat · TTS · Image · Video)
 author: Sena Labs
 author_url: https://github.com/sena-labs
 funding_url: https://ko-fi.com/senalabs
-version: 1.12.2
+version: 1.13.0
 license: MIT
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCUiIHkxPSIwJSIgeDI9IjEwMCUiIHkyPSIxMDAlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjNmQyOGQ5Ii8+PHN0b3Agb2Zmc2V0PSIxMDAlIiBzdG9wLWNvbG9yPSIjYTc4YmZhIi8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiIHJ4PSIyMCIgZmlsbD0idXJsKCNiZykiLz48cGF0aCBkPSJNMjAgNTAgQzIwIDMwLCA0MCAzMCwgNTAgMzAgTDUwIDIyIEw2OCA0MCBMNTAgNTggTDUwIDUwIEM0MCA1MCwgMzUgNDUsIDMwIDUwIEMyNSA1NSwgMjAgNzAsIDIwIDUwIFoiIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSIzMCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxjaXJjbGUgY3g9IjgyIiBjeT0iNTAiIHI9IjciIGZpbGw9IndoaXRlIiBvcGFjaXR5PSIwLjk1Ii8+PGNpcmNsZSBjeD0iNzgiIGN5PSI3MCIgcj0iNyIgZmlsbD0id2hpdGUiIG9wYWNpdHk9IjAuOCIvPjxsaW5lIHgxPSI2OCIgeTE9IjQwIiB4Mj0iNzYiIHkyPSIzMiIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBvcGFjaXR5PSIwLjUiLz48bGluZSB4MT0iNjgiIHkxPSI0MCIgeDI9Ijc2IiB5Mj0iNTAiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgb3BhY2l0eT0iMC41Ii8+PGxpbmUgeDE9IjY4IiB5MT0iNDAiIHgyPSI3NiIgeTI9IjY4IiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==
-required_open_webui_version: 0.4.0
+required_open_webui_version: 0.11.4
 requirements: requests>=2.32.4, pydantic>=2.0
 description: Full OpenRouter catalog in Open WebUI with streaming chat, reasoning, provider routing, fallbacks, citations, ZDR, prompt caching, cost/credit footers and native tool calling. Compatible image, audio and video outputs are re-hosted as OWUI files and rendered inline. Dedicated TTS uses /audio/speech with text cleaning, splitting, provider-aware voices, speed and source selection. TTS cache is isolated by user, chat, endpoint and API key, expires after five minutes and regenerates deleted files. Speech and video HTTP transport runs off the event loop; media redirects are rejected and downloads are byte-capped. Per-user Valves support personal API keys with optional Fernet encryption at rest. Embedding, reranking and transcription models are discovery-only catalog entries, not chat endpoints.
 """
@@ -14,6 +14,8 @@ description: Full OpenRouter catalog in Open WebUI with streaming chat, reasonin
 import asyncio
 import base64
 import copy
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import email.utils
 import hashlib
 import inspect
@@ -24,19 +26,30 @@ import random
 import re
 import secrets
 import struct
+import threading
 import time
-import traceback
-from typing import AsyncGenerator, Callable, Generator, List, Optional, Union
+from typing import Any, AsyncGenerator, Callable, Generator, List, Optional, Union
 from urllib import parse as urlparse
 from urllib.parse import urlsplit
 
 import requests
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Keys injected by Open WebUI internals — must not be forwarded to OpenRouter
 _OWUI_INTERNAL_KEYS = frozenset(
-    {"chat_id", "title", "task", "task_id", "features", "citations",
-     "metadata", "files", "tool_ids", "session_id", "message_id"}
+    {
+        "chat_id",
+        "title",
+        "task",
+        "task_id",
+        "features",
+        "citations",
+        "metadata",
+        "files",
+        "tool_ids",
+        "session_id",
+        "message_id",
+    }
 )
 
 _CITATION_RE = re.compile(r"\[(\d+)\]")
@@ -64,18 +77,38 @@ _DATA_IMAGE_RE = re.compile(r"data:(image/[A-Za-z0-9.+-]+);base64,(.+)", re.DOTA
 # streaming an oversize blob.
 _VIDEO_MAX_BYTES = 100 * 1024 * 1024
 _AUDIO_MAX_BYTES = 50 * 1024 * 1024
+_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_IMAGE_MAX_COUNT = 16
+_TTS_INPUT_MAX_CHARS = 100_000
+# Keep long network reads out of OWUI's shared worker pool. Submission is gated
+# asynchronously, so the executor's work queue cannot grow without a bound.
+_IO_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="openrouter-io")
 
 # MIME whitelists used post-download. The pipe always knows what modality
 # it just generated, so it doesn't need to trust the upstream Content-Type
 # header (a compromised relay could spoof it to coerce OWUI to render the
 # bytes as a different type).
-_VIDEO_MIME_WHITELIST = frozenset({
-    "video/mp4", "video/webm", "video/quicktime", "video/x-matroska",
-})
-_AUDIO_MIME_WHITELIST = frozenset({
-    "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/flac",
-    "audio/ogg", "audio/opus", "audio/aac", "audio/mp4",
-})
+_VIDEO_MIME_WHITELIST = frozenset(
+    {
+        "video/mp4",
+        "video/webm",
+        "video/quicktime",
+        "video/x-matroska",
+    }
+)
+_AUDIO_MIME_WHITELIST = frozenset(
+    {
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/flac",
+        "audio/ogg",
+        "audio/opus",
+        "audio/aac",
+        "audio/mp4",
+    }
+)
 
 # Audio format → MIME content-type map. Centralised so the format table
 # stays in one place and the upload helpers can't drift apart.
@@ -85,7 +118,7 @@ _AUDIO_FORMAT_TO_MIME = {
     "flac": "audio/flac",
     "opus": "audio/ogg",
     "ogg": "audio/ogg",
-    "pcm16": "audio/wav",   # PCM gets wrapped in a WAV container before upload
+    "pcm16": "audio/wav",  # PCM gets wrapped in a WAV container before upload
     "aac": "audio/aac",
     "m4a": "audio/mp4",
 }
@@ -107,37 +140,37 @@ _TTS_DETAILS_RE = re.compile(r"<details[^>]*>.*?</details>", re.DOTALL | re.IGNO
 # property). Broad pictograph / symbol / flag / keycap / ZWJ / VS ranges.
 _TTS_EMOJI_RE = re.compile(
     "["
-    "\U0001F000-\U0001FAFF"   # CJK symbols, emoji, pictographs, supplemental
-    "\U00002600-\U000027BF"   # misc symbols + dingbats
-    "\U0001F1E6-\U0001F1FF"   # regional indicators (flags)
-    "\U00002190-\U000021FF"   # arrows
-    "\U00002B00-\U00002BFF"   # misc symbols and arrows
-    "\U00002300-\U000023FF"   # misc technical (⌚, ⏰, ▶️ base)
-    "\U0000FE00-\U0000FE0F"   # variation selectors
-    "\U0000200D"               # zero-width joiner
-    "\U000020E3"               # combining enclosing keycap
+    "\U0001f000-\U0001faff"  # CJK symbols, emoji, pictographs, supplemental
+    "\U00002600-\U000027bf"  # misc symbols + dingbats
+    "\U0001f1e6-\U0001f1ff"  # regional indicators (flags)
+    "\U00002190-\U000021ff"  # arrows
+    "\U00002b00-\U00002bff"  # misc symbols and arrows
+    "\U00002300-\U000023ff"  # misc technical (⌚, ⏰, ▶️ base)
+    "\U0000fe00-\U0000fe0f"  # variation selectors
+    "\U0000200d"  # zero-width joiner
+    "\U000020e3"  # combining enclosing keycap
     "]+",
     flags=re.UNICODE,
 )
-_TTS_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")          # drop fenced code blocks
-_TTS_TABLE_ROW_RE = re.compile(r"^\|.*\|$", re.MULTILINE)   # drop markdown table rows
-_TTS_BOLD_RE = re.compile(r"(?:\*\*|__)(.*?)(?:\*\*|__)")   # **b** / __b__ → b
-_TTS_STRIKE_RE = re.compile(r"~~(.*?)~~")                   # ~~s~~ → s
-_TTS_ITALIC_RE = re.compile(r"(?:[*_])(.*?)(?:[*_])")       # *i* / _i_ → i
-_TTS_INLINE_CODE_RE = re.compile(r"`([^`]+)`")             # `code` → code (keep text)
-_TTS_LINK_RE = re.compile(r"!?\[([^\]]*)\](?:\([^)]+\)|\[[^\]]*\])")  # [l](url)/![a](url) → l
-_TTS_REF_DEF_RE = re.compile(r"^\[[^\]]+\]:\s*.*$", re.MULTILINE)     # reference link defs
-_TTS_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)   # ATX header markers
+_TTS_CODE_FENCE_RE = re.compile(r"```[\s\S]*?```")  # drop fenced code blocks
+_TTS_TABLE_ROW_RE = re.compile(r"^\|.*\|$", re.MULTILINE)  # drop markdown table rows
+_TTS_BOLD_RE = re.compile(r"(?:\*\*|__)(.*?)(?:\*\*|__)")  # **b** / __b__ → b
+_TTS_STRIKE_RE = re.compile(r"~~(.*?)~~")  # ~~s~~ → s
+_TTS_ITALIC_RE = re.compile(r"(?:[*_])(.*?)(?:[*_])")  # *i* / _i_ → i
+_TTS_INLINE_CODE_RE = re.compile(r"`([^`]+)`")  # `code` → code (keep text)
+_TTS_LINK_RE = re.compile(r"!?\[([^\[\]]*)\](?:\([^()]+\)|\[[^\[\]]*\])")
+_TTS_REF_DEF_RE = re.compile(r"^\[[^\[\]\n]+\]:[ \t]*.*$", re.MULTILINE)
+_TTS_HEADER_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)  # ATX header markers
 _TTS_BULLET_RE = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)  # bullet markers
 _TTS_NUMLIST_RE = re.compile(r"^\s*\d+\.\s+", re.MULTILINE)  # numbered-list markers
-_TTS_QUOTE_RE = re.compile(r"^\s*>[> ]*", re.MULTILINE)     # blockquote markers
-_TTS_FOOTNOTE_RE = re.compile(r"\[\^[^\]]*\]")            # footnote refs
+_TTS_QUOTE_RE = re.compile(r"^\s*>[> ]*", re.MULTILINE)  # blockquote markers
+_TTS_FOOTNOTE_RE = re.compile(r"\[\^[^\]]*\]")  # footnote refs
 # LaTeX / math — read character-by-character by TTS otherwise. OWUI does NOT
 # strip these; we do. Block forms first so the inline pass can't nibble them.
 _TTS_LATEX_BLOCK_RE = re.compile(r"\$\$[\s\S]*?\$\$")
 _TTS_LATEX_BRACK_RE = re.compile(r"\\\[[\s\S]*?\\\]")
 _TTS_LATEX_PAREN_RE = re.compile(r"\\\((.*?)\\\)", re.DOTALL)
-_TTS_LATEX_INLINE_RE = re.compile(r"\$[^$\n]+\$")
+_TTS_LATEX_INLINE_RE = re.compile(r"(?<!\\)\$(?![\d\s$])[^$\n]*[^\s$]\$(?!\d)")
 # Our own media embeds (and their <div> wrapper) — so a TTS reply is never
 # fed back as text to be "spoken" on the next turn (TTS_SOURCE=auto).
 _TTS_MEDIA_EMBED_RE = re.compile(r"<(audio|video)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
@@ -160,9 +193,62 @@ def _env_float(name: str) -> Optional[float]:
     if not raw:
         return None
     try:
-        return float(raw)
+        value = float(raw)
+        return value if math.isfinite(value) else None
     except ValueError:
         return None
+
+
+def _env_number(name: str, default, minimum=0, maximum=None):
+    """Parse bounded numeric defaults without logging an environment value."""
+    try:
+        value = type(default)(os.getenv(name, str(default)))
+        if not math.isfinite(value) or value < minimum:
+            raise ValueError
+        if maximum is not None and value > maximum:
+            raise ValueError
+        return value
+    except (ValueError, TypeError, OverflowError):
+        print(f"[OpenRouter Pipe] Invalid {name}; using its documented default")
+        return default
+
+
+def _resolved_api_key(value: str) -> str:
+    """Normalize credentials and reject control characters before transport."""
+    key = EncryptedStr.decrypt(value or "").strip()
+    if key.startswith(_ENC_PREFIX) or any(ord(c) < 33 or ord(c) == 127 for c in key):
+        raise ValueError("API key could not be decoded or contains invalid characters")
+    return key
+
+
+def _log_error(label: str, exc: BaseException) -> None:
+    """Exception messages may contain bearer headers, URLs or user content."""
+    print(f"[OpenRouter Pipe] {label}: {type(exc).__name__}")
+
+
+def _safe_detail(value) -> str:
+    """Bound upstream diagnostics and redact common credential representations."""
+    text = str(value)[:500]
+    return re.sub(r"(?i)bearer\s+[^\s'\"<>]+|sk-or-[^\s'\"<>]+", "[redacted]", text)
+
+
+def _strip_delimited(text: str, opening: str, closing: str, keep_inner: bool = False) -> str:
+    """Linear scan: unclosed blocks are removed, not retried at every opener."""
+    pieces = []
+    cursor = 0
+    while True:
+        start = text.find(opening, cursor)
+        if start < 0:
+            pieces.append(text[cursor:])
+            break
+        pieces.append(text[cursor:start])
+        end = text.find(closing, start + len(opening))
+        if end < 0:
+            break
+        if keep_inner:
+            pieces.append(text[start + len(opening) : end])
+        cursor = end + len(closing)
+    return "".join(pieces)
 
 
 # Allowed citation URL schemes. OWUI emits citation events to the frontend
@@ -298,7 +384,7 @@ _PROVIDER_SLUG_ALIASES = {
 }
 
 
-def _is_safe_url(url: str) -> bool:
+def _is_safe_url(url: object) -> bool:
     """Return True only for http:// and https:// URLs."""
     return isinstance(url, str) and url.lower().startswith(("http://", "https://"))
 
@@ -327,28 +413,11 @@ def _is_owui_managed_icon(url: str) -> bool:
         # Require the query string ("?") so a user-set bare gstatic URL isn't
         # misclassified — real faviconV2 icons always carry query params.
         or url.startswith("https://t0.gstatic.com/faviconV2?")
-        # Hardcoded brand icons we ship from common public CDNs (HuggingFace
-        # avatars, GitHub user avatars, Gravatar, openrouter favicon).
-        # Marking them managed lets a registry refresh swap stale CDN URLs
-        # when a provider rotates them, without ever touching a user-set
-        # custom icon (which would be on a different host or path).
-        or url.startswith("https://cdn-avatars.huggingface.co/")
-        or url.startswith("https://huggingface.co/avatars/")
-        or url.startswith("https://github.com/")
-        or url.startswith("https://www.gravatar.com/avatar/")
-        or url == "https://openrouter.ai/favicon.svg"
-        or url == "https://openrouter.ai/apple-touch-icon.png"
-        or url == "https://www.sbert.net/_static/logo.png"
-        or url == "https://www.bytedance.com/favicon.svg"
     ):
         return True
-    # Provider-domain favicons written by the USE_PROVIDER_DOMAIN_FAVICON
-    # fallback: ``https://<host>/favicon.ico`` exactly, no path/query
-    # suffix. Treat these as managed so a registry refresh can replace
-    # them when a real hosted icon becomes available. A user-set custom
-    # favicon URL would almost certainly carry a path beyond /favicon.ico
-    # or a query string, so this stays safe.
-    return url.startswith("https://") and url.endswith("/favicon.ico") and url.count("/") == 3
+    # CDN hosts and /favicon.ico alone do not establish ownership. New writes
+    # carry an exact provenance marker in ModelMeta, checked by the sync path.
+    return False
 
 
 def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
@@ -369,7 +438,7 @@ def _insert_citations(text: str, citations: Optional[List[str]]) -> str:
     try:
         return _CITATION_RE.sub(_replace, text)
     except Exception as exc:  # pragma: no cover
-        print(f"[OpenRouter Pipe] Citation injection error: {exc}")
+        _log_error("Citation injection error", exc)
         return text
 
 
@@ -379,15 +448,69 @@ _CITATION_SANITIZE_RE = re.compile(r"[`\r\n]")
 def _format_citation_list(citations: Optional[List[str]]) -> str:
     if not citations:
         return ""
-    try:
-        rendered = "\n".join(
-            f"{idx + 1}. {_CITATION_SANITIZE_RE.sub('', str(url))}"
-            for idx, url in enumerate(citations)
-        )
-        return f"\n\n---\nCitations:\n{rendered}"
-    except Exception as exc:  # pragma: no cover
-        print(f"[OpenRouter Pipe] Citation formatting error: {exc}")
-        return ""
+    rendered = "\n".join(
+        f"{idx + 1}. {_CITATION_SANITIZE_RE.sub('', str(url))}" for idx, url in enumerate(citations)
+    )
+    return f"\n\n---\nCitations:\n{rendered}"
+
+
+def _collect_citations(*objects) -> list:
+    """Normalize legacy URL lists and standard url_citation annotations."""
+    citations = []
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        for url in obj.get("citations") or []:
+            if _is_safe_url(url) and url not in citations:
+                citations.append(url)
+        for item in obj.get("annotations") or []:
+            if not isinstance(item, dict):
+                continue
+            block = item.get("url_citation")
+            url = block.get("url") if isinstance(block, dict) else None
+            if _is_safe_url(url) and url not in citations:
+                citations.append(url)
+    return citations
+
+
+def _iter_sse(response):
+    """Read SSE data fields with optional space and bounded multiline events."""
+    fields: list[str] = []
+    size = 0
+    for raw in response.iter_lines(chunk_size=512):
+        line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+        if not line:
+            fields.clear()
+            size = 0
+            continue
+        if line.startswith(":") or not line.startswith("data:"):
+            continue
+        value = line[5:]
+        if value.startswith(" "):
+            value = value[1:]
+        if value.strip() == "[DONE]":
+            return
+        if fields:
+            try:
+                standalone = json.loads(value)
+            except json.JSONDecodeError:
+                standalone = None
+            if isinstance(standalone, dict):
+                fields.clear()
+                size = 0
+        fields.append(value)
+        size += len(value)
+        if size > 32 * 1024 * 1024:
+            raise ValueError("SSE event exceeded its size limit")
+        try:
+            event = json.loads("\n".join(fields))
+        except json.JSONDecodeError:
+            continue
+        fields.clear()
+        size = 0
+        if not isinstance(event, dict):
+            raise ValueError("SSE event must be an object")
+        yield event
 
 
 _CURRENCY_SYMBOLS = {
@@ -406,11 +529,19 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     When the provider reports cached prompt tokens (90%+ cheaper on most
     providers), the breakdown is shown so users see the savings.
     """
-    if not usage:
+    if not isinstance(usage, dict) or not usage:
         return ""
-    prompt = usage.get("prompt_tokens", 0)
-    completion = usage.get("completion_tokens", 0)
-    total = usage.get("total_tokens", 0) or (prompt + completion)
+
+    def counter(key):
+        value = usage.get(key)
+        return value if isinstance(value, (int, float)) and math.isfinite(value) else None
+
+    prompt = counter("prompt_tokens")
+    completion = counter("completion_tokens")
+    have_tokens = prompt is not None and completion is not None
+    prompt = prompt or 0
+    completion = completion or 0
+    total = counter("total_tokens") or (prompt + completion)
     cost = usage.get("cost")
 
     # Cached prompt tokens — emitted by Anthropic prompt caching, OpenAI
@@ -422,6 +553,8 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     if not cached_tokens:
         cached_tokens = usage.get("cache_read_input_tokens") or 0
 
+    if not isinstance(cached_tokens, (int, float)) or not math.isfinite(cached_tokens):
+        cached_tokens = 0
     if cached_tokens:
         non_cached = max(prompt - int(cached_tokens), 0)
         token_str = (
@@ -430,11 +563,17 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
         )
     else:
         token_str = f"{prompt:,} prompt + {completion:,} completion = {total:,} total"
-    parts = [f"**Tokens:** {token_str}"]
+    parts = [f"**Tokens:** {token_str}"] if have_tokens else []
+    if not have_tokens and counter("prompt_tokens") is not None:
+        parts.append(f"**Tokens:** {prompt:,} prompt · completion unavailable")
+    elif not have_tokens and counter("completion_tokens") is not None:
+        parts.append(f"**Tokens:** prompt unavailable · {completion:,} completion")
 
     if cost is not None:
         try:
             cost_f = float(cost)
+            if not math.isfinite(cost_f) or cost_f < 0:
+                raise ValueError
             # OpenRouter reports USD. A display preference is not an FX rate.
             symbol = "$"
             if cost_f == 0:
@@ -451,7 +590,20 @@ def _format_cost_info(usage: dict, currency: str = "USD") -> str:
     if usage.get("cost_incomplete"):
         parts.append("cost unavailable for some rounds")
 
-    return f"\n\n---\n*{' · '.join(parts)}*"
+    return f"\n\n---\n*{' · '.join(parts)}*" if parts else ""
+
+
+def _reported_cost(usage: object) -> bool:
+    if not isinstance(usage, dict) or isinstance(usage.get("cost"), bool):
+        return False
+    cost = usage.get("cost")
+    if cost is None:
+        return False
+    try:
+        value = float(cost)
+        return math.isfinite(value) and value >= 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _add_usage(total: dict, usage: dict) -> None:
@@ -477,15 +629,18 @@ def _add_usage(total: dict, usage: dict) -> None:
 
 def _assistant_tool_message(message: dict, tool_calls: list) -> dict:
     """Replay protocol data, not refusal/legacy/provider response decoration."""
-    result = {"role": "assistant", "content": message.get("content"),
-              "tool_calls": copy.deepcopy(tool_calls)}
+    result = {
+        "role": "assistant",
+        "content": message.get("content"),
+        "tool_calls": copy.deepcopy(tool_calls),
+    }
     for key in ("reasoning", "reasoning_details", "reasoning_content"):
         if message.get(key) is not None:
             result[key] = copy.deepcopy(message[key])
     return result
 
 
-def _accumulate_reasoning(state: dict, details: list) -> None:
+def _accumulate_reasoning(state: dict, details: object) -> None:
     """Assemble streaming reasoning blocks by index without changing signatures."""
     if not isinstance(details, list):
         return
@@ -512,9 +667,12 @@ def _accumulate_reasoning(state: dict, details: list) -> None:
             # and providers that verify signed reasoning reject the replay.
             last = state.get("_reasoning_last")
             slot = acc.get(last) if last is not None else None
-            if (slot is None or slot.get("type") != detail.get("type")
-                    or (detail.get("id") is not None and detail.get("id") != slot.get("id"))
-                    or slot.get("signature") is not None):
+            if (
+                slot is None
+                or slot.get("type") != detail.get("type")
+                or (detail.get("id") is not None and detail.get("id") != slot.get("id"))
+                or slot.get("signature") is not None
+            ):
                 last = ("record", len(acc))
                 slot = acc.setdefault(last, {})
                 state["_reasoning_last"] = last
@@ -551,19 +709,27 @@ def _format_image_output(images: list) -> str:
     percent-encoded so they don't break the markdown image syntax.
     """
     parts = []
-    for img in (images or []):
+    for img in images or []:
         if not isinstance(img, dict):
             continue
-        url = (img.get("image_url") or {}).get("url", "")
-        if not url or len(url) > 2_000_000:
+        block = img.get("image_url")
+        url = block.get("url", "") if isinstance(block, dict) else ""
+        if not isinstance(url, str) or not url or len(url) > 2_000_000:
             continue
         lower = url.lower()
-        allowed_data = lower.startswith((
-            "data:image/png", "data:image/jpeg", "data:image/jpg",
-            "data:image/gif", "data:image/webp",
-        ))
+        allowed_data = lower.startswith(
+            (
+                "data:image/png",
+                "data:image/jpeg",
+                "data:image/jpg",
+                "data:image/gif",
+                "data:image/webp",
+            )
+        )
         allowed_relative = url.startswith("/api/v1/files/")
         if not (lower.startswith(("http://", "https://")) or allowed_data or allowed_relative):
+            continue
+        if any(c in url for c in "\r\n<>"):
             continue
         parts.append(f"![Generated image]({url.replace(')', '%29')})")
     return "\n\n".join(parts)
@@ -572,8 +738,11 @@ def _format_image_output(images: list) -> str:
 # Optional dependency: Open WebUI bundles `cryptography`. When absent (e.g. the
 # pipe is imported in a bare environment) the key degrades to plaintext storage
 # rather than failing — see EncryptedStr.
+_Fernet: Any
 try:
-    from cryptography.fernet import Fernet as _Fernet
+    from cryptography.fernet import Fernet as _FernetType
+
+    _Fernet = _FernetType
 except Exception:  # pragma: no cover - exercised only without cryptography
     _Fernet = None
 
@@ -621,7 +790,7 @@ class EncryptedStr(str):
         if fernet is None:
             return value
         try:
-            token = value[len(_ENC_PREFIX):].encode("utf-8")
+            token = value[len(_ENC_PREFIX) :].encode("utf-8")
             return fernet.decrypt(token).decode("utf-8")
         except Exception:
             return ""
@@ -629,6 +798,7 @@ class EncryptedStr(str):
 
 class Pipe:
     class Valves(BaseModel):
+        model_config = ConfigDict(validate_default=True)
         OPENROUTER_API_KEY: str = Field(
             default=os.getenv("OPENROUTER_API_KEY", ""),
             description="OpenRouter API key",
@@ -682,7 +852,7 @@ class Pipe:
             },
         )
         REASONING_MAX_TOKENS: int = Field(
-            default=int(os.getenv("OPENROUTER_REASONING_MAX_TOKENS", "0")),
+            default=_env_number("OPENROUTER_REASONING_MAX_TOKENS", 0),
             ge=0,
             description=(
                 "Hard cap on reasoning tokens per response (sent as "
@@ -695,9 +865,7 @@ class Pipe:
             description="Show model reasoning in <think> blocks. Can be used with or without Reasoning Effort",
         )
         ENABLE_ANTHROPIC_INTERLEAVED_THINKING: bool = Field(
-            default=os.getenv(
-                "OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING", "true"
-            ).lower()
+            default=os.getenv("OPENROUTER_ANTHROPIC_INTERLEAVED_THINKING", "true").lower()
             == "true",
             description=(
                 "When True and the selected model is `anthropic/...`, send the "
@@ -706,15 +874,15 @@ class Pipe:
             ),
         )
         MODEL_PREFIX: Optional[str] = Field(
-            default=None, description="Prefix shown before model names (include trailing space if needed, e.g. 'OR: ')"
+            default=None,
+            description="Prefix shown before model names (include trailing space if needed, e.g. 'OR: ')",
         )
         MODEL_PROVIDERS: str = Field(
             default=os.getenv("OPENROUTER_MODEL_PROVIDERS", "ALL"),
             description="Provider filter (e.g. openai,google). Use ALL for all models",
         )
         INVERT_PROVIDER_LIST: bool = Field(
-            default=os.getenv("OPENROUTER_INVERT_PROVIDER_LIST", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_INVERT_PROVIDER_LIST", "false").lower() == "true",
             description="When true the provider list becomes an exclusion list",
         )
         FREE_MODEL_FILTER: str = Field(
@@ -782,8 +950,7 @@ class Pipe:
             ),
         )
         HIDE_DEPRECATED_MODELS: bool = Field(
-            default=os.getenv("OPENROUTER_HIDE_DEPRECATED_MODELS", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_HIDE_DEPRECATED_MODELS", "false").lower() == "true",
             description=(
                 "Hide models with a non-null `expiration_date`. When False "
                 "(default), deprecated models stay visible but are tagged with "
@@ -839,8 +1006,7 @@ class Pipe:
             ),
         )
         PROVIDER_ALLOW_FALLBACKS: bool = Field(
-            default=os.getenv("OPENROUTER_PROVIDER_ALLOW_FALLBACKS", "true").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_PROVIDER_ALLOW_FALLBACKS", "true").lower() == "true",
             description=(
                 "When True (default), OpenRouter falls back to alternate "
                 "providers if the primary one (or those in PROVIDER_ORDER) is "
@@ -882,8 +1048,7 @@ class Pipe:
             },
         )
         REQUIRE_PARAMETERS: bool = Field(
-            default=os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_REQUIRE_PARAMETERS", "false").lower() == "true",
             description="Restrict to providers supporting all parameters in the request (e.g., temperature, top_p). May reduce available providers",
         )
         DATA_COLLECTION: str = Field(
@@ -904,13 +1069,11 @@ class Pipe:
             description="Fallback model IDs, comma-separated (e.g. openai/gpt-4o,anthropic/claude-3.5-sonnet)",
         )
         ENABLE_MIDDLE_OUT: bool = Field(
-            default=os.getenv("OPENROUTER_ENABLE_MIDDLE_OUT", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_ENABLE_MIDDLE_OUT", "false").lower() == "true",
             description="Automatically compress long conversations that exceed the model's context window by summarizing middle messages",
         )
         ENABLE_WEB_SEARCH: bool = Field(
-            default=os.getenv("OPENROUTER_ENABLE_WEB_SEARCH", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_ENABLE_WEB_SEARCH", "false").lower() == "true",
             description=(
                 "Attach OpenRouter's `web` plugin to every request so the "
                 "model can ground answers in fresh web results. Stacks with "
@@ -919,7 +1082,7 @@ class Pipe:
             ),
         )
         WEB_SEARCH_MAX_RESULTS: int = Field(
-            default=int(os.getenv("OPENROUTER_WEB_SEARCH_MAX_RESULTS", "5")),
+            default=_env_number("OPENROUTER_WEB_SEARCH_MAX_RESULTS", 5, 1, 20),
             ge=1,
             le=20,
             description="Maximum number of search results returned to the model when ENABLE_WEB_SEARCH is on.",
@@ -944,8 +1107,7 @@ class Pipe:
             description="Comma-separated domain denylist for web search (same format as include list).",
         )
         ENABLE_CACHE_CONTROL: bool = Field(
-            default=os.getenv("OPENROUTER_ENABLE_CACHE_CONTROL", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_ENABLE_CACHE_CONTROL", "false").lower() == "true",
             description="Enable prompt caching for Anthropic models (reduces cost on repeated long prompts). No effect on other providers",
         )
         ANTHROPIC_PROMPT_CACHE_TTL: str = Field(
@@ -1013,20 +1175,22 @@ class Pipe:
             ),
         )
         REQUEST_TIMEOUT: int = Field(
-            default=int(os.getenv("OPENROUTER_REQUEST_TIMEOUT", "90")),
+            default=_env_number("OPENROUTER_REQUEST_TIMEOUT", 90, 1),
             gt=0,
             description="API request timeout in seconds",
         )
         MAX_RETRIES: int = Field(
-            default=2, ge=0, description="Auto-retries on transient errors (with exponential backoff)"
+            default=2,
+            ge=0,
+            description="Auto-retries on transient errors (with exponential backoff)",
         )
         VIDEO_GENERATION_TIMEOUT: int = Field(
-            default=int(os.getenv("OPENROUTER_VIDEO_GENERATION_TIMEOUT", "600")),
+            default=_env_number("OPENROUTER_VIDEO_GENERATION_TIMEOUT", 600, 1),
             gt=0,
             description="Max seconds to wait for an async video generation job to complete before giving up. Typical video models take 30s–5min; raise for longer clips.",
         )
         VIDEO_POLL_INTERVAL: float = Field(
-            default=float(os.getenv("OPENROUTER_VIDEO_POLL_INTERVAL", "5")),
+            default=_env_number("OPENROUTER_VIDEO_POLL_INTERVAL", 5.0, 0.001),
             gt=0,
             description="Seconds between status polls while a video generation job is in flight (5–10s recommended).",
         )
@@ -1085,8 +1249,7 @@ class Pipe:
             description="Append token usage and cost to each response",
         )
         SHOW_GENERATION_ID: bool = Field(
-            default=os.getenv("OPENROUTER_SHOW_GENERATION_ID", "false").lower()
-            == "true",
+            default=os.getenv("OPENROUTER_SHOW_GENERATION_ID", "false").lower() == "true",
             description=(
                 "Append the OpenRouter generation ID to each response so it "
                 "can be looked up later via `GET /generation?id=...` for "
@@ -1114,11 +1277,16 @@ class Pipe:
         RESPONSE_FORMAT: str = Field(
             default=os.getenv("OPENROUTER_RESPONSE_FORMAT", ""),
             description="Force output format when the request doesn't set one: '' (off), 'json_object' (any valid JSON), or 'json_schema' (uses RESPONSE_SCHEMA). The body's own response_format always wins.",
-            json_schema_extra={"input": {"type": "select", "options": [
-                {"value": "", "label": "Off"},
-                {"value": "json_object", "label": "JSON object"},
-                {"value": "json_schema", "label": "JSON schema (use RESPONSE_SCHEMA)"},
-            ]}},
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "", "label": "Off"},
+                        {"value": "json_object", "label": "JSON object"},
+                        {"value": "json_schema", "label": "JSON schema (use RESPONSE_SCHEMA)"},
+                    ],
+                }
+            },
         )
         RESPONSE_SCHEMA: str = Field(
             default=os.getenv("OPENROUTER_RESPONSE_SCHEMA", ""),
@@ -1127,16 +1295,21 @@ class Pipe:
         TOOL_CHOICE: str = Field(
             default=os.getenv("OPENROUTER_TOOL_CHOICE", ""),
             description="Default tool_choice when the request doesn't set one: '' (auto/model decides), 'none', 'auto', or 'required'. The request body's own tool_choice always wins.",
-            json_schema_extra={"input": {"type": "select", "options": [
-                {"value": "", "label": "Default (auto)"},
-                {"value": "none", "label": "None"},
-                {"value": "auto", "label": "Auto"},
-                {"value": "required", "label": "Required"},
-            ]}},
+            json_schema_extra={
+                "input": {
+                    "type": "select",
+                    "options": [
+                        {"value": "", "label": "Default (auto)"},
+                        {"value": "none", "label": "None"},
+                        {"value": "auto", "label": "Auto"},
+                        {"value": "required", "label": "Required"},
+                    ],
+                }
+            },
         )
 
         MAX_TOOL_ITERATIONS: int = Field(
-            default=int(os.getenv("OPENROUTER_MAX_TOOL_ITERATIONS", "5")),
+            default=_env_number("OPENROUTER_MAX_TOOL_ITERATIONS", 5, 1),
             ge=1,
             description=(
                 "Max native tool-call rounds per request before stopping. Each "
@@ -1147,8 +1320,8 @@ class Pipe:
         SHOW_REMAINING_CREDIT: bool = Field(
             default=os.getenv("OPENROUTER_SHOW_REMAINING_CREDIT", "false").lower() == "true",
             description=(
-                "Append your remaining OpenRouter credit to each response "
-                "(after the cost line). Makes one extra cached GET /credits call "
+                "Append the remaining limit of your OpenRouter API key "
+                "(after the cost line). Makes one extra cached GET /key call "
                 "per ~60s. Independent of Show Cost Info."
             ),
         )
@@ -1164,7 +1337,7 @@ class Pipe:
         @field_validator("OPENROUTER_API_KEY")
         @classmethod
         def _encrypt_api_key(cls, v: str) -> str:
-            return EncryptedStr.encrypt(v or "")
+            return EncryptedStr.encrypt((v or "").strip())
 
     class UserValves(BaseModel):
         """Per-user overrides. Each field defaults to None = inherit the admin
@@ -1228,7 +1401,7 @@ class Pipe:
         @field_validator("OPENROUTER_API_KEY")
         @classmethod
         def _encrypt_user_api_key(cls, v):
-            return EncryptedStr.encrypt(v) if v else v
+            return EncryptedStr.encrypt(v.strip()) if v and v.strip() else None
 
     def __init__(self) -> None:
         self.type = "manifold"
@@ -1239,9 +1412,7 @@ class Pipe:
         # ties up a connection for the duration of the OpenRouter call).
         # max_retries=0 because _retryable_request already drives our
         # own backoff logic with Retry-After awareness.
-        _pool = requests.adapters.HTTPAdapter(
-            pool_connections=64, pool_maxsize=64, max_retries=0
-        )
+        _pool = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)
         self._session.mount("https://", _pool)
         self._session.mount("http://", _pool)
         # Cache env vars that don't change at runtime
@@ -1257,6 +1428,12 @@ class Pipe:
         self._model_lookup_failures: dict = {}
         self._key_validation_cache: dict = {}
         self._speech_inflight: dict = {}
+        self._speech_pending: dict = {}
+        self._speech_queues: dict = {}
+        self._video_pending: dict = {}
+        self._bootstrap_task: Optional[asyncio.Task] = None
+        self._bootstrap_retry_at = 0.0
+        self._io_slots = asyncio.Semaphore(16)
         # Cleaned model IDs whose architecture.output_modalities includes
         # "video". Populated during pipes(). These attribute names hold
         # frozenset instances that are SWAPPED atomically (a fresh
@@ -1315,8 +1492,9 @@ class Pipe:
         # None = not attempted; frozenset() = attempted but failed/empty.
         self._zdr_model_ids: Optional[frozenset] = None
         self._zdr_model_ids_ts: float = 0.0
-        # Per-key remaining-credit cache: {key_hash: (remaining_float, ts)}.
-        # Keyed by the decrypted key's hash because per-user keys have per-key balances.
+        self._zdr_cache_scope: Optional[tuple] = None
+        self._zdr_cache_ttl = _PROVIDER_REGISTRY_TTL
+        # Per-base/key quota cache, including negative results.
         self._credit_cache: dict = {}
         # Cache the decrypted API key + the pre-built Authorization header
         # keyed by the encrypted ciphertext, so the EncryptedStr.decrypt()
@@ -1334,7 +1512,7 @@ class Pipe:
         # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
-            _fm[len("function_"):] if _fm.startswith("function_") else None
+            _fm[len("function_") :] if _fm.startswith("function_") else None
         )
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")
@@ -1364,27 +1542,25 @@ class Pipe:
         """Return the full URL for the text-to-speech (TTS) endpoint."""
         return f"{self._base}{_API_PATH_AUDIO_SPEECH}"
 
-    # Random per-process secret for keyed fingerprints of credentials.
-    # Cache/scope keys must not be guessable or reversible to the bearer
-    # token; a keyed HMAC provides that without storing the secret.
-    _fp_tokens: dict = {}
+    # Opaque random identities; LRU eviction never flushes unrelated entries.
+    _fp_tokens: dict = OrderedDict()
+    _fp_lock = threading.Lock()
 
     @classmethod
     def _credential_fingerprint(cls, credential: str) -> str:
         """Opaque per-process cache identity for a credential (no hashing)."""
-        tokens = cls._fp_tokens
-        token = tokens.get(credential)
-        if token is None:
-            if len(tokens) >= 64:
-                tokens.clear()
-            token = tokens[credential] = secrets.token_hex(8)
-        return token
+        with cls._fp_lock:
+            tokens = cls._fp_tokens
+            token = tokens.pop(credential, None) or secrets.token_hex(16)
+            tokens[credential] = token
+            if len(tokens) > 4096:
+                tokens.pop(next(iter(tokens)))
+            return token
 
     def _build_cache_key(self) -> str:
         """Build a fingerprint of the valves that affect the model list.
 
-        The API key is hashed (not embedded raw) so it doesn't sit in plaintext
-        in long-lived strings that may end up in logs or memory dumps.
+        Cache keys contain an opaque identity, never the bearer credential.
         """
         _resolved_key = EncryptedStr.decrypt(self.valves.OPENROUTER_API_KEY or "")
         api_key_hash = self._credential_fingerprint(_resolved_key) if _resolved_key else ""
@@ -1401,7 +1577,7 @@ class Pipe:
         """Check if the cached model list is still valid.
 
         Compare cheap state first (presence + TTL) before paying the
-        Fernet-decrypt + sha256 cost of ``_build_cache_key`` — that
+        credential-resolution cost of ``_build_cache_key`` — that
         builder runs on every OWUI poll otherwise.
         """
         if not self._models_cache:
@@ -1470,7 +1646,12 @@ class Pipe:
             if not isinstance(data, list):
                 raise ValueError("Invalid model catalog response")
         except requests.exceptions.Timeout:
-            return [{"id": "error", "name": "Timeout fetching models. Try again or increase REQUEST_TIMEOUT."}]
+            return [
+                {
+                    "id": "error",
+                    "name": "Timeout fetching models. Try again or increase REQUEST_TIMEOUT.",
+                }
+            ]
         except requests.exceptions.HTTPError as exc:
             if exc.response is not None:
                 msg = f"HTTP {exc.response.status_code} fetching models"
@@ -1486,9 +1667,8 @@ class Pipe:
             print(f"[OpenRouter Pipe] {msg}")
             return [{"id": "error", "name": msg}]
         except Exception as exc:
-            print(f"[OpenRouter Pipe] Model fetch error: {exc}")
-            traceback.print_exc()
-            return [{"id": "error", "name": f"Unexpected error: {exc}"}]
+            _log_error("Model fetch error", exc)
+            return [{"id": "error", "name": "Unable to fetch model catalog (see server logs)"}]
         finally:
             if response is not None:
                 response.close()
@@ -1498,9 +1678,7 @@ class Pipe:
         free_filter = (self.valves.FREE_MODEL_FILTER or "all").strip().lower()
         tool_filter = (self.valves.TOOL_CALLING_FILTER or "all").strip().lower()
         zdr_only = self.valves.ZDR_MODELS_ONLY
-        zdr_capable_ids: Optional[frozenset] = (
-            self._load_zdr_model_ids() if zdr_only else None
-        )
+        zdr_capable_ids: Optional[frozenset] = self._load_zdr_model_ids() if zdr_only else None
         models: List[dict] = []
         # Build the routing sets locally during this pass and swap them in
         # atomically at the end — never `clear()` the live attributes, or
@@ -1538,10 +1716,19 @@ class Pipe:
                 tool_ids.add(mid)
             if any(p in params_supported for p in ("structured_outputs", "response_format")):
                 struct_ids.add(mid)
-            if any(p in params_supported for p in ("reasoning", "include_reasoning", "reasoning_effort")) or isinstance(entry.get("reasoning"), dict):
+            if any(
+                p in params_supported
+                for p in ("reasoning", "include_reasoning", "reasoning_effort")
+            ) or isinstance(entry.get("reasoning"), dict):
                 reason_ids.add(mid)
-            kinds = [x for x in output if x in {"embeddings", "rerank", "transcription", "moderation", "decisions"}]
-            if kinds and not any(x in output for x in {"text", "image", "audio", "speech", "video"}):
+            kinds = [
+                x
+                for x in output
+                if x in {"embeddings", "rerank", "transcription", "moderation", "decisions"}
+            ]
+            if kinds and not any(
+                x in output for x in {"text", "image", "audio", "speech", "video"}
+            ):
                 nonchat_kind[mid] = kinds[0]
             if "batch" in mid.split(":")[1:]:
                 nonchat_kind[mid] = "batch"
@@ -1572,10 +1759,23 @@ class Pipe:
                         is_free = (
                             float(pricing.get("prompt", 1)) == 0
                             and float(pricing.get("completion", 1)) == 0
-                            and all(float(pricing.get(key, 0)) == 0 for key in (
-                                "image", "image_token", "image_output", "request",
-                                "audio", "audio_input", "audio_output", "internal_reasoning",
-                            ))
+                            # Video per-second SKUs live on /videos/models;
+                            # zero text-token rates do not establish free video.
+                            and "video"
+                            not in (model.get("architecture") or {}).get("output_modalities", [])
+                            and all(
+                                float(pricing.get(key, 0)) == 0
+                                for key in (
+                                    "image",
+                                    "image_token",
+                                    "image_output",
+                                    "request",
+                                    "audio",
+                                    "audio_input",
+                                    "audio_output",
+                                    "internal_reasoning",
+                                )
+                            )
                         )
                     except (ValueError, TypeError):
                         is_free = False
@@ -1586,9 +1786,7 @@ class Pipe:
 
             if tool_filter in ("only", "exclude"):
                 supported = model.get("supported_parameters") or []
-                tool_capable = any(
-                    p in supported for p in ("tools", "tool_choice")
-                )
+                tool_capable = any(p in supported for p in ("tools", "tool_choice"))
                 if tool_filter == "only" and not tool_capable:
                     continue
                 if tool_filter == "exclude" and tool_capable:
@@ -1600,15 +1798,8 @@ class Pipe:
                 # list keys on the canonical slug, which can differ from the short
                 # /models id, so check `canonical_slug` too before excluding.
                 base_id = model_id.lstrip("~").split(":", 1)[0]
-                canonical = (
-                    str(model.get("canonical_slug") or "")
-                    .lstrip("~")
-                    .split(":", 1)[0]
-                )
-                if (
-                    base_id not in zdr_capable_ids
-                    and canonical not in zdr_capable_ids
-                ):
+                canonical = str(model.get("canonical_slug") or "").lstrip("~").split(":", 1)[0]
+                if base_id not in zdr_capable_ids and canonical not in zdr_capable_ids:
                     continue
 
             # Deprecation handling: a non-null `expiration_date` means
@@ -1671,10 +1862,7 @@ class Pipe:
             if isinstance(supported_params, list):
                 if any(p in supported_params for p in ("tools", "tool_choice")):
                     tool_ids.add(model_id)
-                if any(
-                    p in supported_params
-                    for p in ("structured_outputs", "response_format")
-                ):
+                if any(p in supported_params for p in ("structured_outputs", "response_format")):
                     struct_ids.add(model_id)
                 if any(
                     p in supported_params
@@ -1701,14 +1889,18 @@ class Pipe:
 
         if not models:
             if free_filter == "only":
-                error_text = "No free models available. Set FREE_MODEL_FILTER to 'all' to see paid models."
+                error_text = (
+                    "No free models available. Set FREE_MODEL_FILTER to 'all' to see paid models."
+                )
             elif tool_filter == "only":
                 error_text = "No tool-capable models available. Set TOOL_CALLING_FILTER to 'all' to broaden the catalog."
             elif zdr_only:
                 error_text = "No ZDR-capable models available. Disable ZDR_MODELS_ONLY or check your OpenRouter privacy settings."
             elif provider_filter:
                 providers_str = ", ".join(sorted(provider_filter))
-                error_text = f"No models match providers: {providers_str}. Check MODEL_PROVIDERS setting."
+                error_text = (
+                    f"No models match providers: {providers_str}. Check MODEL_PROVIDERS setting."
+                )
             else:
                 error_text = "No models found. Check your OpenRouter account and API key."
             return [{"id": "error", "name": error_text}]
@@ -1771,7 +1963,8 @@ class Pipe:
             response = self._session.get(
                 f"{self._base}{_API_PATH_KEY}",
                 headers=self._build_headers(include_content_type=False, valves=valves),
-                timeout=min(valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+                timeout=min(valves.REQUEST_TIMEOUT, 15),
+                allow_redirects=False,
             )
             if response.status_code in (401, 403):
                 detail = (response.json().get("error") or {}).get("message", "")
@@ -1793,7 +1986,9 @@ class Pipe:
     def _lookup_model(self, requested_id: str) -> None:
         """Resolve metadata missing from a server-filtered catalog, without auth."""
         mid = self._catalog_id(requested_id)
-        if not re.fullmatch(r"~?[A-Za-z0-9_.-]+/[A-Za-z0-9_.:+-]+", mid) or any(p in (".", "..") for p in mid.split("/")):
+        if not re.fullmatch(r"~?[A-Za-z0-9_.-]+/[A-Za-z0-9_.:+-]+", mid) or any(
+            p in (".", "..") for p in mid.split("/")
+        ):
             return  # Presets/private naming may have no public catalog entry.
         failed = self._model_lookup_failures.get((self._base, mid), 0)
         if failed and time.monotonic() - failed < _MODELS_CACHE_TTL:
@@ -1802,11 +1997,13 @@ class Pipe:
         try:
             response = self._session.get(
                 f"{self._base}/model/{urlparse.quote(requested_id, safe='/~:')}",
-                timeout=min(self.valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+                timeout=min(self.valves.REQUEST_TIMEOUT, 15),
+                allow_redirects=False,
             )
             if response.status_code != 200:
                 raise ValueError("Metadata unavailable")
-            entry = response.json().get("data")
+            envelope = response.json()
+            entry = envelope.get("data") if isinstance(envelope, dict) else None
             if not isinstance(entry, dict) or not entry.get("id"):
                 raise ValueError("Invalid model metadata")
             self._catalog = {**self._catalog, mid: entry}
@@ -1817,18 +2014,42 @@ class Pipe:
                 ("_video_model_ids", "video" in output),
                 ("_speech_model_ids", "speech" in output),
                 ("_tool_capable_ids", any(p in supported for p in ("tools", "tool_choice"))),
-                ("_structured_output_ids", any(p in supported for p in ("response_format", "structured_outputs"))),
-                ("_reasoning_ids", "reasoning" in supported or "include_reasoning" in supported or isinstance(entry.get("reasoning"), dict)),
+                (
+                    "_structured_output_ids",
+                    any(p in supported for p in ("response_format", "structured_outputs")),
+                ),
+                (
+                    "_reasoning_ids",
+                    "reasoning" in supported
+                    or "include_reasoning" in supported
+                    or isinstance(entry.get("reasoning"), dict),
+                ),
             )
             for attribute, enabled in capabilities:
                 if enabled:
                     setattr(self, attribute, getattr(self, attribute) | {mid})
             voices = entry.get("supported_voices")
             if isinstance(voices, list):
-                self._speech_voices = {**self._speech_voices, mid: [v for v in voices if isinstance(v, str) and v]}
-            kind = "batch" if "batch" in mid.split(":")[1:] else next(
-                (x for x in output if x in {"decisions", "embeddings", "rerank", "transcription", "moderation"}), None)
-            if kind and (kind == "batch" or not any(x in output for x in {"text", "image", "audio", "speech", "video"})):
+                self._speech_voices = {
+                    **self._speech_voices,
+                    mid: [v for v in voices if isinstance(v, str) and v],
+                }
+            kind = (
+                "batch"
+                if "batch" in mid.split(":")[1:]
+                else next(
+                    (
+                        x
+                        for x in output
+                        if x in {"decisions", "embeddings", "rerank", "transcription", "moderation"}
+                    ),
+                    None,
+                )
+            )
+            if kind and (
+                kind == "batch"
+                or not any(x in output for x in {"text", "image", "audio", "speech", "video"})
+            ):
                 self._nonchat_kind = {**self._nonchat_kind, mid: kind}
         except (requests.exceptions.RequestException, ValueError, TypeError):
             if len(self._model_lookup_failures) >= 256:
@@ -1876,6 +2097,8 @@ class Pipe:
         eff = self.valves.model_copy()
         data = uv.model_dump() if hasattr(uv, "model_dump") else dict(uv)
         for key, val in data.items():
+            if key == "OPENROUTER_API_KEY" and isinstance(val, str) and not val.strip():
+                continue
             if val is not None and hasattr(eff, key):
                 setattr(eff, key, val)
         # Request/user preferences cannot weaken the admin's privacy policy.
@@ -1884,6 +2107,57 @@ class Pipe:
         if self.valves.DATA_COLLECTION.strip().lower() == "deny":
             eff.DATA_COLLECTION = "deny"
         return eff
+
+    async def _io(self, fn, *args):
+        """Bound network work on a dedicated executor, including cancelled reads."""
+        await self._io_slots.acquire()
+        future = asyncio.get_running_loop().run_in_executor(_IO_EXECUTOR, fn, *args)
+        future.add_done_callback(lambda _: self._io_slots.release())
+        return await asyncio.shield(future)
+
+    async def _ensure_catalog(self) -> None:
+        """All cold-start requests await the same discovery attempt."""
+        if self._lazy_populated or time.monotonic() < self._bootstrap_retry_at:
+            return
+        if self._bootstrap_task is None or self._bootstrap_task.done():
+
+            async def populate():
+                try:
+                    models = await self._io(self.pipes)
+                    self._lazy_populated = bool(
+                        self._catalog or (models and models[0].get("id") != "error")
+                    )
+                except Exception as exc:
+                    _log_error("Lazy model-list fetch failed", exc)
+                if not self._lazy_populated:
+                    self._bootstrap_retry_at = time.monotonic() + 5
+
+            self._bootstrap_task = asyncio.create_task(populate())
+        await asyncio.shield(self._bootstrap_task)
+
+    async def _iterate_stream(self, iterator):
+        """Close streams without racing a pending blocking read."""
+        stopped = threading.Event()
+
+        def step():
+            value = next(iterator, _STREAM_DONE)
+            if stopped.is_set() and hasattr(iterator, "close"):
+                iterator.close()
+            return value
+
+        try:
+            while True:
+                value = await self._io(step)
+                if value is _STREAM_DONE:
+                    break
+                yield value
+        finally:
+            stopped.set()
+            try:
+                if hasattr(iterator, "close"):
+                    iterator.close()
+            except ValueError:
+                pass  # step closes an outstanding read when it returns
 
     async def pipe(
         self,
@@ -1902,6 +2176,10 @@ class Pipe:
         eff = self._effective_valves(__user__)
         if not eff.OPENROUTER_API_KEY:
             return "OpenRouter Error: OPENROUTER_API_KEY not configured. Set it in Settings → Connections."
+        try:
+            _resolved_api_key(eff.OPENROUTER_API_KEY)
+        except ValueError:
+            return "OpenRouter Error: API key is invalid or could not be decrypted. Re-enter it in Valves."
 
         model_id = self._clean_model_id(body.get("model", ""))
 
@@ -1931,18 +2209,9 @@ class Pipe:
         # Run off-loop because pipes() does sync HTTP + DB work; otherwise
         # we'd block the entire event loop for up to REQUEST_TIMEOUT s on
         # the very first chat request after a restart.
-        if (
-            not self._lazy_populated
-            and eff.OPENROUTER_API_KEY
-        ):
-            self._lazy_populated = True
-            try:
-                await asyncio.to_thread(self.pipes)
-            except Exception as exc:
-                print(f"[OpenRouter Pipe] Lazy model-list fetch failed: {exc}")
-
-        if self._catalog and self._catalog_id(model_id) not in self._catalog:
-            await asyncio.to_thread(self._lookup_model, model_id)
+        await self._ensure_catalog()
+        if self._catalog_id(model_id) not in self._catalog:
+            await self._io(self._lookup_model, model_id)
 
         # Snapshot the routing sets atomically so a concurrent pipes()
         # refresh (which clears and rebuilds them) can't make us miss the
@@ -1977,11 +2246,15 @@ class Pipe:
         output_modalities = (model_meta.get("architecture") or {}).get("output_modalities") or []
         if is_task_call and (catalog_id in audio_models or "image" in output_modalities):
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
             return "Media Generation"
         if "batch" in catalog_id.split(":")[1:]:
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
             return f"OpenRouter Error: '{model_id}' is a batch model; use OpenRouter's /api/v1/batches dedicated endpoint."
 
         # Audio-output models (lyria, gpt-audio, ...) are served by
@@ -2016,7 +2289,9 @@ class Pipe:
         if catalog_id in speech_models:
             if is_task_call:
                 if __event_emitter__:
-                    await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": "", "done": True}}
+                    )
                 return "Speech Generation"
             try:
                 result = await self._run_speech_generation(
@@ -2041,7 +2316,9 @@ class Pipe:
         if catalog_id in video_models:
             if is_task_call:
                 if __event_emitter__:
-                    await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                    await __event_emitter__(
+                        {"type": "status", "data": {"description": "", "done": True}}
+                    )
                 return "Video Generation"
             try:
                 result = await self._run_video_generation(
@@ -2075,7 +2352,9 @@ class Pipe:
                 "batch": "/api/v1/batches",
             }.get(_nonchat, "a dedicated endpoint")
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
             return (
                 f"OpenRouter Error: '{model_id}' is a {_nonchat}-type model with no "
                 f"/chat/completions endpoint, so it can't be used in a chat. Call "
@@ -2086,7 +2365,9 @@ class Pipe:
             payload = self._prepare_payload(body, eff)
         except ValueError as exc:
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
             return f"OpenRouter Error: {exc}"
         headers = self._build_headers(model_id=payload.get("model"), valves=eff)
         stream = body.get("stream", False)
@@ -2103,7 +2384,9 @@ class Pipe:
         if not supports_tools:
             dropped = payload.pop("tools", None)
             dropped_tc = payload.pop("tool_choice", None)
-            server_tools = [t for t in dropped or [] if isinstance(t, dict) and t.get("type") != "function"]
+            server_tools = [
+                t for t in dropped or [] if isinstance(t, dict) and t.get("type") != "function"
+            ]
             if server_tools:
                 payload["tools"] = server_tools
                 if dropped_tc in ("auto", "required", "none"):
@@ -2156,34 +2439,55 @@ class Pipe:
             payload.pop("tool_choice", None)
 
         if tools_payload and not stream:
-            result = await self._run_tools_nonstream(headers, payload, eff, __tools__, __event_emitter__, __request__, __user__, __metadata__)
+            result = await self._run_tools_nonstream(
+                headers,
+                payload,
+                eff,
+                __tools__,
+                __event_emitter__,
+                __request__,
+                __user__,
+                __metadata__,
+            )
             if __event_emitter__:
-                await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                await __event_emitter__(
+                    {"type": "status", "data": {"description": "", "done": True}}
+                )
             return result
 
         if stream and tools_payload:
-            agen = self._run_tools_stream(headers, payload, eff, __tools__, __event_emitter__, __request__, __user__, __metadata__)
+            agen = self._run_tools_stream(
+                headers,
+                payload,
+                eff,
+                __tools__,
+                __event_emitter__,
+                __request__,
+                __user__,
+                __metadata__,
+            )
             if __event_emitter__:
+
                 async def _wrap_tool_stream():
                     try:
                         async for piece in agen:
                             yield piece
                     finally:
-                        await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                        await __event_emitter__(
+                            {"type": "status", "data": {"description": "", "done": True}}
+                        )
+
                 return _wrap_tool_stream()
             return agen
 
         if stream:
-            stream_state: dict = {}
+            stream_state: dict = {"defer_footer": True}
             gen = self._stream_response(headers, payload, eff, state=stream_state)
             it = iter(gen)
 
             async def _wrap_stream():
                 try:
-                    while True:
-                        chunk = await asyncio.to_thread(next, it, _STREAM_DONE)
-                        if chunk is _STREAM_DONE:
-                            break
+                    async for chunk in self._iterate_stream(it):
                         yield chunk
                     # After the SSE loop finishes, materialize any image /
                     # audio media collected from the stream into OWUI file
@@ -2194,13 +2498,24 @@ class Pipe:
                     )
                     if media_md:
                         yield media_md
+                    if not stream_state.get("error"):
+                        await self._emit_citation_events(
+                            __event_emitter__, stream_state.get("citations")
+                        )
+                        await self._prefetch_credit_if_enabled(eff)
+                        yield self._stream_footer(stream_state, eff)
                 finally:
                     if __event_emitter__:
-                        await __event_emitter__({"type": "status", "data": {"description": "", "done": True}})
+                        await __event_emitter__(
+                            {"type": "status", "data": {"description": "", "done": True}}
+                        )
+
             return _wrap_stream()
 
         try:
-            result = await self._non_stream_with_events(headers, payload, eff, __event_emitter__, __request__, __user__, __metadata__)
+            result = await self._non_stream_with_events(
+                headers, payload, eff, __event_emitter__, __request__, __user__, __metadata__
+            )
         finally:
             if __event_emitter__:
                 await __event_emitter__(
@@ -2241,7 +2556,7 @@ class Pipe:
         try:
             all_rows = self._resolve_maybe_awaitable(Models.get_all_models())
         except Exception as exc:
-            print(f"[OpenRouter Pipe] Orphan-icon sweep: list failed: {exc}")
+            _log_error("Orphan-icon sweep failed", exc)
             return
         prefix = f"{function_id}."
         for row in all_rows or []:
@@ -2252,13 +2567,18 @@ class Pipe:
             if hasattr(row, "is_active") and row.is_active is False:
                 continue
             # Skip rows that the regular sync already handled this pass.
-            clean_id = db_model_id[len(prefix):]
+            clean_id = db_model_id[len(prefix) :]
             if clean_id in self._icons_synced:
                 continue
             existing_icon = ""
             if hasattr(row, "meta") and row.meta:
                 existing_icon = getattr(row.meta, "profile_image_url", "") or ""
-            if existing_icon and not _is_owui_managed_icon(existing_icon):
+            marker = getattr(row.meta, "openrouter_pipe_icon", None) if row.meta else None
+            if (
+                existing_icon
+                and marker != existing_icon
+                and not _is_owui_managed_icon(existing_icon)
+            ):
                 continue
             # Provider key derivation mirrors the regular sync path.
             parts = clean_id.split("/", 1)
@@ -2267,21 +2587,40 @@ class Pipe:
             if not icon_url or icon_url == existing_icon:
                 continue
             try:
-                existing_params = ModelParams()
-                if hasattr(row, "params") and row.params:
-                    existing_params = row.params
-                self._resolve_maybe_awaitable(Models.update_model_by_id(
-                    db_model_id,
-                    ModelForm(
-                        id=db_model_id,
-                        name=getattr(row, "name", "") or clean_id,
-                        meta=ModelMeta(profile_image_url=icon_url),
-                        params=existing_params,
-                    ),
-                ))
-                self._icons_synced.add(clean_id)
+                result = self._resolve_maybe_awaitable(
+                    Models.update_model_by_id(
+                        db_model_id,
+                        self._icon_update_form(row, icon_url, ModelForm, ModelMeta, ModelParams),
+                    )
+                )
+                if result is not None:
+                    self._icons_synced.add(clean_id)
             except Exception as exc:
-                print(f"[OpenRouter Pipe] Orphan-icon update failed for {db_model_id}: {exc}")
+                _log_error("Orphan-icon update failed", exc)
+
+    @staticmethod
+    def _icon_update_form(existing, icon_url, ModelForm, ModelMeta, ModelParams):
+        """OWUI updates the whole form: preserve every existing field."""
+        data = existing.model_dump() if callable(getattr(existing, "model_dump", None)) else {}
+        if not isinstance(data, dict):
+            data = {}
+        for key in ("id", "name", "base_model_id", "is_active", "access_control"):
+            if key not in data and hasattr(existing, key):
+                data[key] = getattr(existing, key)
+        # None means leave modern grants untouched; do not replay stale grants.
+        data.pop("access_grants", None)
+        meta = getattr(existing, "meta", None)
+        old_meta = (
+            meta.model_dump()
+            if meta is not None and callable(getattr(meta, "model_dump", None))
+            else {}
+        )
+        if not isinstance(old_meta, dict):
+            old_meta = dict(meta) if isinstance(meta, dict) else {}
+        old_meta.update(profile_image_url=icon_url, openrouter_pipe_icon=icon_url)
+        data["meta"] = ModelMeta(**old_meta)
+        data["params"] = getattr(existing, "params", None) or ModelParams()
+        return ModelForm(**data)
 
     @staticmethod
     def _resolve_maybe_awaitable(value):
@@ -2306,6 +2645,7 @@ class Pipe:
             # "asyncio.run() cannot be called from a running event loop"
             # error.
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                 return ex.submit(asyncio.run, value).result()
         return value
@@ -2370,22 +2710,16 @@ class Pipe:
                     if existing and hasattr(existing, "meta") and existing.meta:
                         stale = getattr(existing.meta, "profile_image_url", "") or ""
                         if stale.startswith("https://openrouter.ai/images/models/"):
-                            existing_params = ModelParams()
-                            if hasattr(existing, "params") and existing.params:
-                                existing_params = existing.params
-                            self._resolve_maybe_awaitable(Models.update_model_by_id(
-                                db_model_id,
-                                ModelForm(
-                                    id=db_model_id,
-                                    name=(
-                                        existing.name
-                                        if hasattr(existing, "name")
-                                        else model.get("name", model_id)
+                            result = self._resolve_maybe_awaitable(
+                                Models.update_model_by_id(
+                                    db_model_id,
+                                    self._icon_update_form(
+                                        existing, "", ModelForm, ModelMeta, ModelParams
                                     ),
-                                    meta=ModelMeta(profile_image_url=""),
-                                    params=existing_params,
-                                ),
-                            ))
+                                )
+                            )
+                            if result is None:
+                                continue
                 except Exception:
                     pass
                 self._icons_synced.add(model_id)
@@ -2396,9 +2730,7 @@ class Pipe:
                 if existing:
                     existing_icon = ""
                     if hasattr(existing, "meta") and existing.meta:
-                        existing_icon = (
-                            getattr(existing.meta, "profile_image_url", "") or ""
-                        )
+                        existing_icon = getattr(existing.meta, "profile_image_url", "") or ""
 
                     # Skip if icon is already the correct provider URL
                     if existing_icon == icon_url:
@@ -2407,28 +2739,31 @@ class Pipe:
 
                     # Skip if icon was set by the user (not by OWUI or our sync).
                     # data: URLs are OWUI defaults; openrouter.ai URLs are ours.
-                    if existing_icon and not _is_owui_managed_icon(existing_icon):
+                    marker = (
+                        getattr(existing.meta, "openrouter_pipe_icon", None)
+                        if existing.meta
+                        else None
+                    )
+                    if (
+                        existing_icon
+                        and marker != existing_icon
+                        and not _is_owui_managed_icon(existing_icon)
+                    ):
                         self._icons_synced.add(model_id)
                         continue
 
                     # Proceed: icon is empty, an OWUI default, or one of our URLs
                     # Update existing model with icon, preserving user-set params
-                    existing_params = ModelParams()
-                    if hasattr(existing, "params") and existing.params:
-                        existing_params = existing.params
-                    self._resolve_maybe_awaitable(Models.update_model_by_id(
-                        db_model_id,
-                        ModelForm(
-                            id=db_model_id,
-                            name=(
-                                existing.name
-                                if hasattr(existing, "name")
-                                else model.get("name", model_id)
+                    result = self._resolve_maybe_awaitable(
+                        Models.update_model_by_id(
+                            db_model_id,
+                            self._icon_update_form(
+                                existing, icon_url, ModelForm, ModelMeta, ModelParams
                             ),
-                            meta=ModelMeta(profile_image_url=icon_url),
-                            params=existing_params,
-                        ),
-                    ))
+                        )
+                    )
+                    if result is None:
+                        continue
                 else:
                     # Model not yet in DB — best-effort early insert.
                     # OWUI will register models after pipes() returns and may
@@ -2436,15 +2771,19 @@ class Pipe:
                     # The next cache-hit call to _sync_model_icons will find the
                     # model in DB and update it correctly.
                     try:
-                        self._resolve_maybe_awaitable(Models.insert_new_model(
-                            ModelForm(
-                                id=db_model_id,
-                                name=model.get("name", model_id),
-                                meta=ModelMeta(profile_image_url=icon_url),
-                                params=ModelParams(),
-                            ),
-                            user_id="pipe:openrouter",
-                        ))
+                        self._resolve_maybe_awaitable(
+                            Models.insert_new_model(
+                                ModelForm(
+                                    id=db_model_id,
+                                    name=model.get("name", model_id),
+                                    meta=ModelMeta(
+                                        profile_image_url=icon_url, openrouter_pipe_icon=icon_url
+                                    ),
+                                    params=ModelParams(),
+                                ),
+                                user_id="pipe:openrouter",
+                            )
+                        )
                     except Exception:
                         pass
                     continue  # do not add to _icons_synced yet
@@ -2453,7 +2792,7 @@ class Pipe:
             except Exception as exc:
                 # Best-effort — don't let icon sync break model listing
                 # Do NOT add to _icons_synced: allow retry on next call
-                print(f"[OpenRouter Pipe] Icon sync failed for {db_model_id}: {exc}")
+                _log_error("Icon sync failed", exc)
 
     @staticmethod
     def get_provider_icon(provider: str) -> Optional[str]:
@@ -2540,7 +2879,7 @@ class Pipe:
             finally:
                 resp.close()
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Provider registry fetch failed: {exc}")
+            _log_error("Provider registry fetch failed", exc)
 
         if success:
             # Successful fetch — update the cached registry and start the full TTL.
@@ -2554,9 +2893,7 @@ class Pipe:
             # waiting the full hour.
             if self._provider_registry is None:
                 self._provider_registry = {}
-            self._provider_registry_ts = (
-                now - _PROVIDER_REGISTRY_TTL + _PROVIDER_REGISTRY_FAIL_TTL
-            )
+            self._provider_registry_ts = now - _PROVIDER_REGISTRY_TTL + _PROVIDER_REGISTRY_FAIL_TTL
         return self._provider_registry
 
     @staticmethod
@@ -2591,7 +2928,7 @@ class Pipe:
             '<text x="50" y="58" text-anchor="middle" dominant-baseline="middle" '
             'font-family="system-ui, sans-serif" font-size="56" font-weight="600" '
             f'fill="white">{letter}</text>'
-            '</svg>'
+            "</svg>"
         )
         return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
 
@@ -2646,10 +2983,7 @@ class Pipe:
             domain = (
                 self._provider_domain_cache.get(key)
                 or self._provider_domain_cache.get(key.replace("-", ""))
-                or (
-                    self._provider_domain_cache.get(alias)
-                    if alias else None
-                )
+                or (self._provider_domain_cache.get(alias) if alias else None)
             )
             if domain:
                 return f"https://{domain}/favicon.ico"
@@ -2678,12 +3012,16 @@ class Pipe:
         ``pipes()`` call). The endpoint returns a list of model IDs that have
         at least one Zero Data Retention provider endpoint.
         """
-        if self._zdr_model_ids is not None and (
-            time.monotonic() - self._zdr_model_ids_ts
-        ) < _PROVIDER_REGISTRY_TTL:
+        scope = (self._base, self._credential_fingerprint(self.valves.OPENROUTER_API_KEY or ""))
+        if (
+            self._zdr_model_ids is not None
+            and self._zdr_cache_scope == scope
+            and (time.monotonic() - self._zdr_model_ids_ts) < self._zdr_cache_ttl
+        ):
             return self._zdr_model_ids
 
         ids: set = set()
+        success = False
         try:
             resp = self._session.get(
                 f"{self._base}{_API_PATH_ZDR_ENDPOINTS}",
@@ -2694,6 +3032,9 @@ class Pipe:
             try:
                 if resp.status_code == 200:
                     payload = resp.json() or {}
+                    success = isinstance(payload, dict)
+                    if not success:
+                        payload = {}
                     raw = payload.get("data") or payload.get("models") or []
                     for entry in raw:
                         if isinstance(entry, str):
@@ -2702,19 +3043,17 @@ class Pipe:
                             # OpenRouter's /endpoints/zdr returns the model
                             # slug under `model_id` (e.g. "anthropic/claude-..");
                             # fall back to id/model for forward-compat.
-                            mid = (
-                                entry.get("model_id")
-                                or entry.get("id")
-                                or entry.get("model")
-                            )
+                            mid = entry.get("model_id") or entry.get("id") or entry.get("model")
                             if isinstance(mid, str) and mid:
                                 ids.add(mid)
             finally:
                 resp.close()
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] ZDR endpoint fetch failed: {exc}")
+            _log_error("ZDR endpoint fetch failed", exc)
 
         self._zdr_model_ids = frozenset(ids)
+        self._zdr_cache_scope = scope
+        self._zdr_cache_ttl = _PROVIDER_REGISTRY_TTL if success else _PROVIDER_REGISTRY_FAIL_TTL
         self._zdr_model_ids_ts = time.monotonic()
         return self._zdr_model_ids
 
@@ -2729,7 +3068,9 @@ class Pipe:
         out: List[tuple] = []
         for spec in self._parse_csv(raw):
             if ":" not in spec:
-                print(f"[OpenRouter Pipe] Skipping malformed variant spec '{spec}' (expected base_id:variant_tag)")
+                print(
+                    f"[OpenRouter Pipe] Skipping malformed variant spec '{spec}' (expected base_id:variant_tag)"
+                )
                 continue
             base_id, _, tag = spec.rpartition(":")
             base_id = base_id.strip()
@@ -2797,10 +3138,7 @@ class Pipe:
             routing_tags = [t for t in variant_id.split(":")[1:] if t in _ROUTING_VARIANT_TAGS]
             base_entry = by_id.get(catalog_id)
             if base_entry is None:
-                print(
-                    f"[OpenRouter Pipe] Variant base not in catalog: "
-                    f"{base_id} (skipping :{tag})"
-                )
+                print(f"[OpenRouter Pipe] Variant base not in catalog: {base_id} (skipping :{tag})")
                 continue
             if not routing_tags:
                 continue  # Catalog variants are real entries, never synthesized.
@@ -2855,12 +3193,21 @@ class Pipe:
 
         effort = valves.REASONING_EFFORT.strip().lower()
         summary = valves.REASONING_SUMMARY_MODE.strip().lower()
-        reasoning_cfg: dict = copy.deepcopy(payload.get("reasoning")) if isinstance(payload.get("reasoning"), dict) else {}
+        raw_reasoning = payload.get("reasoning")
+        reasoning_cfg: dict = (
+            copy.deepcopy(raw_reasoning) if isinstance(raw_reasoning, dict) else {}
+        )
         explicit_reasoning = dict(reasoning_cfg)
-        reasoning_on = explicit_reasoning.get("enabled") is not False and explicit_reasoning.get("effort") != "none"
-        if (reasoning_on and effort in _REASONING_EFFORTS
-                and "max_tokens" not in explicit_reasoning
-                and not (effort == "none" and explicit_reasoning.get("enabled") is True)):
+        reasoning_on = (
+            explicit_reasoning.get("enabled") is not False
+            and explicit_reasoning.get("effort") != "none"
+        )
+        if (
+            reasoning_on
+            and effort in _REASONING_EFFORTS
+            and "max_tokens" not in explicit_reasoning
+            and not (effort == "none" and explicit_reasoning.get("enabled") is True)
+        ):
             reasoning_cfg.setdefault("effort", effort)
         if summary in ("auto", "concise", "detailed"):
             reasoning_cfg.setdefault("summary", summary)
@@ -2869,15 +3216,29 @@ class Pipe:
             # Explicit token budget is preferred over an effort default.
             if "effort" not in explicit_reasoning:
                 reasoning_cfg.pop("effort", None)
-        reasoning_meta = (self._catalog.get(self._catalog_id(payload.get("model", "")), {}).get("reasoning") or {})
-        if reasoning_meta.get("mandatory") and (reasoning_cfg.get("effort") == "none" or reasoning_cfg.get("enabled") is False):
+        reasoning_meta = (
+            self._catalog.get(self._catalog_id(payload.get("model", "")), {}).get("reasoning") or {}
+        )
+        if reasoning_meta.get("mandatory") and (
+            reasoning_cfg.get("effort") == "none" or reasoning_cfg.get("enabled") is False
+        ):
             raise ValueError("Selected model requires reasoning and cannot disable it.")
         efforts = reasoning_meta.get("supported_efforts")
-        if isinstance(efforts, list) and reasoning_cfg.get("effort") and reasoning_cfg["effort"] not in efforts:
-            raise ValueError("Unsupported reasoning effort for selected model; supported: " + ", ".join(efforts))
+        if (
+            isinstance(efforts, list)
+            and reasoning_cfg.get("effort")
+            and reasoning_cfg["effort"] not in efforts
+        ):
+            raise ValueError(
+                "Unsupported reasoning effort for selected model; supported: " + ", ".join(efforts)
+            )
         if reasoning_cfg:
             payload["reasoning"] = reasoning_cfg
-            if reasoning_cfg.get("exclude") or reasoning_cfg.get("effort") == "none" or reasoning_cfg.get("enabled") is False:
+            if (
+                reasoning_cfg.get("exclude")
+                or reasoning_cfg.get("effort") == "none"
+                or reasoning_cfg.get("enabled") is False
+            ):
                 payload.pop("include_reasoning", None)
 
         # --- Service tier ---
@@ -2887,7 +3248,8 @@ class Pipe:
             payload["service_tier"] = tier
 
         # --- Provider routing ---
-        provider: dict = copy.deepcopy(payload.get("provider")) if isinstance(payload.get("provider"), dict) else {}
+        raw_provider = payload.get("provider")
+        provider: dict = copy.deepcopy(raw_provider) if isinstance(raw_provider, dict) else {}
 
         sort_val = valves.PROVIDER_SORT.strip().lower()
         if sort_val in ("price", "throughput", "latency"):
@@ -2914,7 +3276,8 @@ class Pipe:
         if not valves.PROVIDER_ALLOW_FALLBACKS:
             provider["allow_fallbacks"] = False
 
-        max_price: dict = copy.deepcopy(provider.get("max_price")) if isinstance(provider.get("max_price"), dict) else {}
+        raw_price = provider.get("max_price")
+        max_price: dict = copy.deepcopy(raw_price) if isinstance(raw_price, dict) else {}
         prompt_cap = (valves.PROVIDER_MAX_PRICE_PROMPT or "").strip()
         completion_cap = (valves.PROVIDER_MAX_PRICE_COMPLETION or "").strip()
         for name, cap in (("prompt", prompt_cap), ("completion", completion_cap)):
@@ -2971,8 +3334,7 @@ class Pipe:
             if not isinstance(existing_plugins, list):
                 existing_plugins = []
             already_has_web = any(
-                isinstance(p, dict) and p.get("id") == "web"
-                for p in existing_plugins
+                isinstance(p, dict) and p.get("id") == "web" for p in existing_plugins
             )
             if not already_has_web:
                 existing_plugins.append(web_plugin)
@@ -3004,7 +3366,9 @@ class Pipe:
                             },
                         }
                     except json.JSONDecodeError as exc:
-                        print(f"[OpenRouter Pipe] RESPONSE_SCHEMA not applied (invalid JSON): {exc}")
+                        print(
+                            f"[OpenRouter Pipe] RESPONSE_SCHEMA not applied (invalid JSON): {exc}"
+                        )
 
         tc = (valves.TOOL_CHOICE or "").strip().lower()
         if tc in ("none", "auto", "required") and "tool_choice" not in payload:
@@ -3014,11 +3378,15 @@ class Pipe:
 
     def _media_preferences(self, body: dict, valves: "Pipe.Valves") -> dict:
         """Speech accepts privacy/options, not the chat routing preferences."""
-        original = body.get("provider") if isinstance(body.get("provider"), dict) else {}
-        provider = {}
+        raw_provider = body.get("provider")
+        original = raw_provider if isinstance(raw_provider, dict) else {}
+        provider: dict = {}
         if valves.ZDR_ENFORCE or original.get("zdr") is True:
             provider["zdr"] = True
-        if valves.DATA_COLLECTION.strip().lower() == "deny" or original.get("data_collection") == "deny":
+        if (
+            valves.DATA_COLLECTION.strip().lower() == "deny"
+            or original.get("data_collection") == "deny"
+        ):
             provider["data_collection"] = "deny"
         if isinstance(original.get("options"), dict):
             provider["options"] = copy.deepcopy(original["options"])
@@ -3121,7 +3489,7 @@ class Pipe:
         encrypted_key = valves.OPENROUTER_API_KEY or ""
         cached_auth = self._auth_header_cache.get(encrypted_key)
         if cached_auth is None:
-            cached_auth = f"Bearer {EncryptedStr.decrypt(encrypted_key)}"
+            cached_auth = f"Bearer {_resolved_api_key(encrypted_key)}"
             # Bound the cache to a handful of entries so user-valve key
             # overrides (different ciphertext per user) don't grow it
             # unboundedly. 32 is well above any realistic per-pipe
@@ -3194,36 +3562,61 @@ class Pipe:
         args, callable raising) is returned as the tool message content so the
         model can recover — never raised.
         """
+
         async def _run_one(call):
-            fn_block = call.get("function", {}) if isinstance(call, dict) else {}
+            call = call if isinstance(call, dict) else {}
+            fn_block = call.get("function") or {}
+            fn_block = fn_block if isinstance(fn_block, dict) else {}
             name = fn_block.get("name", "")
             call_id = call.get("id", "")
             if __event_emitter__:
                 try:
                     await __event_emitter__(
-                        {"type": "status", "data": {"description": f"🔧 Calling {name}…", "done": False}}
+                        {
+                            "type": "status",
+                            "data": {"description": f"🔧 Calling {name}…", "done": False},
+                        }
                     )
                 except Exception:
                     pass
             entry = (__tools__ or {}).get(name)
             if not entry:
-                return {"role": "tool", "tool_call_id": call_id, "content": f"Error: unknown tool '{name}'"}
+                return {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": f"Error: unknown tool '{name}'",
+                }
             try:
                 args = json.loads(fn_block.get("arguments") or "{}")
                 if not isinstance(args, dict):
                     raise ValueError("arguments did not decode to an object")
+                spec = entry.get("spec") or {}
+                parameters = spec.get("parameters") or {}
+                properties = parameters.get("properties") or {}
+                allowed = set(properties) if isinstance(properties, dict) else set()
+                args = {k: v for k, v in args.items() if k in allowed and not k.startswith("__")}
             except Exception as exc:
-                return {"role": "tool", "tool_call_id": call_id, "content": f"Error: invalid tool arguments — {exc}"}
+                return {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": f"Error: invalid tool arguments — {exc}",
+                }
             try:
                 callable_fn = entry.get("callable")
-                if inspect.iscoroutinefunction(callable_fn):
+                original = getattr(callable_fn, "__function__", None)
+                if callable(original) and not inspect.iscoroutinefunction(original):
+                    # Keep OWUI's argument coercion and frozen context. Its async
+                    # wrapper around a sync function must execute off the loop.
+                    result = await asyncio.to_thread(lambda: asyncio.run(callable_fn(**args)))
+                elif inspect.iscoroutinefunction(callable_fn):
                     result = callable_fn(**args)
                 else:
                     result = await asyncio.to_thread(callable_fn, **args)
                 if inspect.isawaitable(result):
                     result = await result
             except Exception as exc:
-                result = f"Error: tool '{name}' failed — {exc}"
+                _log_error("Tool execution failed", exc)
+                result = f"Error: tool '{name}' failed ({type(exc).__name__})"
             return {"role": "tool", "tool_call_id": call_id, "content": str(result)}
 
         if not tool_calls:
@@ -3238,30 +3631,32 @@ class Pipe:
             self._credit_cache.clear()
 
     def _fetch_credit_balance(self, valves) -> Optional[float]:
-        """Return remaining OpenRouter credit (total_credits - total_usage), cached
-        ~60s per key. Returns None on any failure so the footer is simply omitted.
-        """
+        """Return remaining key limit, not management-only account credits."""
         key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
         if not key:
             return None
-        key_hash = self._credential_fingerprint(key)
+        key_hash = (self._base, self._credential_fingerprint(key))
         cached = self._credit_cache.get(key_hash)
         if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
             return cached[0]
         resp = None
+        remaining = None
         try:
             resp = self._session.get(
-                f"{self._base}{_API_PATH_CREDITS}",
+                f"{self._base}{_API_PATH_KEY}",
                 headers=self._build_headers(include_content_type=False, valves=valves),
                 timeout=min(valves.REQUEST_TIMEOUT, 15),
                 allow_redirects=False,
             )
-            if resp.status_code != 200:
-                return None
-            data = resp.json().get("data", {})
-            remaining = float(data.get("total_credits", 0)) - float(data.get("total_usage", 0))
+            if resp.status_code == 200:
+                envelope = resp.json()
+                data = envelope.get("data") if isinstance(envelope, dict) else None
+                if isinstance(data, dict) and data.get("limit_remaining") is not None:
+                    remaining = float(data["limit_remaining"])
+                    if not math.isfinite(remaining):
+                        remaining = None
         except Exception:
-            return None
+            remaining = None
         finally:
             if resp is not None:
                 try:
@@ -3284,7 +3679,7 @@ class Pipe:
         key = EncryptedStr.decrypt(valves.OPENROUTER_API_KEY or "")
         if not key:
             return None
-        key_hash = self._credential_fingerprint(key)
+        key_hash = (self._base, self._credential_fingerprint(key))
         cached = self._credit_cache.get(key_hash)
         if cached and (time.monotonic() - cached[1]) < self._CREDIT_TTL:
             return cached[0]
@@ -3296,27 +3691,37 @@ class Pipe:
         if remaining is None:
             return ""
         symbol = "$"
-        return f"\n\n---\n*OpenRouter credit remaining: {symbol}{remaining:.2f}*"
+        return f"\n\n---\n*OpenRouter API-key limit remaining: {symbol}{remaining:.2f}*"
 
     @staticmethod
     def _is_openrouter_url(url: str) -> bool:
-        """Return True only if ``url`` is an http(s) URL on the openrouter.ai
+        """Return True only if ``url`` is an HTTPS URL on the openrouter.ai
         domain. Used as the SSRF / auth-leak guard before we send the
         Authorization bearer to a URL the upstream JSON dictates (the
         polling_url returned by POST /videos and the unsigned_urls[] in
         the completed job body)."""
-        if not isinstance(url, str):
+        if not isinstance(url, str) or "\\" in url or any(c.isspace() or ord(c) < 32 for c in url):
             return False
         try:
             parsed = urlsplit(url)
+            prepared = requests.Request("GET", url).prepare()
+            transport = urlsplit(prepared.url)
+            if (
+                parsed.username is not None
+                or parsed.password is not None
+                or parsed.port not in (None, 443)
+            ):
+                return False
         except Exception:
             return False
-        if parsed.scheme not in ("http", "https"):
+        if parsed.scheme != "https" or transport.scheme != "https":
             return False
         host = (parsed.hostname or "").lower()
         if not host:
             return False
-        return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+        return host == transport.hostname and (
+            host == "openrouter.ai" or host.endswith(".openrouter.ai")
+        )
 
     @staticmethod
     def _extract_video_prompt(body: dict) -> str:
@@ -3341,8 +3746,8 @@ class Pipe:
                         if isinstance(t, str):
                             parts.append(t)
                 joined = " ".join(parts).strip()
-                if joined:
-                    return joined
+                return joined
+            return ""
         return ""
 
     @staticmethod
@@ -3363,8 +3768,8 @@ class Pipe:
                         if isinstance(t, str):
                             parts.append(t)
                 joined = " ".join(parts).strip()
-                if joined:
-                    return joined
+                return joined
+            return ""
         return ""
 
     @staticmethod
@@ -3384,9 +3789,26 @@ class Pipe:
         # embeds (a prior TTS turn) — those aren't text to speak. Fall back to
         # the user's message when the last assistant turn was such an embed.
         assistant = Pipe._extract_message_text(body, "assistant")
-        if assistant and ("<audio" in assistant.lower() or "<video" in assistant.lower()):
+        if assistant and (
+            assistant.startswith("OpenRouter Error:")
+            or "<audio" in assistant.lower()
+            or "<video" in assistant.lower()
+        ):
             assistant = ""
-        return assistant or Pipe._extract_message_text(body, "user")
+        return (
+            Pipe._strip_pipe_footers(assistant)
+            if assistant
+            else Pipe._extract_message_text(body, "user")
+        )
+
+    @staticmethod
+    def _strip_pipe_footers(text: str) -> str:
+        """Only strip our own separator-prefixed diagnostic blocks."""
+        return re.split(
+            r"\n\n---\n(?=\*+(?:\*?Tokens:|\*?Cost:|Generation ID|OpenRouter |Tool calling stopped|Responded by)|Citations:)",
+            text,
+            maxsplit=1,
+        )[0].strip()
 
     @staticmethod
     def _parse_voice_directive(text: str) -> tuple:
@@ -3414,29 +3836,43 @@ class Pipe:
         """
         if not text:
             return ""
-        t = _TTS_DETAILS_RE.sub("", text)      # reasoning/tool_call panels
-        t = _TTS_MEDIA_EMBED_RE.sub("", t)     # our own <audio>/<video> embeds
-        t = _TTS_DIV_TAG_RE.sub("", t)         # their <div> wrappers
-        t = _TTS_EMOJI_RE.sub("", t)           # emoji/pictographs
-        t = _TTS_CODE_FENCE_RE.sub("", t)      # fenced code blocks (dropped)
-        t = _TTS_TABLE_ROW_RE.sub("", t)       # table rows
-        t = _TTS_BOLD_RE.sub(r"\1", t)         # **bold** → bold
-        t = _TTS_STRIKE_RE.sub(r"\1", t)       # ~~s~~ → s
-        t = _TTS_ITALIC_RE.sub(r"\1", t)       # *italic* → italic
+        if len(text) > _TTS_INPUT_MAX_CHARS:
+            raise ValueError(f"Speech input exceeds {_TTS_INPUT_MAX_CHARS} characters; shorten it.")
+        # Each tag is visited once; repeated unmatched openers never cause
+        # repeated scans to the end of the input.
+        pattern = re.compile(r"</?(?:details|think|audio|video)\b[^>]{0,256}>", re.IGNORECASE)
+        pieces, cursor, depth = [], 0, 0
+        for tag in pattern.finditer(text):
+            closing = tag.group().startswith("</")
+            if not closing and depth == 0:
+                pieces.append(text[cursor : tag.start()])
+            depth = max(0, depth - 1) if closing else depth + 1
+            if depth == 0:
+                cursor = tag.end()
+        if depth == 0:
+            pieces.append(text[cursor:])
+        t = "".join(pieces)
+        t = _TTS_DIV_TAG_RE.sub("", t)  # their <div> wrappers
+        t = _TTS_EMOJI_RE.sub("", t)  # emoji/pictographs
+        t = _TTS_CODE_FENCE_RE.sub("", t)  # fenced code blocks (dropped)
+        t = _TTS_TABLE_ROW_RE.sub("", t)  # table rows
+        t = _TTS_BOLD_RE.sub(r"\1", t)  # **bold** → bold
+        t = _TTS_STRIKE_RE.sub(r"\1", t)  # ~~s~~ → s
+        t = _TTS_ITALIC_RE.sub(r"\1", t)  # *italic* → italic
         t = _TTS_INLINE_CODE_RE.sub(r"\1", t)  # `code` → code (keep inner text)
-        t = _TTS_LINK_RE.sub(r"\1", t)         # [label](url) → label
-        t = _TTS_REF_DEF_RE.sub("", t)         # reference link defs
-        t = _TTS_HEADER_RE.sub("", t)          # # headers
-        t = _TTS_BULLET_RE.sub("", t)          # - bullets
-        t = _TTS_NUMLIST_RE.sub("", t)         # 1. numbered lists
-        t = _TTS_QUOTE_RE.sub("", t)           # > blockquotes
-        t = _TTS_FOOTNOTE_RE.sub("", t)        # [^1] footnote refs
-        t = _TTS_LATEX_BLOCK_RE.sub("", t)     # $$...$$
-        t = _TTS_LATEX_BRACK_RE.sub("", t)     # \[...\]
-        t = _TTS_LATEX_PAREN_RE.sub(r"\1", t)  # \(...\) → inner
-        t = _TTS_LATEX_INLINE_RE.sub("", t)    # $...$
+        t = _TTS_LINK_RE.sub(r"\1", t)  # [label](url) → label
+        t = _TTS_REF_DEF_RE.sub("", t)  # reference link defs
+        t = _TTS_HEADER_RE.sub("", t)  # # headers
+        t = _TTS_BULLET_RE.sub("", t)  # - bullets
+        t = _TTS_NUMLIST_RE.sub("", t)  # 1. numbered lists
+        t = _TTS_QUOTE_RE.sub("", t)  # > blockquotes
+        t = _TTS_FOOTNOTE_RE.sub("", t)  # [^1] footnote refs
+        t = _strip_delimited(t, "$$", "$$")
+        t = _strip_delimited(t, "\\[", "\\]")
+        t = _strip_delimited(t, "\\(", "\\)", keep_inner=True)
+        t = _TTS_LATEX_INLINE_RE.sub("", t)  # $...$
         t = _TTS_MULTINEWLINE_RE.sub("\n", t)  # collapse blank lines
-        t = _TTS_MULTISPACE_RE.sub(" ", t)     # collapse runs of spaces
+        t = _TTS_MULTISPACE_RE.sub(" ", t)  # collapse runs of spaces
         return t.strip()
 
     @staticmethod
@@ -3487,9 +3923,7 @@ class Pipe:
             raw = [s.strip() for s in _TTS_SENTENCE_SPLIT_RE.split(text) if s and s.strip()]
             pieces = []
             for s in raw:
-                if pieces and (
-                    len(pieces[-1].split()) < 4 or len(pieces[-1]) < 50
-                ):
+                if pieces and (len(pieces[-1].split()) < 4 or len(pieces[-1]) < 50):
                     pieces[-1] = pieces[-1] + " " + s
                 else:
                     pieces.append(s)
@@ -3528,13 +3962,19 @@ class Pipe:
         ``modality_label`` is used only in the error log so the operator
         can tell which path failed.
         """
-        if request is None or not isinstance(user, dict) or not user.get("id") or not metadata:
+        if (
+            request is None
+            or not isinstance(user, dict)
+            or not user.get("id")
+            or not isinstance(metadata, dict)
+            or not metadata.get("chat_id")
+        ):
             return None
         try:
             from open_webui.routers.images import upload_image as _upload_image
             from open_webui.models.users import Users as _Users
         except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI file-upload helpers unavailable: {exc}")
+            _log_error("OWUI file-upload helpers unavailable", exc)
             return None
         try:
             _maybe_user = _Users.get_user_by_id(user["id"])
@@ -3542,7 +3982,7 @@ class Pipe:
                 _maybe_user = await _maybe_user
             owui_user = _maybe_user
         except Exception as exc:
-            print(f"[OpenRouter Pipe] OWUI user resolution failed: {exc}")
+            _log_error("OWUI user resolution failed", exc)
             return None
         if owui_user is None:
             return None
@@ -3551,12 +3991,58 @@ class Pipe:
                 request, raw_bytes, content_type, metadata, owui_user
             )
         except Exception as exc:
-            print(f"[OpenRouter Pipe] {modality_label} upload to OWUI failed: {exc}")
+            _log_error(f"{modality_label} upload to OWUI failed", exc)
             return None
+        # Older OWUI returns the file URL as a string; 0.11.x returns a dict
+        # {"id", "url", "name", "content_type"}.
+        if isinstance(new_url, dict):
+            new_url = new_url.get("url")
         file_id = getattr(file_item, "id", None) if file_item is not None else None
-        if not file_id or not new_url:
+        if not file_id or not isinstance(new_url, str) or not new_url:
             return None
-        return (str(file_id), str(new_url))
+        return (str(file_id), new_url)
+
+    async def _media_preflight(self, request, user, metadata) -> Optional[str]:
+        """Check mandatory persistence context before starting billable media."""
+        if (
+            request is None
+            or not isinstance(user, dict)
+            or not user.get("id")
+            or not isinstance(metadata, dict)
+            or not metadata.get("chat_id")
+        ):
+            return "OpenRouter Error: Media requires an active OWUI chat and authenticated storage context."
+        try:
+            from open_webui.routers.images import upload_image
+            from open_webui.models.users import Users
+
+            if not inspect.iscoroutinefunction(upload_image):
+                return "OpenRouter Error: Media upload requires Open WebUI 0.11.4 or newer."
+            resolved = Users.get_user_by_id(user["id"])
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            if resolved is None:
+                return "OpenRouter Error: Media storage user is unavailable."
+        except Exception as exc:
+            _log_error("Media persistence preflight failed", exc)
+            return "OpenRouter Error: Open WebUI media storage is unavailable (see server logs)."
+        return None
+
+    def _trim_pending_media(self) -> None:
+        """Bound ownership-scoped recovery buffers by age, count and bytes."""
+        now = time.monotonic()
+        for cache in (self._speech_pending, self._video_pending):
+            for key in list(cache):
+                if now - cache[key]["ts"] >= _SPEECH_CACHE_TTL:
+                    cache.pop(key)
+            while len(cache) > 64:
+                cache.pop(next(iter(cache)))
+        total = sum(
+            len(c[0]) for entry in self._speech_pending.values() for c in entry.get("chunks", [])
+        )
+        while total > _AUDIO_MAX_BYTES and self._speech_pending:
+            entry = self._speech_pending.pop(next(iter(self._speech_pending)))
+            total -= sum(len(c[0]) for c in entry.get("chunks", []))
 
     async def _upload_audio_to_owui(
         self, request, user, metadata, audio_bytes: bytes, content_type: str = "audio/mpeg"
@@ -3582,13 +4068,13 @@ class Pipe:
         header = b"RIFF"
         header += struct.pack("<I", 36 + data_size)
         header += b"WAVEfmt "
-        header += struct.pack("<I", 16)              # fmt chunk size
-        header += struct.pack("<H", 1)               # PCM
+        header += struct.pack("<I", 16)  # fmt chunk size
+        header += struct.pack("<H", 1)  # PCM
         header += struct.pack("<H", channels)
         header += struct.pack("<I", sample_rate)
         header += struct.pack("<I", byte_rate)
         header += struct.pack("<H", block_align)
-        header += struct.pack("<H", 16)              # bits per sample
+        header += struct.pack("<H", 16)  # bits per sample
         header += b"data"
         header += struct.pack("<I", data_size)
         return header + pcm_bytes
@@ -3610,11 +4096,13 @@ class Pipe:
         change at request time. Returns ``""`` if bytes can't be decoded or
         the upload fails — the stream caller treats that as "no embed".
         """
+        if not isinstance(audio_b64, str) or len(audio_b64) > ((_AUDIO_MAX_BYTES + 2) // 3) * 4:
+            return ""
         try:
             padded = audio_b64 + "=" * (-len(audio_b64) % 4)
             audio_bytes = base64.b64decode(padded)
         except Exception as exc:
-            print(f"[OpenRouter Pipe] Audio base64 decode failed: {exc}")
+            _log_error("Audio base64 decode failed", exc)
             return ""
         if not audio_bytes:
             return ""
@@ -3680,7 +4168,9 @@ class Pipe:
         return 24000
 
     def _tts_footer(
-        self, valves: "Pipe.Valves", gen_id: Union[str, List[str]],
+        self,
+        valves: "Pipe.Valves",
+        gen_id: Union[str, List[str]],
         usage: Optional[dict] = None,
     ) -> str:
         """Build the optional gen-id + remaining-credit footer for a TTS reply."""
@@ -3690,8 +4180,11 @@ class Pipe:
         if valves.SHOW_GENERATION_ID and gen_id:
             # Shared helper sanitizes the upstream-supplied ID (strips
             # backticks/newlines) before embedding it in the code span.
-            for gid in gen_id if isinstance(gen_id, list) else [gen_id]:
-                footer += _format_generation_id(gid)
+            ids = gen_id if isinstance(gen_id, list) else [gen_id]
+            rendered = [re.sub(r"[`\r\n]", "", str(gid)) for gid in ids if gid]
+            if rendered:
+                footer += "\n\n---\n*Generation ID" + ("s" if len(rendered) > 1 else "")
+                footer += ": " + ", ".join(f"`{gid}`" for gid in rendered) + "*"
         if valves.SHOW_REMAINING_CREDIT:
             credit_line = self._format_credit_info(
                 self._credit_balance_cached(valves), valves.COST_CURRENCY
@@ -3701,7 +4194,14 @@ class Pipe:
         return footer
 
     def _tts_fetch_chunk(
-        self, chunk_text, model_id, voice, speed, headers, valves, max_bytes,
+        self,
+        chunk_text,
+        model_id,
+        voice,
+        speed,
+        headers,
+        valves,
+        max_bytes,
         request_options=None,
     ) -> tuple:
         """POST one text chunk to /audio/speech in a worker thread.
@@ -3732,16 +4232,42 @@ class Pipe:
                     allow_redirects=False,
                 )
             except requests.exceptions.Timeout:
-                return (f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s.", b"", "", "")
+                return (
+                    f"OpenRouter Error: Speech synthesis timed out after {valves.REQUEST_TIMEOUT}s.",
+                    b"",
+                    "",
+                    "",
+                )
             except requests.exceptions.RequestException as exc:
-                return (f"OpenRouter Error: Speech synthesis request failed: {exc}", b"", "", "")
+                _log_error("Speech synthesis request failed", exc)
+                return (
+                    "OpenRouter Error: Speech synthesis request failed (see server logs).",
+                    b"",
+                    "",
+                    "",
+                )
 
             if resp.status_code in (401, 403):
-                return (f"OpenRouter Error: Authentication failed (HTTP {resp.status_code}). Check OPENROUTER_API_KEY.", b"", "", "")
+                return (
+                    f"OpenRouter Error: Authentication failed (HTTP {resp.status_code}). Check OPENROUTER_API_KEY.",
+                    b"",
+                    "",
+                    "",
+                )
             if resp.status_code == 402:
-                return ("OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model.", b"", "", "")
+                return (
+                    "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper TTS model.",
+                    b"",
+                    "",
+                    "",
+                )
             if resp.status_code == 429:
-                return ("OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.", b"", "", "")
+                return (
+                    "OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.",
+                    b"",
+                    "",
+                    "",
+                )
             if 300 <= resp.status_code < 400:
                 return ("OpenRouter Error: Speech synthesis redirect rejected.", b"", "", "")
             if resp.status_code >= 400:
@@ -3751,7 +4277,12 @@ class Pipe:
                     detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 except Exception:
                     detail = (resp.text or "")[:300]
-                return (f"OpenRouter Error: Speech synthesis failed (HTTP {resp.status_code}). {detail}", b"", "", "")
+                return (
+                    f"OpenRouter Error: Speech synthesis failed (HTTP {resp.status_code}). {detail}",
+                    b"",
+                    "",
+                    "",
+                )
 
             gen_id = resp.headers.get("X-Generation-Id") or ""
             content_type = resp.headers.get("Content-Type") or ""
@@ -3763,7 +4294,9 @@ class Pipe:
                 return (
                     "OpenRouter Error: Speech download rejected — declared size "
                     f"{_declared} bytes exceeds the {_AUDIO_MAX_BYTES} byte cap.",
-                    b"", "", "",
+                    b"",
+                    "",
+                    "",
                 )
             buf = bytearray()
             try:
@@ -3774,10 +4307,13 @@ class Pipe:
                     if len(buf) > max_bytes:
                         return (
                             f"OpenRouter Error: Speech download exceeded the {_AUDIO_MAX_BYTES} byte cap.",
-                            b"", "", "",
+                            b"",
+                            "",
+                            "",
                         )
             except requests.exceptions.RequestException as exc:
-                return (f"OpenRouter Error: Speech download failed: {exc}", b"", "", "")
+                _log_error("Speech download failed", exc)
+                return ("OpenRouter Error: Speech download failed (see server logs).", b"", "", "")
             return (None, bytes(buf), content_type, gen_id)
         finally:
             if resp is not None:
@@ -3804,27 +4340,51 @@ class Pipe:
             return False
 
     async def _run_speech_generation(
-        self, body: dict, model_id: str, valves: "Pipe.Valves",
-        emitter: Optional[Callable], request: object,
-        user: Optional[dict], metadata: Optional[dict],
+        self,
+        body: dict,
+        model_id: str,
+        valves: "Pipe.Valves",
+        emitter: Optional[Callable],
+        request: object,
+        user: Optional[dict],
+        metadata: Optional[dict],
     ) -> str:
         """Single-flight identical requests within an authenticated ownership scope."""
         uid = user.get("id") if isinstance(user, dict) else None
         chat = metadata.get("chat_id") if isinstance(metadata, dict) else None
         if not uid or not chat:
-            return await self._synthesize_speech(body, model_id, valves, emitter, request, user, metadata)
-        scope = [self.speech_url, str(uid), str(chat), model_id, body,
-                 self._media_preferences(body, valves),
-                 {k: getattr(valves, k) for k in ("AUDIO_OUTPUT_VOICE", "AUDIO_OUTPUT_SPEED", "AUDIO_TTS_SPLIT", "TTS_SOURCE",
-                                                "SHOW_COST_INFO", "SHOW_GENERATION_ID", "SHOW_REMAINING_CREDIT")},
-                 self._credential_fingerprint(self._build_headers(valves=valves)["Authorization"])]
+            return await self._synthesize_speech(
+                body, model_id, valves, emitter, request, user, metadata
+            )
+        scope = [
+            self.speech_url,
+            str(uid),
+            str(chat),
+            model_id,
+            body,
+            self._media_preferences(body, valves),
+            {
+                k: getattr(valves, k)
+                for k in (
+                    "AUDIO_OUTPUT_VOICE",
+                    "AUDIO_OUTPUT_SPEED",
+                    "AUDIO_TTS_SPLIT",
+                    "TTS_SOURCE",
+                    "SHOW_COST_INFO",
+                    "SHOW_GENERATION_ID",
+                    "SHOW_REMAINING_CREDIT",
+                )
+            },
+            self._credential_fingerprint(self._build_headers(valves=valves)["Authorization"]),
+        ]
         key = hashlib.sha256(json.dumps(scope, sort_keys=True, default=str).encode()).hexdigest()
         task = self._speech_inflight.get(key)
         if task is None:
             if len(self._speech_inflight) >= 256:
                 return "OpenRouter Error: Speech request queue is full. Try again later."
-            task = asyncio.create_task(self._synthesize_speech(
-                body, model_id, valves, emitter, request, user, metadata))
+            task = asyncio.create_task(
+                self._synthesize_speech(body, model_id, valves, emitter, request, user, metadata)
+            )
             self._speech_inflight[key] = task
 
             def finished(done):
@@ -3839,24 +4399,39 @@ class Pipe:
         return await asyncio.shield(task)
 
     def _generation_usage(
-        self, generation_id: str, valves: "Pipe.Valves",
+        self,
+        generation_id: str,
+        valves: "Pipe.Valves",
     ) -> Optional[dict]:
         """Read actual TTS billing; never estimate a price as though it were billed."""
         response = None
         try:
             response = self._session.get(
-                f"{self._base}/generation", params={"id": generation_id},
+                f"{self._base}/generation",
+                params={"id": generation_id},
                 headers=self._build_headers(include_content_type=False, valves=valves),
-                timeout=min(valves.REQUEST_TIMEOUT, 15), allow_redirects=False,
+                timeout=min(valves.REQUEST_TIMEOUT, 15),
+                allow_redirects=False,
             )
             if response.status_code != 200:
                 return None
-            data = response.json().get("data") or {}
+            envelope = response.json()
+            data = envelope.get("data") if isinstance(envelope, dict) else None
+            if not isinstance(data, dict):
+                return None
             if data.get("total_cost") is None:
                 return None
-            return {"cost": float(data["total_cost"]),
-                    "prompt_tokens": data.get("tokens_prompt") or 0,
-                    "completion_tokens": data.get("tokens_completion") or 0}
+            cost = float(data["total_cost"])
+            if not math.isfinite(cost) or cost < 0:
+                return None
+            result = {"cost": cost}
+            for source, target in (
+                ("tokens_prompt", "prompt_tokens"),
+                ("tokens_completion", "completion_tokens"),
+            ):
+                if data.get(source) is not None:
+                    result[target] = data[source]
+            return result
         except (requests.exceptions.RequestException, TypeError, ValueError):
             return None
         finally:
@@ -3864,6 +4439,40 @@ class Pipe:
                 response.close()
 
     async def _synthesize_speech(
+        self, body, model_id, valves, emitter, request, user, metadata
+    ) -> str:
+        """Serialize recovery buffers for one authenticated owner/chat/model."""
+        uid = user.get("id") if isinstance(user, dict) else None
+        chat = metadata.get("chat_id") if isinstance(metadata, dict) else None
+        if not uid or not chat:
+            return await self._synthesize_speech_impl(
+                body, model_id, valves, emitter, request, user, metadata
+            )
+        scope = (
+            self.speech_url,
+            uid,
+            chat,
+            model_id,
+            self._credential_fingerprint(self._build_headers(valves=valves)["Authorization"]),
+        )
+        queue = self._speech_queues.get(scope)
+        if queue is None:
+            if len(self._speech_queues) >= 256:
+                return "OpenRouter Error: Speech request queue is full. Try again later."
+            queue = {"lock": asyncio.Lock(), "users": 0}
+            self._speech_queues[scope] = queue
+        queue["users"] += 1
+        try:
+            async with queue["lock"]:
+                return await self._synthesize_speech_impl(
+                    body, model_id, valves, emitter, request, user, metadata
+                )
+        finally:
+            queue["users"] -= 1
+            if not queue["users"]:
+                self._speech_queues.pop(scope, None)
+
+    async def _synthesize_speech_impl(
         self,
         body: dict,
         model_id: str,
@@ -3904,7 +4513,10 @@ class Pipe:
         # Parse + strip the voice directive BEFORE cleaning so it isn't spoken.
         directive_voice, raw_text = self._parse_voice_directive(raw_text)
         # Seed Audio interprets a prompt, not literal prose to read aloud.
-        input_text = raw_text.strip() if is_seed_audio else self._clean_tts_text(raw_text)
+        try:
+            input_text = raw_text.strip() if is_seed_audio else self._clean_tts_text(raw_text)
+        except ValueError as exc:
+            return f"OpenRouter Error: {exc}"
         if not input_text:
             return (
                 "OpenRouter Error: Text-to-speech requires a non-empty text prompt "
@@ -3919,14 +4531,34 @@ class Pipe:
         if supported:
             voice = configured if configured in supported else supported[0]
         else:
-            voice = None if is_seed_audio and not directive_voice and configured in ("", "alloy") else (configured or "alloy")
+            voice = (
+                None
+                if is_seed_audio and not directive_voice and configured in ("", "alloy")
+                else (configured or "alloy")
+            )
 
         # Speed: a per-request body 'speed' wins, else the AUDIO_OUTPUT_SPEED valve.
         speed = None
         b_speed = body.get("speed")
-        if is_seed_audio and b_speed is not None and (
-            isinstance(b_speed, bool) or not isinstance(b_speed, (int, float))
-            or not 0.5 <= b_speed <= 2.0
+        if b_speed is not None and (
+            isinstance(b_speed, bool)
+            or not isinstance(b_speed, (int, float))
+            or not math.isfinite(b_speed)
+            or b_speed <= 0
+        ):
+            return (
+                "OpenRouter Error: Seed Audio speed must be between 0.5 and 2.0."
+                if is_seed_audio
+                else "OpenRouter Error: Speech speed must be finite and positive."
+            )
+        if (
+            is_seed_audio
+            and b_speed is not None
+            and (
+                isinstance(b_speed, bool)
+                or not isinstance(b_speed, (int, float))
+                or not 0.5 <= b_speed <= 2.0
+            )
         ):
             return "OpenRouter Error: Seed Audio speed must be between 0.5 and 2.0."
         if isinstance(b_speed, (int, float)) and not isinstance(b_speed, bool) and b_speed > 0:
@@ -3941,9 +4573,16 @@ class Pipe:
             return "OpenRouter Error: Seed Audio speed must be between 0.5 and 2.0."
         if is_seed_audio and len(input_text) > 3000:
             return "OpenRouter Error: Seed Audio prompts are limited to 3000 characters; shorten the prompt."
-        chunks = [input_text] if is_seed_audio else self._split_tts_text(input_text, _TTS_MAX_CHARS, split_mode)
+        chunks = (
+            [input_text]
+            if is_seed_audio
+            else self._split_tts_text(input_text, _TTS_MAX_CHARS, split_mode)
+        )
         if not chunks:
             return "OpenRouter Error: Text-to-speech requires a non-empty text prompt."
+        preflight = await self._media_preflight(request, user, metadata)
+        if preflight:
+            return preflight
 
         headers = self._build_headers(model_id=model_id, valves=valves)
         request_options = self._media_preferences(body, valves)
@@ -3953,14 +4592,26 @@ class Pipe:
         # not randomized Fernet ciphertext, so re-saving the same key works.
         cache_key = None
         if user_id and chat_id:
-            key_hash = self._credential_fingerprint(
-                headers.get("Authorization", "")
-            )
-            cache_key = hashlib.sha256(json.dumps(
-                [str(user_id), str(chat_id), self.speech_url, key_hash,
-                  model_id, voice, "mp3", speed, split_mode, input_text, request_options],
-                ensure_ascii=False, separators=(",", ":"),
-            ).encode("utf-8")).hexdigest()
+            key_hash = self._credential_fingerprint(headers.get("Authorization", ""))
+            cache_key = hashlib.sha256(
+                json.dumps(
+                    [
+                        str(user_id),
+                        str(chat_id),
+                        self.speech_url,
+                        key_hash,
+                        model_id,
+                        voice,
+                        "mp3",
+                        speed,
+                        split_mode,
+                        input_text,
+                        request_options,
+                    ],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
             cached = self._speech_cache.get(cache_key)
             if cached:
                 file_id, cached_url, created_at = cached
@@ -3969,20 +4620,29 @@ class Pipe:
                     and await self._speech_file_exists(file_id)
                 ):
                     await self._prefetch_credit_if_enabled(valves)
-                    return (
-                        f"\n\n<div><audio>{cached_url}</audio></div>\n\n"
-                        + self._tts_footer(valves, "", {"cost": 0} if valves.SHOW_COST_INFO else None)
+                    return f"\n\n<div><audio>{cached_url}</audio></div>\n\n" + self._tts_footer(
+                        valves, "", {"cost": 0} if valves.SHOW_COST_INFO else None
                     )
                 self._speech_cache.pop(cache_key, None)
 
         if emitter:
             try:
                 await emitter(
-                    {"type": "status", "data": {"description": "Generating speech...", "done": False}}
+                    {
+                        "type": "status",
+                        "data": {"description": "Generating speech...", "done": False},
+                    }
                 )
             except Exception:
                 pass
 
+        self._trim_pending_media()
+        recovery_key = cache_key or secrets.token_hex(16)
+        pending = self._speech_pending.setdefault(
+            recovery_key, {"chunks": [], "ts": time.monotonic()}
+        )
+        if pending.get("blocked"):
+            return "OpenRouter Error: Previous speech submission has an unknown outcome; check OpenRouter history before generating again."
         combined = bytearray()
         generation_ids = []
         total_usage: dict = {}
@@ -3992,24 +4652,55 @@ class Pipe:
             if emitter and total > 1:
                 try:
                     await emitter(
-                        {"type": "status", "data": {"description": f"Generating speech ({idx + 1}/{total})...", "done": False}}
+                        {
+                            "type": "status",
+                            "data": {
+                                "description": f"Generating speech ({idx + 1}/{total})...",
+                                "done": False,
+                            },
+                        }
                     )
                 except Exception:
                     pass
             remaining = _AUDIO_MAX_BYTES - len(combined)
-            err, audio_bytes, content_type, cg = await asyncio.to_thread(
-                self._tts_fetch_chunk,
-                chunk, model_id, voice, speed, headers, valves, remaining,
-                request_options,
-            )
+            saved = pending["chunks"]
+            if idx < len(saved):
+                audio_bytes, content_type, cg = saved[idx]
+                err = None
+            else:
+                err, audio_bytes, content_type, cg = await self._io(
+                    self._tts_fetch_chunk,
+                    chunk,
+                    model_id,
+                    voice,
+                    speed,
+                    headers,
+                    valves,
+                    remaining,
+                    request_options,
+                )
+                if not err and audio_bytes:
+                    saved.append((audio_bytes, content_type, cg))
             if err:
-                return err
+                pending["blocked"] = any(
+                    s in err for s in ("timed out", "request failed", "download failed")
+                )
+                return (
+                    err
+                    + " Completed chunks are retained briefly; retry resumes only known successful work."
+                )
             if not audio_bytes:
                 return "OpenRouter Error: Speech synthesis returned 0 bytes."
             if cg:
                 generation_ids.append(cg)
             if valves.SHOW_COST_INFO:
-                usage = await asyncio.to_thread(self._generation_usage, cg, valves) if cg else None
+                usage = await self._io(self._generation_usage, cg, valves) if cg else None
+                if usage is None and cg:
+                    for delay in (0.1, 0.3):
+                        await asyncio.sleep(delay)
+                        usage = await self._io(self._generation_usage, cg, valves)
+                        if usage is not None:
+                            break
                 if usage is None:
                     total_usage["cost_incomplete"] = True
                 else:
@@ -4044,7 +4735,7 @@ class Pipe:
         if not upload:
             return (
                 "OpenRouter Error: Speech generated but could not be persisted to "
-                "Open WebUI storage. Re-run inside an active OWUI chat session."
+                "Open WebUI storage. Retry the same request within five minutes to retry storage without new synthesis."
             )
         file_id, new_url = upload
         clean_url = new_url.split("?", 1)[0]
@@ -4054,6 +4745,7 @@ class Pipe:
             if len(self._speech_cache) >= 256:
                 self._speech_cache.clear()
             self._speech_cache[cache_key] = (file_id, clean_url, time.monotonic())
+        self._speech_pending.pop(recovery_key, None)
 
         # Same block-HTML pattern as the audio-gen / video flows: wrap in <div>
         # so marked emits a block html token and OWUI renders a real
@@ -4067,13 +4759,22 @@ class Pipe:
         response = None
         try:
             response = self._session.post(
-                self.videos_url, headers=headers, json=payload,
-                timeout=valves.REQUEST_TIMEOUT, allow_redirects=False,
+                self.videos_url,
+                headers=headers,
+                json=payload,
+                timeout=valves.REQUEST_TIMEOUT,
+                allow_redirects=False,
             )
             if response.status_code in (401, 403):
-                return (f"OpenRouter Error: Authentication failed (HTTP {response.status_code}). Check OPENROUTER_API_KEY.", None)
+                return (
+                    f"OpenRouter Error: Authentication failed (HTTP {response.status_code}). Check OPENROUTER_API_KEY.",
+                    None,
+                )
             if response.status_code == 402:
-                return ("OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model.", None)
+                return (
+                    "OpenRouter Error: Insufficient credits (HTTP 402). Top up your OpenRouter account or pick a cheaper video model.",
+                    None,
+                )
             if response.status_code == 429:
                 return ("OpenRouter Error: Rate limited (HTTP 429). Try again in a moment.", None)
             if 300 <= response.status_code < 400:
@@ -4084,7 +4785,10 @@ class Pipe:
                     detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 except Exception:
                     detail = (response.text or "")[:300]
-                return (f"OpenRouter Error: Failed to start video job (HTTP {response.status_code}). {detail}", None)
+                return (
+                    f"OpenRouter Error: Failed to start video job (HTTP {response.status_code}). {detail}",
+                    None,
+                )
             try:
                 job = response.json()
             except Exception as exc:
@@ -4093,9 +4797,16 @@ class Pipe:
                 return ("OpenRouter Error: Video submit returned an invalid job.", None)
             return (None, job)
         except requests.exceptions.Timeout:
-            return (f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s.", None)
+            return (
+                f"OpenRouter Error: Video submit timed out after {valves.REQUEST_TIMEOUT}s.",
+                None,
+            )
         except requests.exceptions.RequestException as exc:
-            return (f"OpenRouter Error: Video submit failed: {exc}", None)
+            _log_error("Video submit failed", exc)
+            return (
+                "OpenRouter Error: Video submit failed; outcome may be unknown. Check OpenRouter history before resubmitting.",
+                None,
+            )
         finally:
             if response is not None:
                 response.close()
@@ -4105,7 +4816,9 @@ class Pipe:
         response = None
         try:
             response = self._session.get(
-                url, headers=headers, timeout=valves.REQUEST_TIMEOUT,
+                url,
+                headers=headers,
+                timeout=valves.REQUEST_TIMEOUT,
                 allow_redirects=False,
             )
             if 300 <= response.status_code < 400:
@@ -4116,9 +4829,12 @@ class Pipe:
                 return ("OpenRouter Error: Video polling returned an invalid job.", None)
             return (None, job)
         except requests.exceptions.RequestException as exc:
-            return (f"OpenRouter Error: Video polling failed: {exc}", None)
-        except ValueError as exc:
-            return (f"OpenRouter Error: Video polling returned non-JSON response: {exc}", None)
+            error_response = exc.response
+            status = error_response.status_code if error_response is not None else None
+            label = f"HTTP {status}" if status else type(exc).__name__
+            return (f"OpenRouter Error: Video polling failed ({label}).", None)
+        except ValueError:
+            return ("OpenRouter Error: Video polling returned non-JSON response.", None)
         finally:
             if response is not None:
                 response.close()
@@ -4128,8 +4844,11 @@ class Pipe:
         response = None
         try:
             response = self._session.get(
-                url, headers=headers, timeout=valves.REQUEST_TIMEOUT,
-                stream=True, allow_redirects=False,
+                url,
+                headers=headers,
+                timeout=valves.REQUEST_TIMEOUT,
+                stream=True,
+                allow_redirects=False,
             )
             if 300 <= response.status_code < 400:
                 return ("OpenRouter Error: Video download redirect rejected.", b"", "")
@@ -4141,7 +4860,9 @@ class Pipe:
             if declared_len > _VIDEO_MAX_BYTES:
                 return (
                     "OpenRouter Error: Video download rejected — declared size "
-                    f"{declared_len} bytes exceeds {_VIDEO_MAX_BYTES} byte cap.", b"", "",
+                    f"{declared_len} bytes exceeds {_VIDEO_MAX_BYTES} byte cap.",
+                    b"",
+                    "",
                 )
             buf = bytearray()
             for chunk in response.iter_content(chunk_size=64 * 1024):
@@ -4150,16 +4871,33 @@ class Pipe:
                     if len(buf) > _VIDEO_MAX_BYTES:
                         return (
                             "OpenRouter Error: Video download exceeded "
-                            f"{_VIDEO_MAX_BYTES} byte cap mid-stream.", b"", "",
+                            f"{_VIDEO_MAX_BYTES} byte cap mid-stream.",
+                            b"",
+                            "",
                         )
             if not buf:
                 return ("OpenRouter Error: Video download returned 0 bytes.", b"", "")
-            content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            content_type = (
+                (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            )
             if content_type not in _VIDEO_MIME_WHITELIST:
-                content_type = "video/mp4"
+                if content_type == "application/octet-stream" and bytes(buf[4:8]) == b"ftyp":
+                    content_type = "video/mp4"
+                elif (
+                    content_type == "application/octet-stream"
+                    and bytes(buf[:4]) == b"\x1aE\xdf\xa3"
+                ):
+                    content_type = "video/webm"
+                else:
+                    return (
+                        "OpenRouter Error: Video download returned an unsupported content type.",
+                        b"",
+                        "",
+                    )
             return (None, bytes(buf), content_type)
         except requests.exceptions.RequestException as exc:
-            return (f"OpenRouter Error: Video download failed: {exc}", b"", "")
+            _log_error("Video download failed", exc)
+            return ("OpenRouter Error: Video download failed (see server logs).", b"", "")
         finally:
             if response is not None:
                 response.close()
@@ -4192,6 +4930,9 @@ class Pipe:
         prompt = self._extract_video_prompt(body)
         if not prompt:
             return "OpenRouter Error: Video generation requires a non-empty text prompt."
+        preflight = await self._media_preflight(request, user, metadata)
+        if preflight:
+            return preflight
 
         headers = self._build_headers(model_id=model_id, valves=valves)
         # /videos expects flat params, not chat messages. Forward only the
@@ -4205,9 +4946,32 @@ class Pipe:
             if key in body and body[key] is not None:
                 payload[key] = body[key]
 
-        error, job = await asyncio.to_thread(self._video_submit_job, payload, headers, valves)
-        if error:
-            return error
+        self._trim_pending_media()
+        recovery_key = hashlib.sha256(
+            json.dumps(
+                [
+                    (user or {}).get("id"),
+                    (metadata or {}).get("chat_id"),
+                    self.videos_url,
+                    self._credential_fingerprint(headers["Authorization"]),
+                    payload,
+                ],
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        pending = self._video_pending.get(recovery_key)
+        if pending and pending.get("blocked"):
+            return "OpenRouter Error: Previous video submission has an unknown outcome; check OpenRouter history before resubmitting."
+        if pending:
+            job = pending["job"]
+        else:
+            error, job = await self._io(self._video_submit_job, payload, headers, valves)
+            if error:
+                if "timed out" in error or "outcome may be unknown" in error:
+                    self._video_pending[recovery_key] = {"ts": time.monotonic(), "blocked": True}
+                return error
+            pending = {"ts": time.monotonic(), "job": job}
+            self._video_pending[recovery_key] = pending
 
         job_id = job.get("id")
         upstream_polling = job.get("polling_url")
@@ -4227,6 +4991,7 @@ class Pipe:
         deadline = time.monotonic() + max(30, int(valves.VIDEO_GENERATION_TIMEOUT))
         poll_interval = max(2.0, float(valves.VIDEO_POLL_INTERVAL))
         final = None
+        consecutive_errors = 0
         last_status_label: Optional[str] = None
         while time.monotonic() < deadline:
             if emitter:
@@ -4249,16 +5014,41 @@ class Pipe:
                         )
                     except Exception:
                         pass
-            await asyncio.sleep(poll_interval)
-            error, job = await asyncio.to_thread(self._video_poll_job, polling_url, headers, valves)
+            if (job.get("status") or "") == "completed":
+                final = job
+                break
+            await asyncio.sleep(min(poll_interval, max(0, deadline - time.monotonic())))
+            error, polled = await self._io(self._video_poll_job, polling_url, headers, valves)
             if error:
-                return error
+                consecutive_errors += 1
+                transient = any(
+                    token in error
+                    for token in (
+                        "HTTP 429",
+                        "HTTP 500",
+                        "HTTP 502",
+                        "HTTP 503",
+                        "HTTP 504",
+                        "Timeout",
+                        "ConnectionError",
+                    )
+                )
+                if transient and consecutive_errors <= 3:
+                    continue
+                return error + f" (job id {job_id}; retry resumes this job)."
+            consecutive_errors = 0
+            job = polled
+            pending["job"] = job
 
-            status = (job.get("status") or "").lower()
+            status = job.get("status")
+            if not isinstance(status, str):
+                return f"OpenRouter Error: Invalid video status (job id {job_id})."
+            status = status.lower()
             if status == "completed":
                 final = job
                 break
             if status in ("failed", "cancelled", "expired"):
+                self._video_pending.pop(recovery_key, None)
                 err = job.get("error") or {}
                 msg = err.get("message", "unknown") if isinstance(err, dict) else str(err)
                 return f"OpenRouter Error: Video generation {status}: {msg} (job id {job_id})."
@@ -4280,11 +5070,14 @@ class Pipe:
             print("[OpenRouter Pipe] Refusing to download video from non-OpenRouter host.")
             return "OpenRouter Error: Video download URL rejected (untrusted host)."
 
-        error, video_bytes, content_type = await asyncio.to_thread(
-            self._video_download, unsigned[0], headers, valves,
+        error, video_bytes, content_type = await self._io(
+            self._video_download,
+            unsigned[0],
+            headers,
+            valves,
         )
         if error:
-            return error
+            return error + f" (job id {job_id}; retry resumes this job)."
 
         upload = await self._upload_video_to_owui(
             request, user, metadata, video_bytes, content_type=content_type
@@ -4295,9 +5088,10 @@ class Pipe:
             # would 401 once the user's browser tries to load it.
             return (
                 "OpenRouter Error: Video generated but could not be persisted to "
-                "Open WebUI storage. Re-run inside an active OWUI chat session."
+                f"Open WebUI storage (job id {job_id}). Retry the same request within five minutes to recover this job."
             )
         file_id, new_url = upload
+        self._video_pending.pop(recovery_key, None)
 
         # OWUI's Markdown component (HtmlToken.svelte) only handles
         # ``token.type === 'html'``. Marked produces that token type ONLY
@@ -4321,6 +5115,8 @@ class Pipe:
             try:
                 cost_val = float(cost)
                 symbol = "$"
+                if not math.isfinite(cost_val) or cost_val < 0:
+                    raise ValueError
                 if cost_val < 0.0001:
                     cost_str = f"{symbol}{cost_val:.6f}"
                 else:
@@ -4341,7 +5137,9 @@ class Pipe:
 
         return f"{video_tag}{footer}"
 
-    async def _emit_image_files(self, _emitter, message, request=None, user=None, metadata=None) -> bool:
+    async def _emit_image_files(
+        self, _emitter, message, request=None, user=None, metadata=None
+    ) -> bool:
         """Materialize generated image ``data:`` URLs into Open WebUI internal file URLs.
 
         Each base64 image in ``message.images`` is uploaded via the shared
@@ -4360,7 +5158,7 @@ class Pipe:
         """
         if not isinstance(message, dict):
             return False
-        images = message.get("images") or []
+        images = self._merge_stream_images([], message.get("images") or [])
         if not images:
             return False
         changed = False
@@ -4374,11 +5172,23 @@ class Pipe:
             m = _DATA_IMAGE_RE.match(url)
             if not m:
                 continue
+            if m.group(1).lower() not in {
+                "image/png",
+                "image/jpeg",
+                "image/jpg",
+                "image/webp",
+                "image/gif",
+            }:
+                continue
+            if len(m.group(2)) > ((_IMAGE_MAX_BYTES + 2) // 3) * 4:
+                continue
             try:
                 content_type = m.group(1)
                 image_bytes = base64.b64decode(m.group(2))
+                if len(image_bytes) > _IMAGE_MAX_BYTES:
+                    continue
             except Exception as exc:
-                print(f"[OpenRouter Pipe] Image decode failed: {exc}")
+                _log_error("Image decode failed", exc)
                 continue
             upload = await self._owui_upload_bytes(
                 request, user, metadata, image_bytes, content_type, "Image"
@@ -4418,10 +5228,16 @@ class Pipe:
             if _scheme not in _CITATION_ALLOWED_SCHEMES:
                 continue
             try:
-                await emitter({
-                    "type": "citation",
-                    "data": {"source": {"name": url, "url": url}},
-                })
+                await emitter(
+                    {
+                        "type": "citation",
+                        "data": {
+                            "source": {"name": url, "url": url},
+                            "document": [url],
+                            "metadata": [{"source": url, "name": url}],
+                        },
+                    }
+                )
             except Exception:
                 pass
 
@@ -4437,20 +5253,32 @@ class Pipe:
 
         Shared by the plain non-stream path and the tool-loop final round.
         """
-        if not res.get("choices"):
+        if not isinstance(res, dict) or not res.get("choices"):
             return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
+        if not isinstance(res["choices"], list) or not isinstance(res["choices"][0], dict):
+            return "OpenRouter Error: Invalid completion choices."
         choice = res["choices"][0]
         message = choice.get("message", {})
-        citations = res.get("citations", [])
+        if not isinstance(message, dict):
+            return "OpenRouter Error: Invalid completion message."
+        citations = _collect_citations(res, message)
+        raw_reasoning = message.get("reasoning") or message.get("reasoning_content") or ""
+        raw_content = message.get("content") or ""
+        if not isinstance(raw_reasoning, str) or not isinstance(raw_content, str):
+            return "OpenRouter Error: Invalid completion text."
 
-        reasoning = _insert_citations(message.get("reasoning", ""), citations)
-        content = _insert_citations(message.get("content") or "", citations)
+        reasoning = _insert_citations(raw_reasoning, citations)
+        content = _insert_citations(raw_content, citations)
         rendered_citations = _format_citation_list(citations)
 
         audio_obj = message.get("audio") or {}
-        if audio_obj and not content:
+        if isinstance(audio_obj, dict) and audio_obj and not content:
             transcript = audio_obj.get("transcript", "")
-            content = transcript or "*[Audio response — transcript not available.]*"
+            content = (
+                transcript
+                if isinstance(transcript, str) and transcript
+                else "*[Audio response — transcript not available.]*"
+            )
 
         image_md = _format_image_output(message.get("images") or [])
 
@@ -4484,7 +5312,9 @@ class Pipe:
                     final_parts.append(gen_footer)
 
         if valves.SHOW_REMAINING_CREDIT:
-            credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
+            credit_line = self._format_credit_info(
+                self._credit_balance_cached(valves), valves.COST_CURRENCY
+            )
             if credit_line:
                 final_parts.append(credit_line)
 
@@ -4500,12 +5330,16 @@ class Pipe:
                 res = response.json()
             finally:
                 response.close()
+            if not isinstance(res, dict):
+                return "OpenRouter Error: Invalid completion response."
             if "error" in res and not res.get("choices"):
                 err = res["error"]
                 msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                return f"OpenRouter Error: {msg}"
+                return f"OpenRouter Error: {_safe_detail(msg)}"
             if not res.get("choices"):
                 return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
+            if not isinstance(res["choices"], list) or not isinstance(res["choices"][0], dict):
+                return "OpenRouter Error: Invalid completion choices."
             return res
         except requests.exceptions.Timeout:
             return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
@@ -4515,55 +5349,50 @@ class Pipe:
             # Log raw detail to operator stdout only; surface a generic
             # message to the client so internal Python error text doesn't
             # leak into chat history.
-            print(f"[OpenRouter Pipe] Non-stream fetch error: {exc!r}")
-            traceback.print_exc()
+            _log_error("Non-stream fetch error", exc)
             return "OpenRouter Error: Internal request error (see server logs)."
 
-    async def _non_stream_with_events(self, headers: dict, payload: dict, valves, emitter, request=None, user=None, metadata=None) -> str:
+    async def _non_stream_with_events(
+        self, headers: dict, payload: dict, valves, emitter, request=None, user=None, metadata=None
+    ) -> str:
         """Wrap _non_stream_fetch with image-files + citation event emits and
         credit prefetch, then format. Used by pipe()'s no-tools non-stream
         path so generated images render as native OWUI attachments rather
         than huge inline markdown links.
         """
-        res = await asyncio.to_thread(self._non_stream_fetch, headers, payload, valves)
+        res = await self._io(self._non_stream_fetch, headers, payload, valves)
         if isinstance(res, str):
             return res
         choices = res.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
-        await self._emit_image_files(emitter, message, request, user, metadata)
-        await self._emit_citation_events(emitter, res.get("citations") or [])
+        try:
+            await self._emit_image_files(emitter, message, request, user, metadata)
+        except ValueError:
+            return "OpenRouter Error: Generated images exceeded their size/count limit."
+        await self._emit_citation_events(emitter, _collect_citations(res, message))
         await self._prefetch_credit_if_enabled(valves)
         return self._format_final_message(res, payload, valves)
 
     def _non_stream_response(self, headers: dict, payload: dict, valves) -> str:
-        """Send a non-streaming request and return the formatted response."""
-        try:
-            response = self._retryable_request(headers, payload, stream=False, valves=valves)
-            try:
-                res = response.json()
-            finally:
-                response.close()
+        """Compatibility wrapper using the same fetcher as the public path."""
+        result = self._non_stream_fetch(headers, payload, valves)
+        return (
+            result
+            if isinstance(result, str)
+            else self._format_final_message(result, payload, valves)
+        )
 
-            # Handle API error in response body
-            if "error" in res and not res.get("choices"):
-                err = res["error"]
-                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                return f"OpenRouter Error: {msg}"
-
-            if not res.get("choices"):
-                return "OpenRouter Error: Empty response. The model may be temporarily unavailable."
-
-            return self._format_final_message(res, payload, valves)
-        except requests.exceptions.Timeout:
-            return f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
-        except requests.exceptions.HTTPError as exc:
-            return self._format_http_error(exc)
-        except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Non-stream response error: {exc}")
-            traceback.print_exc()
-            return f"OpenRouter Error: {exc}"
-
-    async def _run_tools_nonstream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None) -> str:
+    async def _run_tools_nonstream(
+        self,
+        headers,
+        payload,
+        valves,
+        __tools__,
+        __event_emitter__,
+        __request__=None,
+        __user__=None,
+        __metadata__=None,
+    ) -> str:
         """Drive the non-streaming native-tool loop: request → execute → repeat."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         total_usage: dict = {}
@@ -4572,7 +5401,7 @@ class Pipe:
         def account(res):
             usage = res.get("usage") or {}
             _add_usage(total_usage, usage)
-            if valves.SHOW_COST_INFO and "cost" not in usage:
+            if valves.SHOW_COST_INFO and not _reported_cost(usage):
                 total_usage["cost_incomplete"] = True
             if res.get("id") and res["id"] not in generation_ids:
                 generation_ids.append(res["id"])
@@ -4592,7 +5421,8 @@ class Pipe:
             except requests.exceptions.HTTPError as exc:
                 return self._format_http_error(exc)
             except Exception as exc:  # pragma: no cover
-                return f"OpenRouter Error: {exc}"
+                _log_error("Tool round request failed", exc)
+                return "OpenRouter Error: Internal request error (see server logs)."
 
             if "error" in res and not res.get("choices"):
                 err = res["error"]
@@ -4604,8 +5434,12 @@ class Pipe:
             message = choices[0].get("message", {}) if choices else {}
             tool_calls = message.get("tool_calls")
             if not tool_calls:
-                await self._emit_image_files(__event_emitter__, message, __request__, __user__, __metadata__)
-                await self._emit_citation_events(__event_emitter__, res.get("citations") or [])
+                await self._emit_image_files(
+                    __event_emitter__, message, __request__, __user__, __metadata__
+                )
+                await self._emit_citation_events(
+                    __event_emitter__, _collect_citations(res, message)
+                )
                 await self._prefetch_credit_if_enabled(valves)
                 return self._format_final_message(res, payload, valves)
 
@@ -4639,7 +5473,8 @@ class Pipe:
         except requests.exceptions.HTTPError as exc:
             return self._format_http_error(exc)
         except Exception as exc:  # pragma: no cover
-            return f"OpenRouter Error: {exc}"
+            _log_error("Final tool request failed", exc)
+            return "OpenRouter Error: Internal request error (see server logs)."
         _choices = res.get("choices") or []
         account(res)
         _msg = _choices[0].get("message", {}) if _choices else {}
@@ -4663,6 +5498,7 @@ class Pipe:
         tool_acc: dict = {}
         latest_images: Optional[list] = None
         audio_b64_parts: List[str] = []
+        audio_size = 0
 
         def _close_think():
             nonlocal in_think
@@ -4674,20 +5510,13 @@ class Pipe:
         response = None
         try:
             response = self._retryable_request(headers, payload, stream=True, valves=valves)
-            for raw_line in response.iter_lines(chunk_size=8192):
-                if not raw_line or not raw_line.startswith(b"data: "):
-                    continue
-                data = raw_line[len(b"data: "):].decode("utf-8")
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-                if "error" in chunk:
+            useful = False
+            for chunk in _iter_sse(response):
+                if chunk.get("error") is not None:
                     err = chunk["error"]
-                    msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    msg = _safe_detail(
+                        err.get("message", str(err)) if isinstance(err, dict) else err
+                    )
                     ct = _close_think()
                     if ct:
                         yield ct
@@ -4708,11 +5537,24 @@ class Pipe:
                 first = choices[0] if choices and isinstance(choices[0], dict) else {}
                 if first.get("finish_reason"):
                     state["finish_reason"] = first["finish_reason"]
-                delta = first.get("delta", {})
+                delta = first.get("delta") or {}
+                if not isinstance(delta, dict):
+                    raise ValueError("Invalid stream delta")
+                new_citations = _collect_citations(chunk, delta, first.get("message"))
+                state["citations"] = list(
+                    dict.fromkeys((state.get("citations") or []) + new_citations)
+                )
 
-                for tc in (delta.get("tool_calls") or []):
+                for tc in delta.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        raise ValueError("Invalid tool call")
                     idx = tc.get("index", 0)
-                    slot = tool_acc.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+                    if not isinstance(idx, int) or idx < 0 or idx > 127:
+                        raise ValueError("Invalid tool call index")
+                    slot = tool_acc.setdefault(
+                        idx,
+                        {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+                    )
                     if tc.get("id"):
                         slot["id"] = tc["id"]
                     if tc.get("extra_content") is not None:
@@ -4721,11 +5563,16 @@ class Pipe:
                     if fn.get("name"):
                         slot["function"]["name"] = fn["name"]
                     if fn.get("arguments"):
-                        slot["function"]["arguments"] += fn["arguments"]
+                        args = fn["arguments"]
+                        slot["function"]["arguments"] += (
+                            args if isinstance(args, str) else json.dumps(args)
+                        )
 
                 _accumulate_reasoning(state, delta.get("reasoning_details"))
                 reasoning = delta.get("reasoning") or delta.get("reasoning_content") or ""
                 content = delta.get("content") or ""
+                if not isinstance(reasoning, str) or not isinstance(content, str):
+                    raise ValueError("Invalid text delta")
                 if reasoning:
                     state["reasoning"] = state.get("reasoning", "") + reasoning
                 if content:
@@ -4736,14 +5583,26 @@ class Pipe:
                 # them after the round completes. Same shape as
                 # _stream_response uses for the plain-stream path.
                 _msg_obj = first.get("message") if isinstance(first.get("message"), dict) else None
-                _imgs = delta.get("images") or (_msg_obj.get("images") if isinstance(_msg_obj, dict) else None)
+                _imgs = delta.get("images") or (
+                    _msg_obj.get("images") if isinstance(_msg_obj, dict) else None
+                )
                 if isinstance(_imgs, list) and _imgs:
-                    latest_images = _imgs
+                    latest_images = self._merge_stream_images(latest_images or [], _imgs)
                 audio_delta = delta.get("audio") or {}
-                if isinstance(audio_delta, dict) and isinstance(audio_delta.get("data"), str) and audio_delta["data"]:
+                if (
+                    isinstance(audio_delta, dict)
+                    and isinstance(audio_delta.get("data"), str)
+                    and audio_delta["data"]
+                ):
+                    audio_size += len(audio_delta["data"])
+                    if audio_size > ((_AUDIO_MAX_BYTES + 2) // 3) * 4:
+                        raise ValueError("Audio stream exceeded its size limit")
                     audio_b64_parts.append(audio_delta["data"])
                 if not content and isinstance(audio_delta, dict):
                     content = audio_delta.get("transcript", "") or ""
+                useful = useful or bool(
+                    reasoning or content or tool_acc or latest_images or audio_b64_parts
+                )
 
                 if reasoning:
                     if not in_think:
@@ -4756,6 +5615,8 @@ class Pipe:
                         yield ct
                     yield _insert_citations(content, state.get("citations") or [])
 
+            if not useful:
+                raise ValueError("Stream contained no usable completion events")
             ct = _close_think()
             if ct:
                 yield ct
@@ -4785,7 +5646,7 @@ class Pipe:
             yield self._format_http_error(exc)
             state["error"] = True
         except Exception as exc:  # pragma: no cover
-            print(f"[OpenRouter Pipe] Stream round error: {exc}")
+            _log_error("Stream round error", exc)
             ct = _close_think()
             if ct:
                 yield ct
@@ -4804,6 +5665,28 @@ class Pipe:
                     state["audio_format"] = _af
             if response is not None:
                 response.close()
+
+    @staticmethod
+    def _merge_stream_images(existing: list, incoming: list) -> list:
+        """Accumulate incremental images with bounded encoded bytes and count."""
+        result = list(existing)
+        urls = {
+            item.get("image_url", {}).get("url")
+            for item in result
+            if isinstance(item, dict) and isinstance(item.get("image_url"), dict)
+        }
+        for item in incoming:
+            block = item.get("image_url") if isinstance(item, dict) else None
+            url = block.get("url") if isinstance(block, dict) else None
+            if not isinstance(url, str) or not url or url in urls:
+                continue
+            if len(url) > ((_IMAGE_MAX_BYTES + 2) // 3) * 4 or len(result) >= _IMAGE_MAX_COUNT:
+                raise ValueError("Image stream exceeded its size/count limit")
+            result.append(copy.deepcopy(item))
+            urls.add(url)
+        if sum(len(url) for url in urls if isinstance(url, str)) > 50 * 1024 * 1024:
+            raise ValueError("Images exceeded their aggregate size limit")
+        return result
 
     async def _stream_media_embeds(self, state: dict, valves, request, user, metadata) -> str:
         """Materialize captured stream media (images, audio) and return their
@@ -4835,7 +5718,17 @@ class Pipe:
                 parts.append(audio_embed)
         return "".join(parts)
 
-    async def _run_tools_stream(self, headers, payload, valves, __tools__, __event_emitter__, __request__=None, __user__=None, __metadata__=None):
+    async def _run_tools_stream(
+        self,
+        headers,
+        payload,
+        valves,
+        __tools__,
+        __event_emitter__,
+        __request__=None,
+        __user__=None,
+        __metadata__=None,
+    ):
         """Async generator: stream rounds, executing tools between them."""
         max_iter = max(int(getattr(valves, "MAX_TOOL_ITERATIONS", 5) or 5), 1)
         total_usage: dict = {}
@@ -4844,7 +5737,7 @@ class Pipe:
         def account(state):
             usage = state.get("usage") or {}
             _add_usage(total_usage, usage)
-            if valves.SHOW_COST_INFO and "cost" not in usage:
+            if valves.SHOW_COST_INFO and not _reported_cost(usage):
                 total_usage["cost_incomplete"] = True
             if state.get("generation_id") and state["generation_id"] not in generation_ids:
                 generation_ids.append(state["generation_id"])
@@ -4854,17 +5747,16 @@ class Pipe:
         for _ in range(max_iter):
             state: dict = {}
             it = iter(self._stream_one_round(headers, payload, valves, state))
-            while True:
-                piece = await asyncio.to_thread(next, it, _STREAM_DONE)
-                if piece is _STREAM_DONE:
-                    break
+            async for piece in self._iterate_stream(it):
                 yield piece
             if state.get("error"):
                 return
             account(state)
             tool_calls = state.get("tool_calls")
             if not tool_calls:
-                media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
+                media_md = await self._stream_media_embeds(
+                    state, valves, __request__, __user__, __metadata__
+                )
                 if media_md:
                     yield media_md
                 await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
@@ -4881,14 +5773,13 @@ class Pipe:
         final_payload.pop("tools", None)
         final_payload.pop("tool_choice", None)
         it = iter(self._stream_one_round(headers, final_payload, valves, state))
-        while True:
-            piece = await asyncio.to_thread(next, it, _STREAM_DONE)
-            if piece is _STREAM_DONE:
-                break
+        async for piece in self._iterate_stream(it):
             yield piece
         if not state.get("error"):
             account(state)
-            media_md = await self._stream_media_embeds(state, valves, __request__, __user__, __metadata__)
+            media_md = await self._stream_media_embeds(
+                state, valves, __request__, __user__, __metadata__
+            )
             if media_md:
                 yield media_md
             await self._emit_citation_events(__event_emitter__, state.get("citations") or [])
@@ -4912,7 +5803,9 @@ class Pipe:
                 if gf:
                     parts.append(gf)
         if valves.SHOW_REMAINING_CREDIT:
-            credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
+            credit_line = self._format_credit_info(
+                self._credit_balance_cached(valves), valves.COST_CURRENCY
+            )
             if credit_line:
                 parts.append(credit_line)
         return "".join(parts)
@@ -4928,183 +5821,10 @@ class Pipe:
         async caller can materialize URLs + render markdown after the stream
         completes.
         """
-        response = None
-        in_think = False
-        latest_citations: List[str] = []
-        latest_usage: dict = {}
-        latest_generation_id: Optional[str] = None
-        latest_images: Optional[list] = None
-        audio_b64_parts: List[str] = []
-
-        def _close_think_tag():
-            nonlocal in_think
-            if in_think:
-                in_think = False
-                return "\n</think>\n"
-            return ""
-
-        try:
-            response = self._retryable_request(headers, payload, stream=True, valves=valves)
-            for raw_line in response.iter_lines(chunk_size=8192):
-                if not raw_line or not raw_line.startswith(b"data: "):
-                    continue
-                data = raw_line[len(b"data: ") :].decode("utf-8")
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-                # Handle mid-stream errors
-                if "error" in chunk:
-                    err = chunk["error"]
-                    msg = (
-                        err.get("message", str(err))
-                        if isinstance(err, dict)
-                        else str(err)
-                    )
-                    close_tag = _close_think_tag()
-                    if close_tag:
-                        yield close_tag
-                    yield f"\n\nOpenRouter Error: {msg}"
-                    return
-
-                # Generation ID arrives on the first chunk and stays stable.
-                gen_id = chunk.get("id")
-                if gen_id and not latest_generation_id:
-                    latest_generation_id = gen_id
-
-                usage_data = chunk.get("usage")
-                if usage_data:
-                    latest_usage = usage_data
-
-                citations = chunk.get("citations")
-                if citations is not None:
-                    latest_citations = citations
-
-                choices = chunk.get("choices") or []
-                first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-                delta = first_choice.get("delta", {})
-                reasoning = delta.get("reasoning", "")
-                content = delta.get("content") or ""
-
-                # Image-output models (flux, gemini-image-preview, etc.) return
-                # raster data URLs in delta.images or the final chunk's
-                # message.images even when stream=True. Capture the latest list
-                # so the async caller can materialize OWUI internal URLs and
-                # render markdown after the stream completes.
-                _msg = first_choice.get("message") if isinstance(first_choice.get("message"), dict) else None
-                _imgs = delta.get("images") or (_msg.get("images") if isinstance(_msg, dict) else None)
-                if isinstance(_imgs, list) and _imgs:
-                    latest_images = _imgs
-
-                # Audio-output models (lyria, gpt-audio): the upstream
-                # provider streams base64 audio chunks in delta.audio.data
-                # which the async caller decodes + uploads + embeds after
-                # the stream completes.
-                audio_delta = delta.get("audio") or {}
-                if isinstance(audio_delta, dict):
-                    if isinstance(audio_delta.get("data"), str) and audio_delta["data"]:
-                        audio_b64_parts.append(audio_delta["data"])
-
-                # Audio transcript fallback: stream the transcript when
-                # the model returns audio instead of text (e.g. gpt-audio
-                # surfaces the spoken text via delta.audio.transcript).
-                if not content and isinstance(audio_delta, dict):
-                    content = audio_delta.get("transcript", "") or ""
-
-                if reasoning:
-                    if not in_think:
-                        yield "<think>\n"
-                        in_think = True
-                    yield _insert_citations(reasoning, latest_citations)
-
-                if content:
-                    close_tag = _close_think_tag()
-                    if close_tag:
-                        yield close_tag
-                    yield _insert_citations(content, latest_citations)
-
-            # Close <think> if still open
-            close_tag = _close_think_tag()
-            if close_tag:
-                yield close_tag
-            # Surface collected images to the async caller (if any) before
-            # emitting footers so the caller can materialize OWUI URLs and
-            # yield the image markdown next to the cost/credit footers.
-            if state is not None and latest_images:
-                state["images"] = latest_images
-            if state is not None and audio_b64_parts:
-                state["audio_b64"] = "".join(audio_b64_parts)
-            if state is not None and isinstance(payload.get("audio"), dict):
-                _af = payload["audio"].get("format")
-                if isinstance(_af, str) and _af:
-                    state["audio_format"] = _af
-            rendered_citations = _format_citation_list(latest_citations)
-            if rendered_citations:
-                yield rendered_citations
-
-            if valves.SHOW_COST_INFO:
-                cost_info = _format_cost_info(latest_usage, valves.COST_CURRENCY)
-                if cost_info:
-                    yield cost_info
-
-            if valves.SHOW_GENERATION_ID:
-                gen_footer = _format_generation_id(latest_generation_id)
-                if gen_footer:
-                    yield gen_footer
-
-            if valves.SHOW_REMAINING_CREDIT:
-                credit_line = self._format_credit_info(self._credit_balance_cached(valves), valves.COST_CURRENCY)
-                if credit_line:
-                    yield credit_line
-        except requests.exceptions.Timeout:
-            close_tag = _close_think_tag()
-            if close_tag:
-                yield close_tag
-            yield f"OpenRouter Error: Request timed out after {valves.REQUEST_TIMEOUT}s. Try increasing REQUEST_TIMEOUT or retry."
-        except requests.exceptions.HTTPError as exc:
-            close_tag = _close_think_tag()
-            if close_tag:
-                yield close_tag
-            if exc.response is not None:
-                try:
-                    _ = exc.response.content  # Cache body before closing
-                except Exception:
-                    pass
-                try:
-                    exc.response.close()
-                except Exception:
-                    pass
-            yield self._format_http_error(exc)
-        except requests.exceptions.RequestException as exc:
-            # Network-layer errors (ConnectionError, ChunkedEncodingError,
-            # etc.) are safe to surface verbatim — the message is
-            # operator-oriented ("connection lost", "EOF") and doesn't
-            # contain stack frames or upstream response bodies.
-            close_tag = _close_think_tag()
-            if close_tag:
-                yield close_tag
-            yield f"OpenRouter Error: {exc}"
-        except Exception as exc:
-            close_tag = _close_think_tag()
-            if close_tag:
-                yield close_tag
-            # Log full detail to the operator (server stdout) but only
-            # surface a generic message to the chat client — internal
-            # exceptions can carry stack frames, file paths, or pieces of
-            # upstream response bodies that should never reach the end
-            # user.
-            print(f"[OpenRouter Pipe] Stream error: {exc!r}")
-            traceback.print_exc()
-            yield "OpenRouter Error: Internal stream error (see server logs)."
-        finally:
-            # Clean up resources — do NOT yield here because
-            # GeneratorExit (consumer break) would cause RuntimeError.
-            in_think = False
-            if response is not None:
-                response.close()
+        result = state if state is not None else {}
+        yield from self._stream_one_round(headers, payload, valves, result)
+        if not result.get("error") and not result.get("defer_footer"):
+            yield self._stream_footer(result, valves)
 
     @staticmethod
     def _parse_retry_after(value) -> Optional[float]:
@@ -5130,14 +5850,14 @@ class Pipe:
     @staticmethod
     def _backoff_delay(attempt: int) -> float:
         """Exponential backoff with jitter, capped at 30s."""
-        return min(2 ** attempt + random.uniform(0, 1), 30)
+        return min(2**attempt + random.uniform(0, 1), 30)
 
     def _retryable_request(
         self, headers: dict, payload: dict, stream: bool, valves
     ) -> requests.Response:
         """Send a POST request with automatic retry and exponential backoff.
 
-        Retries transient failures — network Timeout/ConnectionError and HTTP
+        Retries pre-submission connect timeouts and transient HTTP
         429/5xx (honouring Retry-After when present) — within the MAX_RETRIES
         budget. Non-transient 4xx fail fast.
         """
@@ -5154,12 +5874,9 @@ class Pipe:
                 )
                 response.raise_for_status()
                 return response
-            except (
-                requests.exceptions.Timeout,
-                requests.exceptions.ConnectionError,
-            ) as exc:
+            except requests.exceptions.ConnectTimeout as exc:
                 last_exc = exc
-                print(f"[OpenRouter Pipe] Attempt {attempt + 1} failed: {exc}")
+                _log_error(f"Connect attempt {attempt + 1} failed", exc)
                 if attempt == valves.MAX_RETRIES:
                     raise
                 time.sleep(self._backoff_delay(attempt))
@@ -5177,21 +5894,21 @@ class Pipe:
                 if delay is None:
                     delay = self._backoff_delay(attempt)
                 last_exc = exc
-                print(f"[OpenRouter Pipe] HTTP {status} on attempt {attempt + 1}; retrying in {delay:.1f}s")
+                print(
+                    f"[OpenRouter Pipe] HTTP {status} on attempt {attempt + 1}; retrying in {delay:.1f}s"
+                )
                 time.sleep(delay)
-            except Exception as exc:  # pragma: no cover
-                last_exc = exc
-                print(f"[OpenRouter Pipe] Unexpected error: {exc}")
-                if attempt == valves.MAX_RETRIES:
-                    raise
-                time.sleep(self._backoff_delay(attempt))
+            except Exception as exc:
+                # Read failures may occur after acceptance; never resubmit.
+                _log_error("Request failed; not resubmitted", exc)
+                raise
         if last_exc:
             raise last_exc  # pragma: no cover
         raise RuntimeError("OpenRouter Error: request not completed")  # pragma: no cover
 
     async def _call_request_async(self, stream, headers, payload, valves) -> requests.Response:
         """Run the blocking _retryable_request (incl. retry sleeps) off the event loop."""
-        return await asyncio.to_thread(self._retryable_request, headers, payload, stream, valves)
+        return await self._io(self._retryable_request, headers, payload, stream, valves)
 
     def _format_http_error(self, exc: requests.exceptions.HTTPError) -> str:
         """Format an HTTP error into a user-friendly message."""
@@ -5232,7 +5949,7 @@ class Pipe:
                 err = exc.response.json().get("error", {})
                 detail = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 if detail:
-                    base += f" — {detail}"
+                    base += f" — {_safe_detail(detail)}"
             except Exception:
                 pass
         return base

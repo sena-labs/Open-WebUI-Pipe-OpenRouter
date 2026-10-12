@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Normalize credentials and suppress bearer-bearing transport exception details.
+- Restrict tool arguments to public schema fields; preserve injected user/request context.
+- Validate video URLs with the transport parser, enforcing HTTPS/default port and rejecting userinfo/control/backslash ambiguity.
+- Preserve full workspace model metadata, routing, disabled state and access grants during icon sync; track exact icon provenance.
+
+### Changed
+
+- Minimum supported Open WebUI is now **0.11.4**, matching real runtime/storage smoke coverage.
+- `SHOW_REMAINING_CREDIT` now displays the API-key spending limit from `/key`; it no longer attempts management-only account `/credits`.
+- Paid test runners require `--live`, explicit model IDs and current capability preflight. Budget monitoring is a usage tripwire backed by an upstream key limit, not a guaranteed estimate.
+- Credential cache identities are opaque per-process tokens with bounded LRU eviction.
+
 ### Fixed
+
+- Keep a trailing reasoning signature with the block it signs (#26).
+- Offload sync tools even when OWUI wraps them in an async callable, preserving runtime coercion.
+- Await a shared cold-start catalog fetch and retry failed bootstrap after backoff.
+- Encrypt environment key defaults; blank personal keys inherit admin credentials; invalid numeric environment settings safely use documented defaults.
+- Avoid resubmitting ambiguous read/connection failures and permanent preparation errors.
+- Preflight media storage, retain successful speech chunks and recover known video jobs after transient polling/storage failures.
+- Parse standard citation annotations, emit complete OWUI source events and finalize cold-cache quota footers on ordinary streams.
+- Share SSE parsing across stream paths, support optional-space/multiline events, accumulate images and bound media before decoding.
+- Make TTS cleaning bounded and preserve dollar amounts; exclude assistant errors/diagnostic footers and omit unknown token counters.
+- Check anomalous generation JSON and video MIME; isolate all offline test defaults from operator environment.
 
 - Preserve request provider/options and reasoning controls when applying Valves;
   retain stricter price caps and prevent personal preferences weakening admin privacy.
@@ -27,8 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   voice or splitting a single sound prompt into multiple generations.
 - Exclude paid media with zero text-token rates from the free-model filter.
 - Isolate pseudonymous OpenRouter sessions from OWUI-internal session identifiers.
+- Accept Open WebUI 0.11's `upload_image` result (a dict with `url`) as well as the
+  legacy URL string; generated audio, video and images no longer embed a Python dict.
 
 ### Added
+
+- Behavioral audit regressions and a real OWUI smoke covering metadata/state/grants, the actual tool wrapper and persisted WAV bytes.
+- Configured Ruff/mypy CI gates; post-merge checks are no longer cancelled by a later main push.
 
 - Scoped single-flight TTS synthesis surviving consumer disconnection; privacy
   changes invalidate hosted-result cache entries.

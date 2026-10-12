@@ -5,7 +5,7 @@ then work through each section in order against a live Open WebUI instance.
 
 ## Prerequisites
 
-- **Open WebUI** ≥ 0.4.0 running locally or in Docker.
+- **Open WebUI** ≥ **0.11.4** running locally or in Docker.
 - A valid **OpenRouter API key** (starts with `sk-or-`).
 
 Current automated OWUI compatibility targets: `v0.11.4-slim` and stable `main-slim`.
@@ -18,7 +18,9 @@ The save/schema smoke below needs no OpenRouter key; manual generation and
 
 ```bash
 python test_pipe.py
-python -m unittest -v test_maintenance test_alignment
+python -m unittest -v test_maintenance test_alignment test_regressions
+ruff check .
+mypy
 ```
 
 Must exit with `All tests passed! ✓` and `✗ Failed: 0`. If any test fails, **do not release**.
@@ -43,31 +45,47 @@ docker logs openrouter-smoke
 docker rm -f openrouter-smoke
 ```
 
-The script creates the first admin account, saves the actual Python source,
-checks admin/user schemas, persists valves, updates the function and removes
-it. On failure, acquire backend logs before classifying an OWUI incompatibility.
+The script creates the first admin account, saves/updates the actual Python source,
+checks schemas/valves, exercises full workspace metadata/state/grant preservation,
+runs OWUI's real sync-tool wrapper with a heartbeat/context probe, persists a WAV
+through `upload_image` and reads its bytes through the file endpoint. A disposable
+runtime shim blocks inference HTTP. It removes its model/chat/file/function.
+On failure, acquire backend logs before classifying an OWUI incompatibility.
 The script deliberately refuses a deployment where its signup is not admin.
 
-### Paid end-to-end checks (budget guarded)
+### Paid end-to-end checks (explicit opt-in, usage monitored)
 
-`e2e_live.py` bills real credits: chat + tool loop on three vendors, TTS and
-video transport. It reads `/credits` before/after every scenario and aborts
-when spend exceeds the cap or the remaining balance falls under $0.10.
+`e2e_live.py --live` bills real credits: streaming/non-streaming chat and tools
+on three explicitly selected models, plus optional TTS/video transport. All IDs,
+output modalities and video duration/resolution are checked against live discovery
+before inference. `/key` usage/limit counters are read before/after each scenario.
+`--budget` is a tripwire; accounting can lag and a single request can exceed it.
+Use a disposable inference key with a small upstream spending limit. Unlimited
+keys are rejected by this paid runner. `/credits` is management-only and unused.
 
 ```bash
-OPENROUTER_API_KEY=sk-or-... python -B e2e_live.py --budget 0.50 \
-  [--model-claude anthropic/claude-3.5-haiku] \
-  [--model-openai openai/gpt-4o-mini] \
-  [--model-gemini google/gemini-2.0-flash-001] \
-  [--model-tts openai/gpt-4o-mini-tts] \
-  [--model-video google/veo-3-fast] \
-  [--skip-tts] [--skip-video] [--skip-tools] [--skip-reasoning]
+python -B e2e_live.py --preflight-only \
+  --model-claude anthropic/claude-haiku-4.5 \
+  --model-openai openai/gpt-4o-mini \
+  --model-gemini google/gemini-2.5-flash \
+  --model-tts elevenlabs/eleven-flash-v2.5 \
+  --model-video google/veo-3.1-lite \
+  --video-duration 4 --video-resolution 720p
 ```
 
-Run it only with a disposable key with a small balance. Media checks drive
+Export `OPENROUTER_API_KEY` securely before this command. These examples were
+present in discovery on 2026-10-11; Gemini 2.5 Flash advertises expiration on
+2026-10-20, so choose a current replacement explicitly after that date. There
+are no frozen model defaults. To authorize spending, replace `--preflight-only`
+with `--live --budget 0.50`. Optional `--skip-tts`, `--skip-video`, `--skip-tools`
+and `--skip-reasoning` flags are available. `integration_test.py` is a
+side-effect-free compatibility alias accepting the same arguments.
+
+Run it only with a disposable key with a small spending limit. Media checks drive
 the same transport helpers the OWUI flows use (`_tts_fetch_chunk`,
 `_video_submit_job`/`_video_poll_job`/`_video_download`); the OWUI re-host
-step needs a live session and stays covered by the smoke above.
+step is checked with synthetic WAV bytes by the smoke above. Paid generation and
+visual playback remain separate manual checks; no test silently spends at import.
 
 ---
 
@@ -85,8 +103,8 @@ step needs a live session and stays covered by the smoke above.
 
 | # | Action | Expected result |
 |---|--------|-----------------|
-| 2.1 | Leave `OPENROUTER_API_KEY` empty > open the model selector | A single "error" model appears with message `API key not configured` |
-| 2.2 | Enter a valid key in Valves > reopen the selector | OpenRouter models appear (400+ models), each with provider icon |
+| 2.1 | Leave admin `OPENROUTER_API_KEY` empty > open the model selector | Public catalog remains available; generation needs a personal/admin key |
+| 2.2 | Enter a valid key in Valves > reopen the selector | Current OpenRouter catalog and provider icons appear; counts vary |
 | 2.3 | Enter an **invalid** key (e.g. `sk-fake`) > reopen the selector | An "error" model appears with message `Invalid API key (HTTP ...)` |
 
 ---
@@ -163,7 +181,7 @@ step needs a live session and stays covered by the smoke above.
 
 | # | Action | Expected result |
 |---|--------|-----------------|
-| 9.1 | While using `openai/gpt-4o` as primary, set `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` | payload contains `"models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]` (primary model first, then fallbacks) |
+| 9.1 | Set `FALLBACK_MODELS` to a currently listed model | `models` contains primary first, then unique fallbacks |
 | 9.2 | Leave `FALLBACK_MODELS` empty | No `models` field in payload |
 
 ---
@@ -344,7 +362,7 @@ step needs a live session and stays covered by the smoke above.
 | 25.3 | A prompt that triggers multiple tools in one round | Tools execute in parallel; all results fed back |
 | 25.4 | A tool that raises / bad args | Error returned to the model as the tool result; turn does not crash |
 | 25.5 | Force a tool loop beyond `MAX_TOOL_ITERATIONS` | Loop stops at the cap with a `Tool calling stopped: reached MAX_TOOL_ITERATIONS.` note |
-| 25.6 | Set `SHOW_REMAINING_CREDIT = true`, chat | Response shows `OpenRouter credit remaining: $…` after the cost line; repeat within ~60s makes no extra `/credits` call |
+| 25.6 | Set `SHOW_REMAINING_CREDIT = true`, chat with a limited key | Response shows `OpenRouter API-key limit remaining: $…`; repeat within ~60s makes no extra `/key` call; unlimited keys omit it |
 
 ---
 
@@ -373,13 +391,14 @@ step needs a live session and stays covered by the smoke above.
 ## Quick pre-release checklist
 
 - [ ] `python test_pipe.py` → 0 failed
-- [ ] `python -m unittest -v test_maintenance test_alignment` → OK
+- [ ] `python -m unittest -v test_maintenance test_alignment test_regressions` → OK
+- [ ] `ruff check .` and `mypy` → PASS
 - [ ] `python smoke_owui.py --base-url http://127.0.0.1:3001` → all real OWUI endpoint checks pass
-- [ ] (optional, paid) `python -B e2e_live.py --budget …` → ALL LIVE CHECKS PASSED
+- [ ] (optional, paid) explicit-model `e2e_live.py --live --budget …` → exit 0, every enabled check PASS
 - [ ] CI Python matrix, both OWUI images and CodeQL pass
-- [ ] `python integration_test.py` → 0 failed (live, optional; can spend credits)
+- [ ] `python integration_test.py --help` documents the opt-in runner; imports perform no HTTP
 - [ ] Empty API key → clear error message in model selector
-- [ ] Valid API key → 400+ models with provider icons
+- [ ] Valid API key → current catalog with provider icons, without a fixed model-count assertion
 - [ ] Non-streaming chat works
 - [ ] Streaming chat works (token by token)
 - [ ] Reasoning tokens shown with `<think>`

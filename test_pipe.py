@@ -20,6 +20,10 @@ from types import ModuleType
 from typing import List
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from test_support import isolate_environment
+
+isolate_environment()
+
 # Ensure UTF-8 output on Windows (avoids cp1252 UnicodeEncodeError)
 if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
     sys.stdout = io.TextIOWrapper(
@@ -43,9 +47,19 @@ Pipe = mod.Pipe
 # live in test_alignment.py, so they do not consume catalog response fixtures.
 _auth_patch = patch.object(Pipe, "_validate_api_key", return_value=None)
 _auth_patch.start()
+_lookup_patch = patch.object(Pipe, "_lookup_model")
+_lookup_patch.start()
+# These legacy vectors isolate synthesis. Real persistence preflight and
+# upload contracts are exercised in test_regressions and the OWUI smoke.
+_preflight_patch = patch.object(Pipe, "_media_preflight", new=AsyncMock(return_value=None))
+_preflight_patch.start()
+_poll_sleep_patch = patch("openrouter_pipe.asyncio.sleep", new=AsyncMock())
+_poll_sleep_patch.start()
+
 
 def _run(coro):
     return asyncio.run(coro)
+
 
 _insert_citations = mod._insert_citations
 _format_citation_list = mod._format_citation_list
@@ -71,7 +85,7 @@ def _assert(condition: bool, msg: str):
 
 
 def _section(title: str):
-    print(f"\n{'─'*60}\n  {title}\n{'─'*60}")
+    print(f"\n{'─' * 60}\n  {title}\n{'─' * 60}")
 
 
 # ── 1. Helper functions ──────────────────────────────────────────────────────
@@ -123,14 +137,22 @@ _section("3. Valves defaults")
 # Temporarily clear env vars that might interfere
 _env_backup = {}
 for k in [
-    "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
-    "OPENROUTER_REASONING_EFFORT", "OPENROUTER_INCLUDE_REASONING",
-    "OPENROUTER_MODEL_PROVIDERS", "OPENROUTER_INVERT_PROVIDER_LIST",
-    "OPENROUTER_FREE_MODEL_FILTER", "OPENROUTER_PROVIDER_SORT",
-    "OPENROUTER_PROVIDER_ORDER", "OPENROUTER_PROVIDER_IGNORE",
-    "OPENROUTER_REQUIRE_PARAMETERS", "OPENROUTER_DATA_COLLECTION",
-    "OPENROUTER_FALLBACK_MODELS", "OPENROUTER_ENABLE_MIDDLE_OUT",
-    "OPENROUTER_ENABLE_CACHE_CONTROL", "OPENROUTER_REQUEST_TIMEOUT",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_BASE_URL",
+    "OPENROUTER_REASONING_EFFORT",
+    "OPENROUTER_INCLUDE_REASONING",
+    "OPENROUTER_MODEL_PROVIDERS",
+    "OPENROUTER_INVERT_PROVIDER_LIST",
+    "OPENROUTER_FREE_MODEL_FILTER",
+    "OPENROUTER_PROVIDER_SORT",
+    "OPENROUTER_PROVIDER_ORDER",
+    "OPENROUTER_PROVIDER_IGNORE",
+    "OPENROUTER_REQUIRE_PARAMETERS",
+    "OPENROUTER_DATA_COLLECTION",
+    "OPENROUTER_FALLBACK_MODELS",
+    "OPENROUTER_ENABLE_MIDDLE_OUT",
+    "OPENROUTER_ENABLE_CACHE_CONTROL",
+    "OPENROUTER_REQUEST_TIMEOUT",
     "OPENROUTER_OUTPUT_MODALITIES",
 ]:
     _env_backup[k] = os.environ.pop(k, None)
@@ -250,7 +272,8 @@ _assert(payload["provider"]["ignore"] == ["google"], "provider ignore")
 _assert(payload["provider"]["require_parameters"] is True, "require_parameters")
 _assert(payload["provider"]["data_collection"] == "deny", "data_collection deny")
 _assert(
-    payload["models"] == ["google/gemini-2.0-flash-exp", "openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
+    payload["models"]
+    == ["google/gemini-2.0-flash-exp", "openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
     "fallback models (primary first)",
 )
 _assert(payload["transforms"] == ["middle-out"], "middle-out transform")
@@ -460,6 +483,7 @@ mock_resp = MagicMock()
 mock_resp.status_code = 429
 mock_resp.json.return_value = {"error": {"message": "Rate limited"}}
 import requests as req_lib
+
 real_exc = req_lib.exceptions.HTTPError(response=mock_resp)
 result = pipe._format_http_error(real_exc)
 _assert("429" in result, "status code in error")
@@ -491,7 +515,10 @@ payload_cc = {
             "role": "system",
             "content": [
                 {"type": "text", "text": "Short intro"},
-                {"type": "text", "text": "A much longer system prompt that should get cache_control applied to it because it is the longest"},
+                {
+                    "type": "text",
+                    "text": "A much longer system prompt that should get cache_control applied to it because it is the longest",
+                },
             ],
         },
         {"role": "user", "content": "Hello"},
@@ -545,7 +572,10 @@ original_body = {
             "role": "system",
             "content": [
                 {"type": "text", "text": "Short"},
-                {"type": "text", "text": "A much longer text block that should receive cache_control"},
+                {
+                    "type": "text",
+                    "text": "A much longer text block that should receive cache_control",
+                },
             ],
         },
     ],
@@ -563,7 +593,7 @@ _section("11. _non_stream_response()")
 pipe = Pipe()
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 
-# 11a. Normal response 
+# 11a. Normal response
 mock_json = {
     "choices": [{"message": {"content": "Hello!", "reasoning": "Thinking..."}}],
     "citations": ["https://example.com"],
@@ -601,7 +631,8 @@ _assert("empty response" in result.lower(), "empty choices → informative messa
 
 # 11d. Timeout
 with patch.object(
-    pipe, "_retryable_request",
+    pipe,
+    "_retryable_request",
     side_effect=req_lib.exceptions.Timeout("timeout"),
 ):
     result = pipe._non_stream_response({}, {}, pipe.valves)
@@ -612,7 +643,8 @@ mock_resp_http = MagicMock()
 mock_resp_http.status_code = 401
 mock_resp_http.json.return_value = {"error": {"message": "Unauthorized"}}
 with patch.object(
-    pipe, "_retryable_request",
+    pipe,
+    "_retryable_request",
     side_effect=req_lib.exceptions.HTTPError(response=mock_resp_http),
 ):
     result = pipe._non_stream_response({}, {}, pipe.valves)
@@ -645,7 +677,10 @@ def _make_sse_response(chunks: List[bytes]):
 sse_lines = [
     b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Step 1. "}}]}).encode(),
     b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Step 2."}}]}).encode(),
-    b"data: " + json.dumps({"choices": [{"delta": {"content": "Result: "}}], "citations": ["https://ex.com"]}).encode(),
+    b"data: "
+    + json.dumps(
+        {"choices": [{"delta": {"content": "Result: "}}], "citations": ["https://ex.com"]}
+    ).encode(),
     b"data: " + json.dumps({"choices": [{"delta": {"content": "42 [1]"}}]}).encode(),
     b"data: [DONE]",
 ]
@@ -705,7 +740,8 @@ _assert("server_fault" in full, "stream error-in-think: error shown")
 
 # 12e. Timeout in stream
 with patch.object(
-    pipe, "_retryable_request",
+    pipe,
+    "_retryable_request",
     side_effect=req_lib.exceptions.Timeout("timeout"),
 ):
     output = list(pipe._stream_response({}, {}, pipe.valves))
@@ -716,7 +752,7 @@ _assert("timeout" in full.lower(), "stream: timeout error")
 mock_empty_sse = _make_sse_response([b"data: [DONE]"])
 with patch.object(pipe, "_retryable_request", return_value=mock_empty_sse):
     output = list(pipe._stream_response({}, {}, pipe.valves))
-_assert(len("".join(output)) == 0, "stream: empty → no output")
+_assert("OpenRouter Error:" in "".join(output), "stream: empty → explicit error")
 
 # 12g. Malformed JSON in stream (should skip)
 sse_bad = [
@@ -762,7 +798,8 @@ mock_resp_stream_err.status_code = 429
 mock_resp_stream_err.json.return_value = {"error": {"message": "Rate limited"}}
 mock_resp_stream_err.content = json.dumps({"error": {"message": "Rate limited"}}).encode()
 with patch.object(
-    pipe, "_retryable_request",
+    pipe,
+    "_retryable_request",
     side_effect=req_lib.exceptions.HTTPError(response=mock_resp_stream_err),
 ):
     output = list(pipe._stream_response({}, {}, pipe.valves))
@@ -770,10 +807,12 @@ full = "".join(output)
 _assert("429" in full, "stream: HTTP error status code")
 _assert("Rate limited" in full, "stream: HTTP error detail preserved")
 
+
 # 12k. Timeout mid-stream while in <think> → closes tag before error
 def _iter_lines_timeout():
     yield b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Analyzing..."}}]}).encode()
     raise req_lib.exceptions.Timeout("read timeout")
+
 
 mock_sse_t = MagicMock()
 mock_sse_t.iter_lines.return_value = _iter_lines_timeout()
@@ -786,10 +825,12 @@ _assert("<think>" in full, "stream timeout-in-think: think opened")
 _assert("</think>" in full, "stream timeout-in-think: think closed before error")
 _assert("timeout" in full.lower(), "stream timeout-in-think: timeout error")
 
+
 # 12l. Generic exception mid-stream while in <think> → closes tag before error
 def _iter_lines_conn_error():
     yield b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Reasoning..."}}]}).encode()
     raise req_lib.exceptions.ConnectionError("connection lost mid-stream")
+
 
 mock_sse_ce = MagicMock()
 mock_sse_ce.iter_lines.return_value = _iter_lines_conn_error()
@@ -800,7 +841,7 @@ with patch.object(pipe, "_retryable_request", return_value=mock_sse_ce):
 full = "".join(output)
 _assert("<think>" in full, "stream exception-in-think: think opened")
 _assert("</think>" in full, "stream exception-in-think: think closed")
-_assert("connection lost" in full.lower(), "stream exception-in-think: error shown")
+_assert("OpenRouter Error:" in full, "stream exception-in-think: safe error shown")
 
 # 12m. Mid-stream error as string (not dict)
 sse_str_err = [
@@ -830,23 +871,27 @@ with patch.object(pipe._session, "post", return_value=mock_ok) as mock_post:
 
 # 13b. Timeout then success
 call_count = [0]
+
+
 def _post_retry(*args, **kwargs):
     call_count[0] += 1
     if call_count[0] == 1:
-        raise req_lib.exceptions.Timeout("first timeout")
+        raise req_lib.exceptions.ConnectTimeout("first connect timeout")
     m = MagicMock()
     m.raise_for_status = MagicMock()
     return m
 
-with patch.object(pipe._session, "post", side_effect=_post_retry), \
-     patch("time.sleep"):
+
+with patch.object(pipe._session, "post", side_effect=_post_retry), patch("time.sleep"):
     call_count[0] = 0
     result = pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
     _assert(call_count[0] == 2, "retryable: retried after timeout")
 
 # 13c. All retries exhausted
-with patch.object(pipe._session, "post", side_effect=req_lib.exceptions.Timeout("timeout")), \
-     patch("time.sleep"):
+with (
+    patch.object(pipe._session, "post", side_effect=req_lib.exceptions.ConnectTimeout("timeout")),
+    patch("time.sleep"),
+):
     try:
         pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
         _assert(False, "retryable: should raise after all retries")
@@ -868,6 +913,8 @@ with patch.object(pipe._session, "post") as mock_post:
 
 # 13e. ConnectionError triggers retry
 _call_count_ce = [0]
+
+
 def _post_retry_ce(*args, **kwargs):
     _call_count_ce[0] += 1
     if _call_count_ce[0] == 1:
@@ -876,11 +923,14 @@ def _post_retry_ce(*args, **kwargs):
     m.raise_for_status = MagicMock()
     return m
 
-with patch.object(pipe._session, "post", side_effect=_post_retry_ce), \
-     patch("time.sleep"):
+
+with patch.object(pipe._session, "post", side_effect=_post_retry_ce), patch("time.sleep"):
     _call_count_ce[0] = 0
-    result = pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
-    _assert(_call_count_ce[0] == 2, "retryable: retried after ConnectionError")
+    try:
+        pipe._retryable_request({}, {}, stream=False, valves=pipe.valves)
+        _assert(False, "ambiguous ConnectionError must raise")
+    except req_lib.exceptions.ConnectionError:
+        _assert(_call_count_ce[0] == 1, "ambiguous ConnectionError is not resubmitted")
 
 # ── 14. pipe() async entry point ────────────────────────────────────────────
 
@@ -898,57 +948,80 @@ async def _test_pipe_no_key():
     result = await pipe_no_key.pipe({"model": "test", "messages": []})
     return result
 
+
 res = asyncio.run(_test_pipe_no_key())
 _assert("OPENROUTER_API_KEY" in res, "pipe: missing key error")
+
 
 # 14a2. __event_emitter__ is called for non-stream
 async def _test_pipe_event_emitter_non_stream():
     mock_resp_ev = MagicMock()
     mock_resp_ev.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
     events = []
+
     async def _emitter(event):
         events.append(event)
+
     p = Pipe()
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
     with patch.object(p, "_retryable_request", return_value=mock_resp_ev):
         result = await p.pipe(
-            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            },
             __event_emitter__=_emitter,
         )
     return result, events
+
 
 res_ev, events_ev = asyncio.run(_test_pipe_event_emitter_non_stream())
 _assert(len(events_ev) == 2, "pipe event_emitter: 2 events (start + done)")
 _assert(events_ev[0]["type"] == "status", "pipe event_emitter: first event is status")
 _assert(events_ev[0]["data"]["done"] is False, "pipe event_emitter: first event not done")
-_assert("openai/gpt-4o" in events_ev[0]["data"]["description"], "pipe event_emitter: model name in status")
+_assert(
+    "openai/gpt-4o" in events_ev[0]["data"]["description"],
+    "pipe event_emitter: model name in status",
+)
 _assert(events_ev[1]["data"]["done"] is True, "pipe event_emitter: second event done")
 _assert("ok" in res_ev, "pipe event_emitter: content returned correctly")
 
+
 # 14a3. __event_emitter__ is called for stream (start only)
 async def _test_pipe_event_emitter_stream():
-    sse = _make_sse_response([
-        b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]}).encode(),
-        b"data: [DONE]",
-    ])
+    sse = _make_sse_response(
+        [
+            b"data: " + json.dumps({"choices": [{"delta": {"content": "Hi"}}]}).encode(),
+            b"data: [DONE]",
+        ]
+    )
     events = []
+
     async def _emitter(event):
         events.append(event)
+
     p = Pipe()
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
     with patch.object(p, "_retryable_request", return_value=sse):
         result = await p.pipe(
-            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
             __event_emitter__=_emitter,
         )
         chunks = [chunk async for chunk in result]
     return "".join(chunks), events
+
 
 res_s, events_s = asyncio.run(_test_pipe_event_emitter_stream())
 _assert(len(events_s) == 2, "pipe stream event_emitter: 2 events (start + done)")
 _assert(events_s[0]["data"]["done"] is False, "pipe stream event_emitter: start not done")
 _assert(events_s[1]["data"]["done"] is True, "pipe stream event_emitter: done event emitted")
 _assert("Hi" in res_s, "pipe stream event_emitter: content correct")
+
 
 # 14a4. pipe works without __event_emitter__ (backward compat)
 async def _test_pipe_no_emitter():
@@ -957,7 +1030,14 @@ async def _test_pipe_no_emitter():
     p = Pipe()
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
     with patch.object(p, "_retryable_request", return_value=mock_resp_ne):
-        return await p.pipe({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False})
+        return await p.pipe(
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": False,
+            }
+        )
+
 
 res_ne = asyncio.run(_test_pipe_no_emitter())
 _assert("compat" in res_ne, "pipe no emitter: backward compatible")
@@ -973,26 +1053,39 @@ mock_resp.json.return_value = mock_json_ok
 async def _test_pipe_non_stream():
     with patch.object(pipe, "_retryable_request", return_value=mock_resp):
         return await pipe.pipe(
-            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "Hi"}], "stream": False}
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+            }
         )
+
 
 res = asyncio.run(_test_pipe_non_stream())
 _assert(isinstance(res, str), "pipe non-stream: returns string")
 _assert("Hello!" in res, "pipe non-stream: content correct")
 
+
 # 14c. Stream returns async generator
 async def _test_pipe_stream() -> str:
-    sse = _make_sse_response([
-        b"data: " + json.dumps({"choices": [{"delta": {"content": "World"}}]}).encode(),
-        b"data: [DONE]",
-    ])
+    sse = _make_sse_response(
+        [
+            b"data: " + json.dumps({"choices": [{"delta": {"content": "World"}}]}).encode(),
+            b"data: [DONE]",
+        ]
+    )
     with patch.object(pipe, "_retryable_request", return_value=sse):
         result = await pipe.pipe(
-            {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+            {
+                "model": "openai/gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            }
         )
         # result is an async generator
         chunks = [chunk async for chunk in result]
         return "".join(chunks)
+
 
 res = asyncio.run(_test_pipe_stream())
 _assert("World" in res, "pipe stream: content correct")
@@ -1031,8 +1124,16 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only
 mock_models_pricing = {
     "data": [
         {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
-        {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (Free)", "pricing": {"prompt": "0", "completion": "0"}},
-        {"id": "google/gemma-3-1b-it", "name": "Gemma 3 1B", "pricing": {"prompt": "0", "completion": "0"}},
+        {
+            "id": "google/gemini-2.0-flash-exp:free",
+            "name": "Gemini 2.0 Flash (Free)",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+        {
+            "id": "google/gemma-3-1b-it",
+            "name": "Gemma 3 1B",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
     ]
 }
 mock_resp_pricing = MagicMock()
@@ -1050,9 +1151,7 @@ _assert("google/gemma-3-1b-it" in free_ids, "pipes FREE_ONLY: pricing-based free
 _assert("openai/gpt-4o" not in free_ids, "pipes FREE_ONLY: paid model excluded")
 
 # 15c. Provider filter
-pipe.valves = Pipe.Valves(
-    OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="openai"
-)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="openai")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=mock_resp):
     models = pipe.pipes()
@@ -1089,15 +1188,23 @@ with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
 _tilde_ids = {m["id"] for m in _tilde_models}
 _assert("openai/gpt-4o" in _tilde_ids, "pipes tilde: base openai model included")
 _assert("~openai/gpt-latest" in _tilde_ids, "pipes tilde: ~openai model included by openai filter")
-_assert("~anthropic/claude-haiku-latest" not in _tilde_ids, "pipes tilde: ~anthropic excluded by openai filter")
-_assert("google/gemini-2.0-flash" not in _tilde_ids, "pipes tilde: google excluded by openai filter")
+_assert(
+    "~anthropic/claude-haiku-latest" not in _tilde_ids,
+    "pipes tilde: ~anthropic excluded by openai filter",
+)
+_assert(
+    "google/gemini-2.0-flash" not in _tilde_ids, "pipes tilde: google excluded by openai filter"
+)
 
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PROVIDERS="anthropic")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
     _tilde_models2 = pipe.pipes()
 _tilde_ids2 = {m["id"] for m in _tilde_models2}
-_assert("~anthropic/claude-haiku-latest" in _tilde_ids2, "pipes tilde: ~anthropic model included by anthropic filter")
+_assert(
+    "~anthropic/claude-haiku-latest" in _tilde_ids2,
+    "pipes tilde: ~anthropic model included by anthropic filter",
+)
 _assert("openai/gpt-4o" not in _tilde_ids2, "pipes tilde: openai excluded by anthropic filter")
 
 pipe.valves = Pipe.Valves(
@@ -1107,13 +1214,14 @@ pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_mock_resp_tilde):
     _tilde_models3 = pipe.pipes()
 _tilde_ids3 = {m["id"] for m in _tilde_models3}
-_assert("~anthropic/claude-haiku-latest" not in _tilde_ids3, "pipes tilde: ~anthropic excluded by inverted anthropic filter")
+_assert(
+    "~anthropic/claude-haiku-latest" not in _tilde_ids3,
+    "pipes tilde: ~anthropic excluded by inverted anthropic filter",
+)
 _assert("openai/gpt-4o" in _tilde_ids3, "pipes tilde: openai kept by inverted anthropic filter")
 
 # 15e. PREFIX
-pipe.valves = Pipe.Valves(
-    OPENROUTER_API_KEY="test-key", MODEL_PREFIX="🔥 "
-)
+pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", MODEL_PREFIX="🔥 ")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=mock_resp):
     models = pipe.pipes()
@@ -1150,7 +1258,9 @@ pipe._models_cache = None
 _mock_models_500 = MagicMock()
 _mock_models_500.status_code = 500
 _mock_models_500.json.return_value = {"error": {"message": "Internal Server Error"}}
-_mock_models_500.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_models_500)
+_mock_models_500.raise_for_status.side_effect = req_lib.exceptions.HTTPError(
+    response=_mock_models_500
+)
 
 with patch.object(pipe._session, "get", return_value=_mock_models_500):
     models = pipe.pipes()
@@ -1174,7 +1284,9 @@ _assert("User not found" in models[0]["name"], "pipes invalid key 401: detail in
 # 15j. Invalid API key — returns 502 (malformed key, Clerk error)
 mock_auth_502 = MagicMock()
 mock_auth_502.status_code = 502
-mock_auth_502.json.return_value = {"error": {"message": "Failed to authenticate request with Clerk"}}
+mock_auth_502.json.return_value = {
+    "error": {"message": "Failed to authenticate request with Clerk"}
+}
 mock_auth_502.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=mock_auth_502)
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
 pipe._models_cache = None
@@ -1182,17 +1294,21 @@ with patch.object(pipe._session, "get", return_value=mock_auth_502):
     models = pipe.pipes()
 _assert(len(models) == 1, "pipes invalid key 502: 1 error entry")
 _assert(models[0]["id"] == "error", "pipes invalid key 502: error id")
-_assert("HTTP 502" in models[0]["name"], "pipes upstream 502: not misclassified as invalid credentials")
+_assert(
+    "HTTP 502" in models[0]["name"], "pipes upstream 502: not misclassified as invalid credentials"
+)
 _assert("502" in models[0]["name"], "pipes invalid key 502: status code")
 
 # 15k. Network error returns error entry
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 pipe._models_cache = None
 
-with patch.object(pipe._session, "get", side_effect=req_lib.exceptions.ConnectionError("connection failed")):
+with patch.object(
+    pipe._session, "get", side_effect=req_lib.exceptions.ConnectionError("connection failed")
+):
     models = pipe.pipes()
 _assert(models[0]["id"] == "error", "pipes connection error: error id")
-_assert("connection failed" in models[0]["name"].lower(), "pipes connection error: detail shown")
+_assert("Unable to fetch" in models[0]["name"], "pipes connection error: sanitized message")
 
 # 15l. Empty data from API → "No models found"
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
@@ -1242,7 +1358,9 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="bad-key")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_close_auth_resp):
     pipe.pipes()
-_assert(_close_auth_resp.close.call_count == 1, "pipes response.close(): called after 401 auth error")
+_assert(
+    _close_auth_resp.close.call_count == 1, "pipes response.close(): called after 401 auth error"
+)
 
 # 15p. response.close() called via finally when response.json() raises (JSONDecodeError)
 _close_json_err_resp = MagicMock()
@@ -1253,7 +1371,10 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_close_json_err_resp):
     pipe.pipes()
-_assert(_close_json_err_resp.close.call_count == 1, "pipes response.close(): called after JSON decode error")
+_assert(
+    _close_json_err_resp.close.call_count == 1,
+    "pipes response.close(): called after JSON decode error",
+)
 
 # 15q. response.close() called via finally on success path
 _close_ok_resp = MagicMock()
@@ -1264,7 +1385,9 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_close_ok_resp):
     pipe.pipes()
-_assert(_close_ok_resp.close.call_count == 1, "pipes response.close(): called after successful listing")
+_assert(
+    _close_ok_resp.close.call_count == 1, "pipes response.close(): called after successful listing"
+)
 
 # ── 16. Valve json_schema_extra ──────────────────────────────────────────────
 
@@ -1332,7 +1455,9 @@ _assert(_is_safe_url(None) is False, "None not safe")
 
 _section("18. _clean_model_id()")
 
-_assert(Pipe._clean_model_id("openrouter.google/gemini") == "google/gemini", "strips manifold prefix")
+_assert(
+    Pipe._clean_model_id("openrouter.google/gemini") == "google/gemini", "strips manifold prefix"
+)
 _assert(Pipe._clean_model_id("google/gemini") == "google/gemini", "no prefix → unchanged")
 _assert(Pipe._clean_model_id("") == "", "empty string → empty")
 _assert(Pipe._clean_model_id("a.b.c/d") == "b.c/d", "no '/' before first '.' → strip prefix")
@@ -1341,13 +1466,11 @@ _assert(
     "'/' before '.' → preserve dotted model name",
 )
 _assert(
-    Pipe._clean_model_id("openrouter.anthropic/claude-3.5-sonnet")
-    == "anthropic/claude-3.5-sonnet",
+    Pipe._clean_model_id("openrouter.anthropic/claude-3.5-sonnet") == "anthropic/claude-3.5-sonnet",
     "manifold prefix stripped, dotted model preserved",
 )
 _assert(
-    Pipe._clean_model_id("meta-llama/llama-3.1-8b-instruct")
-    == "meta-llama/llama-3.1-8b-instruct",
+    Pipe._clean_model_id("meta-llama/llama-3.1-8b-instruct") == "meta-llama/llama-3.1-8b-instruct",
     "real OpenRouter ID with dots preserved",
 )
 _assert(
@@ -1371,18 +1494,22 @@ _pipe_cache._models_cache = None
 
 _mock_cache_resp = MagicMock()
 _mock_cache_resp.status_code = 200
-_mock_cache_resp.json.return_value = {"data": [
-    {"id": "openai/gpt-4o", "name": "GPT-4o"},
-]}
+_mock_cache_resp.json.return_value = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+    ]
+}
 _mock_cache_resp.raise_for_status = MagicMock()
 
 _call_count = 0
 _original_get = _pipe_cache._session.get
 
+
 def _counting_get(*args, **kwargs):
     global _call_count
     _call_count += 1
     return _mock_cache_resp
+
 
 with patch.object(_pipe_cache._session, "get", side_effect=_counting_get):
     _pipe_cache.pipes()  # first call → populates cache
@@ -1416,18 +1543,22 @@ _section("19d. OUTPUT_MODALITIES query param on /models")
 
 _mock_modalities_resp = MagicMock()
 _mock_modalities_resp.status_code = 200
-_mock_modalities_resp.json.return_value = {"data": [
-    {"id": "openai/gpt-4o", "name": "GPT-4o"},
-    {"id": "openai/gpt-4o-mini-tts-2025-12-15", "name": "GPT-4o Mini TTS"},
-]}
+_mock_modalities_resp.json.return_value = {
+    "data": [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "openai/gpt-4o-mini-tts-2025-12-15", "name": "GPT-4o Mini TTS"},
+    ]
+}
 _mock_modalities_resp.raise_for_status = MagicMock()
 
 _captured_kwargs = {}
+
 
 def _capture_get(*args, **kwargs):
     _captured_kwargs.clear()
     _captured_kwargs.update(kwargs)
     return _mock_modalities_resp
+
 
 # Default valve → params should request 'all'
 _pipe_mod = Pipe()
@@ -1482,15 +1613,20 @@ _pipe_mod_cache._models_cache = None
 
 _modalities_call_count = 0
 
+
 def _counting_modalities_get(*args, **kwargs):
     global _modalities_call_count
     _modalities_call_count += 1
     return _mock_modalities_resp
 
+
 with patch.object(_pipe_mod_cache._session, "get", side_effect=_counting_modalities_get):
     _pipe_mod_cache.pipes()  # populates cache
     _pipe_mod_cache.pipes()  # cache hit
-_assert(_modalities_call_count == 1, "OUTPUT_MODALITIES cache hit: 1 API call across 2 pipes() invocations")
+_assert(
+    _modalities_call_count == 1,
+    "OUTPUT_MODALITIES cache hit: 1 API call across 2 pipes() invocations",
+)
 
 _pipe_mod_cache.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", OUTPUT_MODALITIES="text")
 _modalities_call_count = 0
@@ -1507,8 +1643,16 @@ _section("19f. FREE_MODEL_FILTER trinary")
 _mock_pricing = {
     "data": [
         {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
-        {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (Free)", "pricing": {"prompt": "0", "completion": "0"}},
-        {"id": "google/gemma-3-1b-it", "name": "Gemma 3 1B", "pricing": {"prompt": "0", "completion": "0"}},
+        {
+            "id": "google/gemini-2.0-flash-exp:free",
+            "name": "Gemini 2.0 Flash (Free)",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+        {
+            "id": "google/gemma-3-1b-it",
+            "name": "Gemma 3 1B",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
     ]
 }
 _mock_pricing_resp = MagicMock()
@@ -1533,14 +1677,20 @@ with patch.object(_pipe_ff._session, "get", return_value=_mock_pricing_resp):
 _paid_ids = {m["id"] for m in _paid}
 _assert("openai/gpt-4o" in _paid_ids, "FREE_MODEL_FILTER='exclude': paid model kept")
 _assert(":free" not in str(_paid_ids), "FREE_MODEL_FILTER='exclude': :free suffix excluded")
-_assert("google/gemma-3-1b-it" not in _paid_ids, "FREE_MODEL_FILTER='exclude': zero-pricing excluded")
+_assert(
+    "google/gemma-3-1b-it" not in _paid_ids, "FREE_MODEL_FILTER='exclude': zero-pricing excluded"
+)
 
 # ── 19g. TOOL_CALLING_FILTER ────────────────────────────────────────────────
 _section("19g. TOOL_CALLING_FILTER")
 
 _mock_tools = {
     "data": [
-        {"id": "openai/gpt-4o", "name": "GPT-4o", "supported_parameters": ["tools", "tool_choice", "temperature"]},
+        {
+            "id": "openai/gpt-4o",
+            "name": "GPT-4o",
+            "supported_parameters": ["tools", "tool_choice", "temperature"],
+        },
         {"id": "openai/o1-mini", "name": "o1-mini", "supported_parameters": ["temperature"]},
         {"id": "openai/gpt-3.5-turbo", "name": "GPT-3.5", "supported_parameters": ["tool_choice"]},
     ]
@@ -1557,7 +1707,9 @@ with patch.object(_pipe_tc._session, "get", return_value=_mock_tools_resp):
     _tc_models = _pipe_tc.pipes()
 _tc_ids = {m["id"] for m in _tc_models}
 _assert("openai/gpt-4o" in _tc_ids, "TOOL_CALLING_FILTER='only': model with 'tools' kept")
-_assert("openai/gpt-3.5-turbo" in _tc_ids, "TOOL_CALLING_FILTER='only': model with 'tool_choice' kept")
+_assert(
+    "openai/gpt-3.5-turbo" in _tc_ids, "TOOL_CALLING_FILTER='only': model with 'tool_choice' kept"
+)
 _assert("openai/o1-mini" not in _tc_ids, "TOOL_CALLING_FILTER='only': non-tool model dropped")
 
 _pipe_tc = Pipe()
@@ -1566,7 +1718,9 @@ _pipe_tc._models_cache = None
 with patch.object(_pipe_tc._session, "get", return_value=_mock_tools_resp):
     _tc_excl = _pipe_tc.pipes()
 _tc_excl_ids = {m["id"] for m in _tc_excl}
-_assert(_tc_excl_ids == {"openai/o1-mini"}, "TOOL_CALLING_FILTER='exclude': only non-tool model kept")
+_assert(
+    _tc_excl_ids == {"openai/o1-mini"}, "TOOL_CALLING_FILTER='exclude': only non-tool model kept"
+)
 
 # ── 19h. MODEL_VARIANTS expansion ───────────────────────────────────────────
 _section("19h. MODEL_VARIANTS expansion")
@@ -1594,7 +1748,10 @@ _var_ids = {m["id"] for m in _var_models}
 _assert("openai/gpt-4o" in _var_ids, "MODEL_VARIANTS: base model preserved")
 _assert("openai/gpt-4o:nitro" in _var_ids, "MODEL_VARIANTS: :nitro variant added")
 _assert("openai/gpt-4o:exacto" in _var_ids, "MODEL_VARIANTS: :exacto variant added")
-_assert("anthropic/claude-3.5-sonnet:thinking" not in _var_ids, "MODEL_VARIANTS: unavailable catalog variant never fabricated")
+_assert(
+    "anthropic/claude-3.5-sonnet:thinking" not in _var_ids,
+    "MODEL_VARIANTS: unavailable catalog variant never fabricated",
+)
 _nitro_entry = next(m for m in _var_models if m["id"] == "openai/gpt-4o:nitro")
 _assert("Nitro" in _nitro_entry["name"], "MODEL_VARIANTS: tag label appended to display name")
 _assert("GPT-4o" in _nitro_entry["name"], "MODEL_VARIANTS: base name retained")
@@ -1614,9 +1771,7 @@ _assert("openai/gpt-4o:nitro" in _var_ids, "MODEL_VARIANTS: valid variant still 
 
 # Unrecognised tag → skipped
 _pipe_var = Pipe()
-_pipe_var.valves = Pipe.Valves(
-    OPENROUTER_API_KEY="k", MODEL_VARIANTS="openai/gpt-4o:bogus"
-)
+_pipe_var.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_VARIANTS="openai/gpt-4o:bogus")
 _pipe_var._models_cache = None
 with patch.object(_pipe_var._session, "get", return_value=_mock_var_resp):
     _var_models = _pipe_var.pipes()
@@ -1677,8 +1832,10 @@ _pipe_zdr._models_cache = None
 with patch.object(_pipe_zdr._session, "get", side_effect=_zdr_router):
     _zdr_models = _pipe_zdr.pipes()
 _zdr_ids = {m["id"] for m in _zdr_models}
-_assert(_zdr_ids == {"openai/gpt-4o", "anthropic/claude-opus-4.8"},
-        "ZDR_MODELS_ONLY: catalog narrowed to ZDR-capable IDs (model_id + canonical_slug)")
+_assert(
+    _zdr_ids == {"openai/gpt-4o", "anthropic/claude-opus-4.8"},
+    "ZDR_MODELS_ONLY: catalog narrowed to ZDR-capable IDs (model_id + canonical_slug)",
+)
 
 # Loader caches: no second HTTP call when called twice
 _pipe_zdr2 = Pipe()
@@ -1699,7 +1856,9 @@ with patch.object(_pipe_zdr2._session, "get", side_effect=_counting_zdr_router):
 _assert(_zdr_call_count == 1, "_load_zdr_model_ids: cached after first call")
 
 # ── 19j. _build_cache_key includes new filters ──────────────────────────────
-_section("19j. cache key includes FREE_MODEL_FILTER / TOOL_CALLING_FILTER / ZDR_MODELS_ONLY / MODEL_VARIANTS")
+_section(
+    "19j. cache key includes FREE_MODEL_FILTER / TOOL_CALLING_FILTER / ZDR_MODELS_ONLY / MODEL_VARIANTS"
+)
 
 _keys = []
 for v in [
@@ -1740,15 +1899,24 @@ _assert(_url_http.OPENROUTER_BASE_URL == "http://localhost:8080", "http URL acce
 
 _section("21. pipe() guards")
 
+
 # 21a. model_id == "error" returns actionable message
 async def _test_pipe_error_model():
     p = Pipe()
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
-    return await p.pipe({"model": "openrouter.error", "messages": [{"role": "user", "content": "hi"}], "stream": False})
+    return await p.pipe(
+        {
+            "model": "openrouter.error",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+    )
+
 
 _res_err_model = asyncio.run(_test_pipe_error_model())
 _assert("No valid model selected" in _res_err_model, "error model guard: actionable message")
 _assert("OpenRouter Error:" in _res_err_model, "error model guard: has prefix")
+
 
 # 21b. Empty messages returns error
 async def _test_pipe_empty_msgs():
@@ -1756,15 +1924,18 @@ async def _test_pipe_empty_msgs():
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
     return await p.pipe({"model": "openai/gpt-4o", "messages": [], "stream": False})
 
+
 _res_empty_msgs = asyncio.run(_test_pipe_empty_msgs())
 _assert("No messages provided" in _res_empty_msgs, "empty messages guard: clear error")
 _assert("OpenRouter Error:" in _res_empty_msgs, "empty messages guard: has prefix")
+
 
 # 21c. No messages key at all
 async def _test_pipe_no_msgs_key():
     p = Pipe()
     p.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
     return await p.pipe({"model": "openai/gpt-4o", "stream": False})
+
 
 _res_no_key = asyncio.run(_test_pipe_no_msgs_key())
 _assert("No messages provided" in _res_no_key, "missing messages key: clear error")
@@ -1785,10 +1956,14 @@ _pipe_fb = Pipe()
 _pipe_fb.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 
 with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_fallback_resp):
-    _fb_result = _pipe_fb._non_stream_response({}, {
-        "model": "openai/gpt-4o",
-        "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
-    }, _pipe_fb.valves)
+    _fb_result = _pipe_fb._non_stream_response(
+        {},
+        {
+            "model": "openai/gpt-4o",
+            "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
+        },
+        _pipe_fb.valves,
+    )
 _assert("Responded by: anthropic/claude-3.5-sonnet" in _fb_result, "fallback attribution shown")
 
 # 22b. No attribution when primary model responds
@@ -1800,10 +1975,14 @@ _mock_primary_resp = MagicMock()
 _mock_primary_resp.json.return_value = _mock_primary_json
 
 with patch.object(_pipe_fb, "_retryable_request", return_value=_mock_primary_resp):
-    _primary_result = _pipe_fb._non_stream_response({}, {
-        "model": "openai/gpt-4o",
-        "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
-    }, _pipe_fb.valves)
+    _primary_result = _pipe_fb._non_stream_response(
+        {},
+        {
+            "model": "openai/gpt-4o",
+            "models": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet"],
+        },
+        _pipe_fb.valves,
+    )
 _assert("Responded by" not in _primary_result, "no attribution when primary responds")
 
 # ── 23. Citation edge cases ─────────────────────────────────────────────────
@@ -1838,11 +2017,13 @@ _pipe_skip.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 _pipe_skip._models_cache = None
 _mock_skip_resp = MagicMock()
 _mock_skip_resp.status_code = 200
-_mock_skip_resp.json.return_value = {"data": [
-    {"name": "Missing ID Model"},
-    {"id": "openai/gpt-4o", "name": "GPT-4o"},
-    {"id": "", "name": "Empty ID Model"},
-]}
+_mock_skip_resp.json.return_value = {
+    "data": [
+        {"name": "Missing ID Model"},
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "", "name": "Empty ID Model"},
+    ]
+}
 _mock_skip_resp.raise_for_status = MagicMock()
 
 with patch.object(_pipe_skip._session, "get", return_value=_mock_skip_resp):
@@ -1856,10 +2037,16 @@ _pipe_free.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="only"
 _pipe_free._models_cache = None
 _mock_free_resp = MagicMock()
 _mock_free_resp.status_code = 200
-_mock_free_resp.json.return_value = {"data": [
-    {"id": "openai/gpt-4o:free", "name": "GPT-4o Free", "pricing": {"prompt": "0", "completion": "0"}},
-    {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
-]}
+_mock_free_resp.json.return_value = {
+    "data": [
+        {
+            "id": "openai/gpt-4o:free",
+            "name": "GPT-4o Free",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
+        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "5", "completion": "15"}},
+    ]
+}
 _mock_free_resp.raise_for_status = MagicMock()
 
 with patch.object(_pipe_free._session, "get", return_value=_mock_free_resp):
@@ -1869,7 +2056,10 @@ _assert(":free" in _free_models[0]["id"], "FREE_ONLY: model has :free suffix")
 
 # 24c. Provider icon utility (static method)
 _assert(Pipe.get_provider_icon("openai") is not None, "provider icon: openai icon available")
-_assert("images/icons" in Pipe.get_provider_icon("openai"), "provider icon: openai URL uses /images/icons/")
+_assert(
+    "images/icons" in Pipe.get_provider_icon("openai"),
+    "provider icon: openai URL uses /images/icons/",
+)
 _assert(Pipe.get_provider_icon("unknown-xyz") is None, "provider icon: unknown returns None")
 
 # ── 25. _sync_model_icons ───────────────────────────────────────────────────
@@ -1879,12 +2069,14 @@ _section("25. _sync_model_icons()")
 # 25a. Graceful no-op outside Open WebUI (ImportError on open_webui.models.models)
 _pipe_sync = Pipe()
 _pipe_sync.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SYNC_PROVIDER_ICONS=True)
-_pipe_sync._sync_model_icons([
-    {"id": "openai/gpt-4o", "name": "GPT-4o"},
-    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude"},
-    {"id": "error", "name": "Error model"},
-    {"id": "unknown-provider/model", "name": "Unknown"},
-])
+_pipe_sync._sync_model_icons(
+    [
+        {"id": "openai/gpt-4o", "name": "GPT-4o"},
+        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude"},
+        {"id": "error", "name": "Error model"},
+        {"id": "unknown-provider/model", "name": "Unknown"},
+    ]
+)
 _assert(True, "_sync_model_icons: no error outside Open WebUI (graceful ImportError)")
 
 # 25b. SYNC_PROVIDER_ICONS=False skips sync entirely
@@ -1913,7 +2105,10 @@ with patch.object(_pipe_with_sync._session, "get", return_value=_mock_withsync):
         _assert(mock_sync.called, "SYNC_PROVIDER_ICONS=True: _sync_model_icons called")
 
 # 25d. Valve default is True
-_assert(Pipe.Valves(OPENROUTER_API_KEY="k").SYNC_PROVIDER_ICONS is True, "SYNC_PROVIDER_ICONS default is True")
+_assert(
+    Pipe.Valves(OPENROUTER_API_KEY="k").SYNC_PROVIDER_ICONS is True,
+    "SYNC_PROVIDER_ICONS default is True",
+)
 
 # 25e. No function_id → returns early without DB calls
 # function_id is cached in __init__; pipes created in tests have _function_id=None
@@ -1929,7 +2124,9 @@ _fake_owui_nf.ModelParams = MagicMock()
 try:
     sys.modules["open_webui.models.models"] = _fake_owui_nf
     # _pipe_nofunc._function_id is None (no "function_" prefix at init time) → skip
-    _assert(_pipe_nofunc._function_id is None, "_sync_model_icons: _function_id is None outside OWUI")
+    _assert(
+        _pipe_nofunc._function_id is None, "_sync_model_icons: _function_id is None outside OWUI"
+    )
     _pipe_nofunc._sync_model_icons([{"id": "openai/gpt-4o", "name": "GPT-4o"}])
     _assert(
         not _mock_Models_nf.get_model_by_id.called,
@@ -1955,10 +2152,12 @@ _fake_owui_f.ModelMeta = _mock_ModelMeta_f
 _fake_owui_f.ModelParams = _mock_ModelParams_f
 try:
     sys.modules["open_webui.models.models"] = _fake_owui_f
-    _pipe_func._sync_model_icons([
-        {"id": "openai/gpt-4o", "name": "GPT-4o"},
-        {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5"},
-    ])
+    _pipe_func._sync_model_icons(
+        [
+            {"id": "openai/gpt-4o", "name": "GPT-4o"},
+            {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5"},
+        ]
+    )
     # Verify DB lookups used prefixed IDs
     _lookup_ids = [c.args[0] for c in _mock_Models_f.get_model_by_id.call_args_list]
     _assert(
@@ -2064,13 +2263,30 @@ finally:
 _is_owui = mod._is_owui_managed_icon
 _assert(_is_owui(""), "_is_owui_managed_icon: empty string → True (no icon)")
 _assert(_is_owui("data:image/svg+xml;base64,ABC"), "_is_owui_managed_icon: data: URL → True")
-_assert(_is_owui("https://openrouter.ai/images/models/openai.svg"), "_is_owui_managed_icon: old /images/models/ URL → True")
-_assert(_is_owui("https://openrouter.ai/images/icons/OpenAI.svg"), "_is_owui_managed_icon: new /images/icons/ URL → True")
-_assert(_is_owui("https://openrouter.ai/images/icons/Anthropic.svg"), "_is_owui_managed_icon: icons path anthropic → True")
-_assert(not _is_owui("https://custom-icon.example.com/icon.png"), "_is_owui_managed_icon: external URL → False")
-_assert(not _is_owui("https://cdn.openai.com/logo.png"), "_is_owui_managed_icon: other https URL → False")
 _assert(
-    _is_owui("https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&url=https://x.ai/&size=256"),
+    _is_owui("https://openrouter.ai/images/models/openai.svg"),
+    "_is_owui_managed_icon: old /images/models/ URL → True",
+)
+_assert(
+    _is_owui("https://openrouter.ai/images/icons/OpenAI.svg"),
+    "_is_owui_managed_icon: new /images/icons/ URL → True",
+)
+_assert(
+    _is_owui("https://openrouter.ai/images/icons/Anthropic.svg"),
+    "_is_owui_managed_icon: icons path anthropic → True",
+)
+_assert(
+    not _is_owui("https://custom-icon.example.com/icon.png"),
+    "_is_owui_managed_icon: external URL → False",
+)
+_assert(
+    not _is_owui("https://cdn.openai.com/logo.png"),
+    "_is_owui_managed_icon: other https URL → False",
+)
+_assert(
+    _is_owui(
+        "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&url=https://x.ai/&size=256"
+    ),
     "_is_owui_managed_icon: gstatic faviconV2 URL → True (registry-sourced, overwriteable)",
 )
 
@@ -2081,10 +2297,22 @@ _section("25j. provider registry auto-discovery")
 _registry_payload = {
     "data": [
         {"slug": "openai", "name": "OpenAI", "icon": {"url": "/images/icons/OpenAI.svg"}},
-        {"slug": "xai", "name": "xAI", "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"}},
-        {"slug": "arcee-ai", "name": "Arcee AI", "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://www.arcee.ai/&size=256"}},
+        {
+            "slug": "xai",
+            "name": "xAI",
+            "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"},
+        },
+        {
+            "slug": "arcee-ai",
+            "name": "Arcee AI",
+            "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://www.arcee.ai/&size=256"},
+        },
         {"slug": "broken", "name": "Broken", "icon": {"url": ""}},  # empty icon — must be skipped
-        {"slug": "unsafe", "name": "Unsafe", "icon": {"url": "javascript:alert(1)"}},  # unsafe — must be skipped
+        {
+            "slug": "unsafe",
+            "name": "Unsafe",
+            "icon": {"url": "javascript:alert(1)"},
+        },  # unsafe — must be skipped
         {"slug": "noicon", "name": "NoIcon"},  # no icon key at all
     ]
 }
@@ -2096,12 +2324,15 @@ _pipe_reg = Pipe()
 _pipe_reg.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 
 _reg_call_count = 0
+
+
 def _counting_reg_get(url, *args, **kwargs):
     global _reg_call_count
     if "all-providers" in url:
         _reg_call_count += 1
         return _mock_reg_resp
     return _mock_reg_resp  # fall-through is fine for this test
+
 
 with patch.object(_pipe_reg._session, "get", side_effect=_counting_reg_get):
     _r1 = _pipe_reg._load_provider_registry()
@@ -2164,13 +2395,16 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
 
 # 25k2. USE_GSTATIC_FAVICONS default OFF → gstatic registry icons suppressed
 _pipe_nogstatic = Pipe()
-_pipe_nogstatic.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_GSTATIC_FAVICONS defaults False
+_pipe_nogstatic.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="test-key"
+)  # USE_GSTATIC_FAVICONS defaults False
 with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get):
     # arcee-ai is now hardcoded after the May-2026 icon expansion, so the
     # hardcoded-table lookup wins over the domain-favicon fallback even
     # with gstatic suppressed. Pop it temporarily so the test exercises
     # the gstatic→domain-favicon path it was designed to verify.
     import openrouter_pipe as _mp_test_ng
+
     _saved_arc_hard = _mp_test_ng._PROVIDER_ICONS.pop("arcee-ai", None)
     try:
         _icon_arcee = _pipe_nogstatic._get_provider_icon("arcee-ai")
@@ -2183,7 +2417,8 @@ with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get
             _mp_test_ng._PROVIDER_ICONS["arcee-ai"] = _saved_arc_hard
     # openai is in the hardcoded dict → still resolves even with gstatic off
     _assert(
-        _pipe_nogstatic._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+        _pipe_nogstatic._get_provider_icon("openai")
+        == "https://openrouter.ai/images/icons/OpenAI.svg",
         "_get_provider_icon: hardcoded icon still returned with gstatic off",
     )
 
@@ -2197,6 +2432,7 @@ _pipe_no_domain.valves = Pipe.Valves(
 with patch.object(_pipe_no_domain._session, "get", side_effect=_counting_reg_get):
     # Same trick: drop the hardcoded arcee-ai entry for this assertion.
     import openrouter_pipe as _mp_test_nd
+
     _saved_arc_hard2 = _mp_test_nd._PROVIDER_ICONS.pop("arcee-ai", None)
     try:
         _icon_arcee_off = _pipe_no_domain._get_provider_icon("arcee-ai")
@@ -2213,10 +2449,13 @@ _pipe_fail = Pipe()
 _pipe_fail.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 
 _fail_call_count = 0
+
+
 def _failing_reg_get(*args, **kwargs):
     global _fail_call_count
     _fail_call_count += 1
     raise Exception("simulated network failure")
+
 
 with patch.object(_pipe_fail._session, "get", side_effect=_failing_reg_get):
     _r_fail = _pipe_fail._load_provider_registry()
@@ -2245,7 +2484,9 @@ _mock_reg_403.json.return_value = {"data": []}
 _pipe_403 = Pipe()
 _pipe_403.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 _log_403_msgs = []
-with patch("builtins.print", side_effect=lambda *a, **kw: _log_403_msgs.append(" ".join(str(x) for x in a))):
+with patch(
+    "builtins.print", side_effect=lambda *a, **kw: _log_403_msgs.append(" ".join(str(x) for x in a))
+):
     with patch.object(_pipe_403._session, "get", return_value=_mock_reg_403):
         _r_403 = _pipe_403._load_provider_registry()
 _assert(_r_403 == {}, "registry: HTTP 403 on first fetch → empty dict")
@@ -2273,17 +2514,20 @@ _pipe_fail_backoff._provider_registry = {"openai": "https://example.com/openai.s
 _pipe_fail_backoff._provider_registry_ts = _time_mod.monotonic() - _PROVIDER_REGISTRY_TTL - 1
 
 _backoff_call_count = 0
+
+
 def _backoff_403_get(url, *args, **kwargs):
     global _backoff_call_count
     if "all-providers" in url:
         _backoff_call_count += 1
     return _mock_reg_403
 
+
 with patch.object(_pipe_fail_backoff._session, "get", side_effect=_backoff_403_get):
-    _pipe_fail_backoff._load_provider_registry()           # fetch 1 → fail, set backoff ts
+    _pipe_fail_backoff._load_provider_registry()  # fetch 1 → fail, set backoff ts
     # expire the back-off window
     _pipe_fail_backoff._provider_registry_ts -= _PROVIDER_REGISTRY_FAIL_TTL + 1
-    _pipe_fail_backoff._load_provider_registry()           # fetch 2 → retried after backoff
+    _pipe_fail_backoff._load_provider_registry()  # fetch 2 → retried after backoff
 _assert(_backoff_call_count == 2, "registry: re-fetches after FAIL_TTL back-off expires")
 
 # 25n. Registry TTL expiry forces re-fetch
@@ -2291,16 +2535,19 @@ _pipe_ttl = Pipe()
 _pipe_ttl.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 
 _ttl_call_count = 0
+
+
 def _ttl_reg_get(url, *args, **kwargs):
     global _ttl_call_count
     if "all-providers" in url:
         _ttl_call_count += 1
     return _mock_reg_resp  # reuse payload mock
 
+
 with patch.object(_pipe_ttl._session, "get", side_effect=_ttl_reg_get):
-    _pipe_ttl._load_provider_registry()               # first fetch
+    _pipe_ttl._load_provider_registry()  # first fetch
     _pipe_ttl._provider_registry_ts -= _PROVIDER_REGISTRY_TTL + 1  # expire TTL
-    _pipe_ttl._load_provider_registry()               # should re-fetch
+    _pipe_ttl._load_provider_registry()  # should re-fetch
 _assert(_ttl_call_count == 2, "registry: re-fetches after TTL expiry")
 
 # 25o. _icons_synced cleared on model cache refresh
@@ -2340,7 +2587,10 @@ pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 
 # 26a. Reasoning + content in same chunk → <think>…</think> then content
 sse_mixed_chunk = [
-    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "Inner thought", "content": "Answer"}}]}).encode(),
+    b"data: "
+    + json.dumps(
+        {"choices": [{"delta": {"reasoning": "Inner thought", "content": "Answer"}}]}
+    ).encode(),
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_mixed_chunk)):
@@ -2353,7 +2603,8 @@ _assert("Answer" in full, "stream mixed chunk: content present after think")
 
 # 26b. Empty reasoning string → <think> NOT opened
 sse_empty_reason = [
-    b"data: " + json.dumps({"choices": [{"delta": {"reasoning": "", "content": "Only content"}}]}).encode(),
+    b"data: "
+    + json.dumps({"choices": [{"delta": {"reasoning": "", "content": "Only content"}}]}).encode(),
     b"data: [DONE]",
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_reason)):
@@ -2369,7 +2620,7 @@ sse_empty_content = [
 ]
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_empty_content)):
     output = list(pipe._stream_response({}, {}, pipe.valves))
-_assert("".join(output) == "", "stream empty content string: nothing yielded")
+_assert("OpenRouter Error:" in "".join(output), "stream empty content string: explicit error")
 
 # 26d. Non-dict item in choices[0] → skipped safely, next chunk processed
 sse_bad_choice = [
@@ -2391,7 +2642,9 @@ sse_citations_first = [
 with patch.object(pipe, "_retryable_request", return_value=_make_sse_response(sse_citations_first)):
     output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
-_assert("https://example.com" in full, "stream citations-only chunk: citation applied to later content")
+_assert(
+    "https://example.com" in full, "stream citations-only chunk: citation applied to later content"
+)
 _assert("Citations:" in full, "stream citations-only chunk: citation list appended")
 
 # 26f. Generic exception raised by _retryable_request → yields a sanitized
@@ -2400,8 +2653,13 @@ with patch.object(pipe, "_retryable_request", side_effect=ValueError("unexpected
     output = list(pipe._stream_response({}, {}, pipe.valves))
 full = "".join(output)
 _assert("OpenRouter Error" in full, "stream generic exception: error yielded")
-_assert("Internal stream error" in full, "stream generic exception: sanitized message (no internal detail)")
-_assert("unexpected" not in full, "stream generic exception: internal exception text NOT leaked to chat")
+_assert(
+    "Internal stream error" in full,
+    "stream generic exception: sanitized message (no internal detail)",
+)
+_assert(
+    "unexpected" not in full, "stream generic exception: internal exception text NOT leaked to chat"
+)
 
 # ── 27. pipes() additional paths ─────────────────────────────────────────────
 
@@ -2447,7 +2705,11 @@ _mock_invalid_price.status_code = 200
 _mock_invalid_price.raise_for_status = MagicMock()
 _mock_invalid_price.json.return_value = {
     "data": [
-        {"id": "some/model", "name": "Model", "pricing": {"prompt": "not-a-number", "completion": "0"}},
+        {
+            "id": "some/model",
+            "name": "Model",
+            "pricing": {"prompt": "not-a-number", "completion": "0"},
+        },
     ]
 }
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key", FREE_MODEL_FILTER="only")
@@ -2455,13 +2717,17 @@ pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_mock_invalid_price):
     models = pipe.pipes()
 _assert(models[0]["id"] == "error", "pipes FREE_ONLY invalid pricing: model excluded → error entry")
-_assert("No free models" in models[0]["name"], "pipes FREE_ONLY invalid pricing: correct error message")
+_assert(
+    "No free models" in models[0]["name"], "pipes FREE_ONLY invalid pricing: correct error message"
+)
 
 # 27d. HTTPError on /models with non-JSON body → graceful error (no crash)
 _mock_5xx_no_json = MagicMock()
 _mock_5xx_no_json.status_code = 503
 _mock_5xx_no_json.json.side_effect = ValueError("not JSON")
-_mock_5xx_no_json.raise_for_status.side_effect = req_lib.exceptions.HTTPError(response=_mock_5xx_no_json)
+_mock_5xx_no_json.raise_for_status.side_effect = req_lib.exceptions.HTTPError(
+    response=_mock_5xx_no_json
+)
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 pipe._models_cache = None
 with patch.object(pipe._session, "get", return_value=_mock_5xx_no_json):
@@ -2523,7 +2789,10 @@ payload_user_list = {
             "role": "user",
             "content": [
                 {"type": "text", "text": "Short"},
-                {"type": "text", "text": "A longer user message that should receive cache_control injection"},
+                {
+                    "type": "text",
+                    "text": "A longer user message that should receive cache_control injection",
+                },
             ],
         }
     ]
@@ -2561,26 +2830,36 @@ _assert(_plugin["exclude_domains"] == ["reddit.com"], "exclude_domains parsed")
 _pipe_ws = Pipe()
 _pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True)
 _p_ws = _pipe_ws._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _pipe_ws.valves)
-_assert(any(p.get("id") == "web" for p in _p_ws.get("plugins", [])),
-        "ENABLE_WEB_SEARCH: plugins[] contains web entry")
+_assert(
+    any(p.get("id") == "web" for p in _p_ws.get("plugins", [])),
+    "ENABLE_WEB_SEARCH: plugins[] contains web entry",
+)
 
 # User plugins preserved alongside web
 _pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True)
-_p_ws = _pipe_ws._prepare_payload({
-    "model": "openai/gpt-4o",
-    "messages": [],
-    "plugins": [{"id": "file-parser"}],
-}, _pipe_ws.valves)
+_p_ws = _pipe_ws._prepare_payload(
+    {
+        "model": "openai/gpt-4o",
+        "messages": [],
+        "plugins": [{"id": "file-parser"}],
+    },
+    _pipe_ws.valves,
+)
 _p_ids = [p.get("id") for p in _p_ws.get("plugins", [])]
 _assert("file-parser" in _p_ids and "web" in _p_ids, "user plugins coexist with auto web plugin")
 
 # Existing user-supplied web plugin wins
-_pipe_ws.valves = Pipe.Valves(OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True, WEB_SEARCH_MAX_RESULTS=20)
-_p_ws = _pipe_ws._prepare_payload({
-    "model": "openai/gpt-4o",
-    "messages": [],
-    "plugins": [{"id": "web", "max_results": 3}],
-}, _pipe_ws.valves)
+_pipe_ws.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="k", ENABLE_WEB_SEARCH=True, WEB_SEARCH_MAX_RESULTS=20
+)
+_p_ws = _pipe_ws._prepare_payload(
+    {
+        "model": "openai/gpt-4o",
+        "messages": [],
+        "plugins": [{"id": "web", "max_results": 3}],
+    },
+    _pipe_ws.valves,
+)
 _assert(
     sum(1 for p in _p_ws["plugins"] if p.get("id") == "web") == 1,
     "user-supplied web plugin not duplicated by valve injection",
@@ -2628,7 +2907,10 @@ _p_pp = _pipe_pp._prepare_payload({"model": "openai/gpt-4o", "messages": []}, _p
 _p_provider = _p_pp.get("provider", {})
 _assert(_p_provider.get("only") == ["anthropic", "openai"], "provider.only forwarded")
 _assert(_p_provider.get("quantizations") == ["bf16", "fp8"], "provider.quantizations lower-cased")
-_assert(_p_provider.get("allow_fallbacks") is False, "provider.allow_fallbacks=False emitted only when opted out")
+_assert(
+    _p_provider.get("allow_fallbacks") is False,
+    "provider.allow_fallbacks=False emitted only when opted out",
+)
 _assert(
     _p_provider.get("max_price") == {"prompt": "3.0", "completion": "15.0"},
     "provider.max_price merged",
@@ -2665,28 +2947,34 @@ _section("28h. v1.6.0 cached prompt token reporting")
 _format_cost_info = mod._format_cost_info
 
 # OpenAI / Anthropic shape: prompt_tokens_details.cached_tokens
-_cost_with_cache = _format_cost_info({
-    "prompt_tokens": 1000,
-    "completion_tokens": 200,
-    "total_tokens": 1200,
-    "prompt_tokens_details": {"cached_tokens": 800},
-    "cost": 0.0030,
-}, "USD")
+_cost_with_cache = _format_cost_info(
+    {
+        "prompt_tokens": 1000,
+        "completion_tokens": 200,
+        "total_tokens": 1200,
+        "prompt_tokens_details": {"cached_tokens": 800},
+        "cost": 0.0030,
+    },
+    "USD",
+)
 _assert("800 cached" in _cost_with_cache, "cached tokens shown in token line")
 _assert("200 prompt" in _cost_with_cache, "non-cached prompt tokens shown (1000-800=200)")
 
 # Alternate shape: cache_read_input_tokens (some Anthropic surfaces)
-_cost_alt = _format_cost_info({
-    "prompt_tokens": 500,
-    "completion_tokens": 100,
-    "cache_read_input_tokens": 400,
-}, "USD")
+_cost_alt = _format_cost_info(
+    {
+        "prompt_tokens": 500,
+        "completion_tokens": 100,
+        "cache_read_input_tokens": 400,
+    },
+    "USD",
+)
 _assert("400 cached" in _cost_alt, "cache_read_input_tokens recognised")
 
 # No cache info → original format preserved
-_cost_plain = _format_cost_info({
-    "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150
-}, "USD")
+_cost_plain = _format_cost_info(
+    {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}, "USD"
+)
 _assert("cached" not in _cost_plain, "no cache field: footer unchanged")
 
 # ── 28i. v1.6.0 — Generation ID footer ──────────────────────────────────────
@@ -2733,10 +3021,12 @@ _mock_cat_resp.raise_for_status = MagicMock()
 
 _captured_params = {}
 
+
 def _capture_cat(*args, **kwargs):
     _captured_params.clear()
     _captured_params.update(kwargs)
     return _mock_cat_resp
+
 
 _pipe_cat = Pipe()
 _pipe_cat.valves = Pipe.Valves(OPENROUTER_API_KEY="k", MODEL_CATEGORY="programming")
@@ -2823,13 +3113,13 @@ _mock_err_empty_choices.json.return_value = {
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_err_empty_choices):
     result = pipe._non_stream_response({}, {}, pipe.valves)
-_assert("Context window exceeded" in result, "non-stream: error field takes priority over empty choices")
+_assert(
+    "Context window exceeded" in result, "non-stream: error field takes priority over empty choices"
+)
 
 # 29b. message.content is None → no crash, returns empty string
 _mock_none_content = MagicMock()
-_mock_none_content.json.return_value = {
-    "choices": [{"message": {"content": None}}]
-}
+_mock_none_content.json.return_value = {"choices": [{"message": {"content": None}}]}
 with patch.object(pipe, "_retryable_request", return_value=_mock_none_content):
     result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert(isinstance(result, str), "non-stream: None content → still returns string")
@@ -2837,9 +3127,7 @@ _assert(result == "", "non-stream: None content → empty string (no crash)")
 
 # 29c. message dict missing "content" key → returns empty string (no crash)
 _mock_no_content_key = MagicMock()
-_mock_no_content_key.json.return_value = {
-    "choices": [{"message": {"role": "assistant"}}]
-}
+_mock_no_content_key.json.return_value = {"choices": [{"message": {"role": "assistant"}}]}
 with patch.object(pipe, "_retryable_request", return_value=_mock_no_content_key):
     result = pipe._non_stream_response({}, {}, pipe.valves)
 _assert(isinstance(result, str), "non-stream: missing content key → still returns string")
@@ -2881,9 +3169,19 @@ _section("31. All provider icons")
 
 # Providers confirmed to have icons at /images/icons/ (verified May 2025)
 _ALL_PROVIDER_KEYS = [
-    "openai", "anthropic", "google", "meta-llama", "mistralai",
-    "amazon", "deepseek", "cohere", "perplexity", "qwen",
-    "microsoft", "fireworks", "moonshotai",
+    "openai",
+    "anthropic",
+    "google",
+    "meta-llama",
+    "mistralai",
+    "amazon",
+    "deepseek",
+    "cohere",
+    "perplexity",
+    "qwen",
+    "microsoft",
+    "fireworks",
+    "moonshotai",
 ]
 for _prov_key in _ALL_PROVIDER_KEYS:
     _prov_icon = Pipe.get_provider_icon(_prov_key)
@@ -2900,8 +3198,16 @@ for _prov_key in _ALL_PROVIDER_KEYS:
 # return None via the static helper (the layered fallback chain that
 # delivers domain favicons / letter-SVG runs only inside
 # _get_provider_icon — see the dedicated tests above).
-_NO_ICON_PROVIDERS = ["x-ai", "nvidia", "databricks", "together",
-                      "sambanova", "cerebras", "groq", "01-ai"]
+_NO_ICON_PROVIDERS = [
+    "x-ai",
+    "nvidia",
+    "databricks",
+    "together",
+    "sambanova",
+    "cerebras",
+    "groq",
+    "01-ai",
+]
 for _prov_key in _NO_ICON_PROVIDERS:
     _assert(
         Pipe.get_provider_icon(_prov_key) is None,
@@ -2955,7 +3261,9 @@ _assert(_format_cost_info({}) == "", "_format_cost_info: empty dict → empty")
 _assert(_format_cost_info({}, "EUR") == "", "_format_cost_info: empty dict with currency → empty")
 
 # 33b. Usage with tokens only (no cost) → tokens shown
-_result_tokens_only = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150})
+_result_tokens_only = _format_cost_info(
+    {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+)
 _assert("100" in _result_tokens_only, "_format_cost_info: prompt tokens present")
 _assert("50" in _result_tokens_only, "_format_cost_info: completion tokens present")
 _assert("150" in _result_tokens_only, "_format_cost_info: total tokens present")
@@ -2963,53 +3271,84 @@ _assert("Tokens" in _result_tokens_only, "_format_cost_info: Tokens label presen
 _assert("Cost" not in _result_tokens_only, "_format_cost_info: no cost when field absent")
 
 # 33c. Zero cost → $0.00
-_result_free = _format_cost_info({"prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300, "cost": 0})
+_result_free = _format_cost_info(
+    {"prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300, "cost": 0}
+)
 _assert("$0.00" in _result_free, "_format_cost_info: zero cost → $0.00")
 _assert("Cost" in _result_free, "_format_cost_info: Cost label present for zero cost")
 
 # 33d. Micro cost < 0.0001 → 6 decimal places
-_result_micro = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.000005})
+_result_micro = _format_cost_info(
+    {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.000005}
+)
 _assert("$0.000005" in _result_micro, "_format_cost_info: micro cost 6 decimal places")
 
 # 33e. Small cost 0.0001–0.01 → 5 decimal places
-_result_small = _format_cost_info({"prompt_tokens": 50, "completion_tokens": 25, "total_tokens": 75, "cost": 0.001234})
+_result_small = _format_cost_info(
+    {"prompt_tokens": 50, "completion_tokens": 25, "total_tokens": 75, "cost": 0.001234}
+)
 _assert("$0.00123" in _result_small, "_format_cost_info: small cost 5 decimal places")
 
 # 33f. Normal cost >= 0.01 → 4 decimal places
-_result_normal = _format_cost_info({"prompt_tokens": 500, "completion_tokens": 200, "total_tokens": 700, "cost": 0.05670})
+_result_normal = _format_cost_info(
+    {"prompt_tokens": 500, "completion_tokens": 200, "total_tokens": 700, "cost": 0.05670}
+)
 _assert("$0.0567" in _result_normal, "_format_cost_info: normal cost 4 decimal places")
 
 # 33g. EUR currency symbol
-_result_eur = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "EUR")
-_assert("$" in _result_eur and "€" not in _result_eur, "_format_cost_info: upstream USD is never relabelled EUR")
+_result_eur = _format_cost_info(
+    {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "EUR"
+)
+_assert(
+    "$" in _result_eur and "€" not in _result_eur,
+    "_format_cost_info: upstream USD is never relabelled EUR",
+)
 
 # 33h. GBP currency symbol
-_result_gbp = _format_cost_info({"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "GBP")
-_assert("$" in _result_gbp and "£" not in _result_gbp, "_format_cost_info: upstream USD is never relabelled GBP")
+_result_gbp = _format_cost_info(
+    {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150, "cost": 0.01}, "GBP"
+)
+_assert(
+    "$" in _result_gbp and "£" not in _result_gbp,
+    "_format_cost_info: upstream USD is never relabelled GBP",
+)
 
 # 33i. Unknown currency → uses currency string as prefix
-_result_unknown = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.01}, "XYZ")
+_result_unknown = _format_cost_info(
+    {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.01}, "XYZ"
+)
 _assert("$" in _result_unknown, "_format_cost_info: unknown preference still reports USD")
 
 # 33j. Invalid cost value (string) → tokens shown, cost silently skipped
-_result_bad_cost = _format_cost_info({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": "invalid"})
+_result_bad_cost = _format_cost_info(
+    {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": "invalid"}
+)
 _assert("Tokens" in _result_bad_cost, "_format_cost_info: invalid cost → tokens still shown")
 _assert("Cost" not in _result_bad_cost, "_format_cost_info: invalid cost → cost silently skipped")
 
 # 33k. total_tokens missing → computed as prompt + completion
 _result_no_total = _format_cost_info({"prompt_tokens": 80, "completion_tokens": 20, "cost": 0.005})
-_assert("100" in _result_no_total, "_format_cost_info: total computed from prompt+completion when missing")
+_assert(
+    "100" in _result_no_total,
+    "_format_cost_info: total computed from prompt+completion when missing",
+)
 
 # 33l. Output format: starts with separator, italic, bold labels
-_result_fmt = _format_cost_info({"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.001})
+_result_fmt = _format_cost_info(
+    {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": 0.001}
+)
 _assert(_result_fmt.startswith("\n\n---\n"), "_format_cost_info: starts with separator")
 _assert("*" in _result_fmt, "_format_cost_info: uses italic (asterisks)")
 _assert("**Tokens:**" in _result_fmt, "_format_cost_info: bold Tokens label")
 _assert("**Cost:**" in _result_fmt, "_format_cost_info: bold Cost label")
 
 # 33m. Large numbers use comma separators
-_result_large = _format_cost_info({"prompt_tokens": 1250, "completion_tokens": 342, "total_tokens": 1592, "cost": 0.00234})
-_assert("1,250" in _result_large, "_format_cost_info: large prompt token count formatted with comma")
+_result_large = _format_cost_info(
+    {"prompt_tokens": 1250, "completion_tokens": 342, "total_tokens": 1592, "cost": 0.00234}
+)
+_assert(
+    "1,250" in _result_large, "_format_cost_info: large prompt token count formatted with comma"
+)
 _assert("1,592" in _result_large, "_format_cost_info: large total formatted with comma")
 
 # 33n. CURRENCY_SYMBOLS dict completeness
@@ -3055,7 +3394,10 @@ _mock_cost_eur.json.return_value = {
 }
 with patch.object(pipe, "_retryable_request", return_value=_mock_cost_eur):
     _result_eur_resp = pipe._non_stream_response({}, {}, pipe.valves)
-_assert("$" in _result_eur_resp and "€" not in _result_eur_resp, "non-stream: actual USD cost despite legacy EUR preference")
+_assert(
+    "$" in _result_eur_resp and "€" not in _result_eur_resp,
+    "non-stream: actual USD cost despite legacy EUR preference",
+)
 
 # 33r. SHOW_COST_INFO=True but response has no usage → no cost appended (no crash)
 pipe.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_COST_INFO=True)
@@ -3129,13 +3471,17 @@ _section("34. Audio / image output model support")
 
 # 34a. _format_image_output — empty list returns empty string
 from openrouter_pipe import _format_image_output
+
 _assert(_format_image_output([]) == "", "_format_image_output: empty list → empty string")
 _assert(_format_image_output(None) == "", "_format_image_output: None → empty string")
 
 # 34b. Single image with valid URL → markdown tag
 _img_single = [{"image_url": {"url": "data:image/png;base64,ABC=="}}]
 _result_img = _format_image_output(_img_single)
-_assert(_result_img == "![Generated image](data:image/png;base64,ABC==)", "_format_image_output: single image → markdown tag")
+_assert(
+    _result_img == "![Generated image](data:image/png;base64,ABC==)",
+    "_format_image_output: single image → markdown tag",
+)
 
 # 34c. Multiple images → joined with double newline
 _img_multi = [
@@ -3143,25 +3489,42 @@ _img_multi = [
     {"image_url": {"url": "data:image/png;base64,BBB=="}},
 ]
 _result_multi = _format_image_output(_img_multi)
-_assert("![Generated image](data:image/png;base64,AAA==)" in _result_multi, "_format_image_output: multi — first image present")
-_assert("![Generated image](data:image/png;base64,BBB==)" in _result_multi, "_format_image_output: multi — second image present")
+_assert(
+    "![Generated image](data:image/png;base64,AAA==)" in _result_multi,
+    "_format_image_output: multi — first image present",
+)
+_assert(
+    "![Generated image](data:image/png;base64,BBB==)" in _result_multi,
+    "_format_image_output: multi — second image present",
+)
 _assert("\n\n" in _result_multi, "_format_image_output: multi — separated by double newline")
 
 # 34d. Non-dict items in list are skipped gracefully
 _img_mixed = ["not_a_dict", {"image_url": {"url": "https://example.com/img.png"}}, 42]
 _result_mixed = _format_image_output(_img_mixed)
-_assert("https://example.com/img.png" in _result_mixed, "_format_image_output: non-dict items skipped, valid item rendered")
+_assert(
+    "https://example.com/img.png" in _result_mixed,
+    "_format_image_output: non-dict items skipped, valid item rendered",
+)
 _assert("not_a_dict" not in _result_mixed, "_format_image_output: string item not in output")
 
 # 34e. Image dict missing 'url' key → skipped
 _img_no_url = [{"image_url": {}}, {"image_url": {"url": ""}}]
-_assert(_format_image_output(_img_no_url) == "", "_format_image_output: missing/empty url → empty string")
+_assert(
+    _format_image_output(_img_no_url) == "",
+    "_format_image_output: missing/empty url → empty string",
+)
 
 # 34e2. Unsafe URL schemes are rejected
 _img_js = [{"image_url": {"url": "javascript:alert(1)"}}]
-_assert(_format_image_output(_img_js) == "", "_format_image_output: javascript: scheme → empty (rejected)")
+_assert(
+    _format_image_output(_img_js) == "",
+    "_format_image_output: javascript: scheme → empty (rejected)",
+)
 _img_file = [{"image_url": {"url": "file:///etc/passwd"}}]
-_assert(_format_image_output(_img_file) == "", "_format_image_output: file: scheme → empty (rejected)")
+_assert(
+    _format_image_output(_img_file) == "", "_format_image_output: file: scheme → empty (rejected)"
+)
 
 # 34e3. Closing parenthesis in URL is percent-encoded
 _img_paren = [{"image_url": {"url": "https://example.com/img(1).png"}}]
@@ -3177,12 +3540,18 @@ _pipe34.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 # 34f. Audio model with transcript → transcript used as content
 _mock_audio = MagicMock()
 _mock_audio.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": None,
-            "audio": {"transcript": "Hello from audio", "data": "base64data...", "id": "audio_123"},
+    "choices": [
+        {
+            "message": {
+                "content": None,
+                "audio": {
+                    "transcript": "Hello from audio",
+                    "data": "base64data...",
+                    "id": "audio_123",
+                },
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio):
     _audio_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
@@ -3191,41 +3560,55 @@ _assert("Hello from audio" in _audio_result, "non-stream audio: transcript used 
 # 34g. Audio model without transcript → placeholder message returned
 _mock_audio_no_transcript = MagicMock()
 _mock_audio_no_transcript.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": None,
-            "audio": {"data": "base64audiodata...", "id": "audio_456"},
+    "choices": [
+        {
+            "message": {
+                "content": None,
+                "audio": {"data": "base64audiodata...", "id": "audio_456"},
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_no_transcript):
     _audio_no_tx_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
-_assert("transcript not available" in _audio_no_tx_result, "non-stream audio no transcript: placeholder shown")
+_assert(
+    "transcript not available" in _audio_no_tx_result,
+    "non-stream audio no transcript: placeholder shown",
+)
 
 # 34h. Audio model with both content and audio → text content takes priority
 _mock_audio_with_content = MagicMock()
 _mock_audio_with_content.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": "Text response",
-            "audio": {"transcript": "Audio transcript", "data": "base64..."},
+    "choices": [
+        {
+            "message": {
+                "content": "Text response",
+                "audio": {"transcript": "Audio transcript", "data": "base64..."},
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_audio_with_content):
     _audio_content_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
-_assert("Text response" in _audio_content_result, "non-stream audio+content: text content preserved")
-_assert("Audio transcript" not in _audio_content_result, "non-stream audio+content: transcript not used when content present")
+_assert(
+    "Text response" in _audio_content_result, "non-stream audio+content: text content preserved"
+)
+_assert(
+    "Audio transcript" not in _audio_content_result,
+    "non-stream audio+content: transcript not used when content present",
+)
 
 # 34i. Image output model → markdown image tag in response
 _mock_image = MagicMock()
 _mock_image.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": None,
-            "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA=="}}],
+    "choices": [
+        {
+            "message": {
+                "content": None,
+                "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA=="}}],
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image):
     _image_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
@@ -3235,38 +3618,46 @@ _assert("IMGDATA==" in _image_result, "non-stream image: URL data in output")
 # 34j. Image output with text content → both text and image in response, separated by blank line
 _mock_image_with_text = MagicMock()
 _mock_image_with_text.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": "Here is the image:",
-            "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA2=="}}],
+    "choices": [
+        {
+            "message": {
+                "content": "Here is the image:",
+                "images": [{"image_url": {"url": "data:image/png;base64,IMGDATA2=="}}],
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_with_text):
     _image_text_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert("Here is the image:" in _image_text_result, "non-stream image+text: text preserved")
 _assert("![Generated image]" in _image_text_result, "non-stream image+text: image markdown present")
-_assert("\n\n![Generated image]" in _image_text_result, "non-stream image+text: blank line before image tag")
+_assert(
+    "\n\n![Generated image]" in _image_text_result,
+    "non-stream image+text: blank line before image tag",
+)
 
 # 34j2. Image-only (no text) → no leading blank lines before image tag
 _mock_image_only = MagicMock()
 _mock_image_only.json.return_value = {
-    "choices": [{
-        "message": {
-            "content": None,
-            "images": [{"image_url": {"url": "data:image/png;base64,ONLY=="}}],
+    "choices": [
+        {
+            "message": {
+                "content": None,
+                "images": [{"image_url": {"url": "data:image/png;base64,ONLY=="}}],
+            }
         }
-    }]
+    ]
 }
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_image_only):
     _image_only_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
-_assert(_image_only_result.startswith("![Generated image]"), "non-stream image-only: no leading blank lines")
+_assert(
+    _image_only_result.startswith("![Generated image]"),
+    "non-stream image-only: no leading blank lines",
+)
 
 # 34k. message.content = None handled without crash (or "")
 _mock_content_null = MagicMock()
-_mock_content_null.json.return_value = {
-    "choices": [{"message": {"content": None}}]
-}
+_mock_content_null.json.return_value = {"choices": [{"message": {"content": None}}]}
 with patch.object(_pipe34, "_retryable_request", return_value=_mock_content_null):
     _null_result = _pipe34._non_stream_response({}, {}, _pipe34.valves)
 _assert(isinstance(_null_result, str), "non-stream content=None: returns string (no crash)")
@@ -3278,11 +3669,19 @@ _pipe34s.valves = Pipe.Valves(OPENROUTER_API_KEY="k")
 
 # 34l. Audio transcript in streaming delta → yielded as content
 _sse_audio_chunks = [
-    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": "Hello "}}}]}).encode(),
-    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": "world"}}}]}).encode(),
+    b"data: "
+    + json.dumps(
+        {"choices": [{"delta": {"content": "", "audio": {"transcript": "Hello "}}}]}
+    ).encode(),
+    b"data: "
+    + json.dumps(
+        {"choices": [{"delta": {"content": "", "audio": {"transcript": "world"}}}]}
+    ).encode(),
     b"data: [DONE]",
 ]
-with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_audio_chunks)):
+with patch.object(
+    _pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_audio_chunks)
+):
     _stream_audio_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _stream_audio_full = "".join(_stream_audio_chunks)
 _assert("Hello " in _stream_audio_full, "stream audio: first transcript chunk yielded")
@@ -3291,10 +3690,15 @@ _assert("world" in _stream_audio_full, "stream audio: second transcript chunk yi
 # 34m. Mixed stream: normal content chunks + audio transcript fallback
 _sse_mixed_chunks = [
     b"data: " + json.dumps({"choices": [{"delta": {"content": "Text first"}}]}).encode(),
-    b"data: " + json.dumps({"choices": [{"delta": {"content": "", "audio": {"transcript": " then audio"}}}]}).encode(),
+    b"data: "
+    + json.dumps(
+        {"choices": [{"delta": {"content": "", "audio": {"transcript": " then audio"}}}]}
+    ).encode(),
     b"data: [DONE]",
 ]
-with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_mixed_chunks)):
+with patch.object(
+    _pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_mixed_chunks)
+):
     _mixed_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _mixed_full = "".join(_mixed_chunks)
 _assert("Text first" in _mixed_full, "stream mixed: text content chunk present")
@@ -3305,7 +3709,9 @@ _sse_null_content = [
     b"data: " + json.dumps({"choices": [{"delta": {"content": None}}]}).encode(),
     b"data: [DONE]",
 ]
-with patch.object(_pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)):
+with patch.object(
+    _pipe34s, "_retryable_request", return_value=_make_sse_response(_sse_null_content)
+):
     _null_chunks = list(_pipe34s._stream_response({}, {}, _pipe34s.valves))
 _assert(isinstance("".join(_null_chunks), str), "stream content=None delta: no crash")
 
@@ -3318,14 +3724,26 @@ _section("35. SEC: _resolve_referer CRLF guard")
 _pipe35 = Pipe()
 # Valid override respected
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://my.app")
-_assert(_pipe35._resolve_referer(_pipe35.valves) == "https://my.app", "35a valid referer override respected")
+_assert(
+    _pipe35._resolve_referer(_pipe35.valves) == "https://my.app",
+    "35a valid referer override respected",
+)
 # CRLF-injection override rejected → falls back
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="https://x\r\nX-Evil: 1")
-_assert("\r" not in _pipe35._resolve_referer(_pipe35.valves) and "\n" not in _pipe35._resolve_referer(_pipe35.valves), "35b CRLF override rejected (no control chars in referer)")
-_assert(_pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer, "35c CRLF override falls back to default referer")
+_assert(
+    "\r" not in _pipe35._resolve_referer(_pipe35.valves)
+    and "\n" not in _pipe35._resolve_referer(_pipe35.valves),
+    "35b CRLF override rejected (no control chars in referer)",
+)
+_assert(
+    _pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer,
+    "35c CRLF override falls back to default referer",
+)
 # Non-http scheme rejected
 _pipe35.valves = Pipe.Valves(OPENROUTER_API_KEY="k", HTTP_REFERER_OVERRIDE="ftp://x")
-_assert(_pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer, "35d non-http override falls back")
+_assert(
+    _pipe35._resolve_referer(_pipe35.valves) == _pipe35._referer, "35d non-http override falls back"
+)
 
 _section("35. SEC: generation ID markdown-breakout sanitization")
 
@@ -3334,7 +3752,10 @@ _format_generation_id = mod._format_generation_id
 _dirty = _format_generation_id("gen-`</think><script>")
 _assert("`</think>" not in _dirty, "35e generation ID: backtick-breakout neutralized")
 _assert("script" in _dirty, "35f generation ID: remaining text preserved")
-_assert(_format_generation_id("gen-abc123") == "\n\n---\n*Generation ID: `gen-abc123`*", "35g clean ID formatted normally")
+_assert(
+    _format_generation_id("gen-abc123") == "\n\n---\n*Generation ID: `gen-abc123`*",
+    "35g clean ID formatted normally",
+)
 _assert(_format_generation_id("") == "", "35h empty ID → empty string")
 _assert(_format_generation_id("`\r\n`") == "", "35i all-unsafe ID → empty (no stray footer)")
 
@@ -3343,7 +3764,8 @@ _section("35. Coverage: stream SHOW_GENERATION_ID")
 _pipe35s = Pipe()
 _pipe35s.valves = Pipe.Valves(OPENROUTER_API_KEY="k", SHOW_GENERATION_ID=True)
 _sse_genid = [
-    b"data: " + json.dumps({"id": "gen-stream-xyz", "choices": [{"delta": {"content": "hi"}}]}).encode(),
+    b"data: "
+    + json.dumps({"id": "gen-stream-xyz", "choices": [{"delta": {"content": "hi"}}]}).encode(),
     b"data: [DONE]",
 ]
 with patch.object(_pipe35s, "_retryable_request", return_value=_make_sse_response(_sse_genid)):
@@ -3363,17 +3785,31 @@ _pipe35f = Pipe()
 _pipe35f.valves = Pipe.Valves(OPENROUTER_API_KEY="k", FREE_MODEL_FILTER="only")
 _free_models = {
     "data": [
-        {"id": "openai/gpt-4o", "name": "GPT-4o", "pricing": {"prompt": "0.01", "completion": "0.03"}},
-        {"id": "meta/free-model:free", "name": "Free", "pricing": {"prompt": "0", "completion": "0"}},
+        {
+            "id": "openai/gpt-4o",
+            "name": "GPT-4o",
+            "pricing": {"prompt": "0.01", "completion": "0.03"},
+        },
+        {
+            "id": "meta/free-model:free",
+            "name": "Free",
+            "pricing": {"prompt": "0", "completion": "0"},
+        },
         {"id": "x/zerocost", "name": "Zero", "pricing": {"prompt": "0", "completion": "0"}},
     ]
 }
-_mock_free = MagicMock(); _mock_free.status_code = 200; _mock_free.json.return_value = _free_models; _mock_free.raise_for_status = MagicMock()
+_mock_free = MagicMock()
+_mock_free.status_code = 200
+_mock_free.json.return_value = _free_models
+_mock_free.raise_for_status = MagicMock()
 with patch.object(_pipe35f._session, "get", return_value=_mock_free):
     _free_result = _pipe35f.pipes()
 _free_ids = [m["id"] for m in _free_result]
 _assert("openai/gpt-4o" not in _free_ids, "35m FREE_MODEL_FILTER=only: paid model excluded")
-_assert("meta/free-model:free" in _free_ids and "x/zerocost" in _free_ids, "35n FREE_MODEL_FILTER=only: free models kept (:free + 0/0)")
+_assert(
+    "meta/free-model:free" in _free_ids and "x/zerocost" in _free_ids,
+    "35n FREE_MODEL_FILTER=only: free models kept (:free + 0/0)",
+)
 
 # Legacy OPENROUTER_FREE_ONLY=true env maps to 'only' when FREE_MODEL_FILTER
 # unset. The valve default is frozen at module-import time, so test it by
@@ -3381,6 +3817,7 @@ _assert("meta/free-model:free" in _free_ids and "x/zerocost" in _free_ids, "35n 
 import os as _os35
 import importlib.util as _ilu35
 import importlib.machinery as _ilm35
+
 _prev_free_only = _os35.environ.get("OPENROUTER_FREE_ONLY")
 _prev_filter = _os35.environ.get("OPENROUTER_FREE_MODEL_FILTER")
 _os35.environ.pop("OPENROUTER_FREE_MODEL_FILTER", None)
@@ -3391,7 +3828,9 @@ try:
     _mod35 = _ilu35.module_from_spec(_spec35)
     _spec35.loader.exec_module(_mod35)
     _shim_default = _mod35.Pipe.Valves(OPENROUTER_API_KEY="k").FREE_MODEL_FILTER
-    _assert(_shim_default == "only", "35o legacy OPENROUTER_FREE_ONLY=true → FREE_MODEL_FILTER 'only'")
+    _assert(
+        _shim_default == "only", "35o legacy OPENROUTER_FREE_ONLY=true → FREE_MODEL_FILTER 'only'"
+    )
 finally:
     if _prev_free_only is None:
         _os35.environ.pop("OPENROUTER_FREE_ONLY", None)
@@ -3404,12 +3843,20 @@ _section("35. Coverage: REASONING_SUMMARY_MODE=concise")
 
 _pipe35r = Pipe()
 _pipe35r.valves = Pipe.Valves(OPENROUTER_API_KEY="k", REASONING_SUMMARY_MODE="concise")
-_payload35r = _pipe35r._prepare_payload({"model": "openai/o1", "messages": [{"role": "user", "content": "hi"}]}, _pipe35r.valves)
-_assert(_payload35r.get("reasoning", {}).get("summary") == "concise", "35p REASONING_SUMMARY_MODE=concise → reasoning.summary='concise'")
+_payload35r = _pipe35r._prepare_payload(
+    {"model": "openai/o1", "messages": [{"role": "user", "content": "hi"}]}, _pipe35r.valves
+)
+_assert(
+    _payload35r.get("reasoning", {}).get("summary") == "concise",
+    "35p REASONING_SUMMARY_MODE=concise → reasoning.summary='concise'",
+)
 
 _section("35. USE_GSTATIC_FAVICONS valve default")
 
-_assert(Pipe.Valves(OPENROUTER_API_KEY="k").USE_GSTATIC_FAVICONS is False, "35q USE_GSTATIC_FAVICONS defaults False")
+_assert(
+    Pipe.Valves(OPENROUTER_API_KEY="k").USE_GSTATIC_FAVICONS is False,
+    "35q USE_GSTATIC_FAVICONS defaults False",
+)
 
 # ── EncryptedStr ──────────────────────────────────────────────────────────────
 
@@ -3490,7 +3937,8 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _p.valves.OPENROUTER_API_KEY = mod.EncryptedStr.encrypt("sk-or-v1-secret")
     _assert(
         _p.valves.OPENROUTER_API_KEY.startswith("encrypted:")
-        if _HAS_CRYPTO else _p.valves.OPENROUTER_API_KEY == "sk-or-v1-secret",
+        if _HAS_CRYPTO
+        else _p.valves.OPENROUTER_API_KEY == "sk-or-v1-secret",
         "stored admin key ciphertext (crypto) / plaintext (no crypto)",
     )
     _hdrs = _p._build_headers(valves=_p.valves)
@@ -3504,7 +3952,8 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "unit-test-secret"}):
     _v = Pipe.Valves(OPENROUTER_API_KEY="sk-or-v1-fromctor")
     _assert(
         _v.OPENROUTER_API_KEY.startswith("encrypted:")
-        if _HAS_CRYPTO else _v.OPENROUTER_API_KEY == "sk-or-v1-fromctor",
+        if _HAS_CRYPTO
+        else _v.OPENROUTER_API_KEY == "sk-or-v1-fromctor",
         "Valves constructor encrypts (crypto) / stores plaintext (no crypto)",
     )
 
@@ -3568,100 +4017,231 @@ _section("_build_tools_payload")
 _pbt = Pipe()
 _assert(_pbt._build_tools_payload(None) is None, "None __tools__ → None")
 _assert(_pbt._build_tools_payload({}) is None, "empty __tools__ → None")
-_spec = {"name": "get_time", "description": "now", "parameters": {"type": "object", "properties": {}}}
+_spec = {
+    "name": "get_time",
+    "description": "now",
+    "parameters": {"type": "object", "properties": {}},
+}
 _tp = _pbt._build_tools_payload({"get_time": {"spec": _spec, "callable": lambda: "x"}})
 _assert(_tp == [{"type": "function", "function": _spec}], "spec wrapped as function tool")
-_assert(_pbt._build_tools_payload({"bad": {"callable": lambda: 1}}) is None, "entry without spec skipped → None")
+_assert(
+    _pbt._build_tools_payload({"bad": {"callable": lambda: 1}}) is None,
+    "entry without spec skipped → None",
+)
 
 _section("_execute_tool_calls")
 
 _pe = Pipe()
 
+
 def _sync_tool(city=None):
     return f"weather in {city}: sunny"
+
 
 async def _async_tool(x=0):
     return x + 1
 
+
 _tools_map = {
-    "weather": {"spec": {"name": "weather"}, "callable": _sync_tool},
-    "inc": {"spec": {"name": "inc"}, "callable": _async_tool},
+    "weather": {
+        "spec": {"name": "weather", "parameters": {"properties": {"city": {}}}},
+        "callable": _sync_tool,
+    },
+    "inc": {
+        "spec": {"name": "inc", "parameters": {"properties": {"x": {}}}},
+        "callable": _async_tool,
+    },
 }
 
 _calls = [
-    {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"city": "Rome"}'}},
+    {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "weather", "arguments": '{"city": "Rome"}'},
+    },
     {"id": "c2", "type": "function", "function": {"name": "inc", "arguments": '{"x": 41}'}},
 ]
 _res = _run(_pe._execute_tool_calls(_calls, _tools_map, None))
 _assert(len(_res) == 2, "one tool message per call")
-_assert(_res[0] == {"role": "tool", "tool_call_id": "c1", "content": "weather in Rome: sunny"}, "sync callable result")
-_assert(_res[1]["tool_call_id"] == "c2" and _res[1]["content"] == "42", "async callable awaited, order preserved")
+_assert(
+    _res[0] == {"role": "tool", "tool_call_id": "c1", "content": "weather in Rome: sunny"},
+    "sync callable result",
+)
+_assert(
+    _res[1]["tool_call_id"] == "c2" and _res[1]["content"] == "42",
+    "async callable awaited, order preserved",
+)
 
-_unk = _run(_pe._execute_tool_calls([{"id": "c3", "function": {"name": "nope", "arguments": "{}"}}], _tools_map, None))
-_assert("Error" in _unk[0]["content"] and _unk[0]["tool_call_id"] == "c3", "unknown tool → error content, no raise")
+_unk = _run(
+    _pe._execute_tool_calls(
+        [{"id": "c3", "function": {"name": "nope", "arguments": "{}"}}], _tools_map, None
+    )
+)
+_assert(
+    "Error" in _unk[0]["content"] and _unk[0]["tool_call_id"] == "c3",
+    "unknown tool → error content, no raise",
+)
 
-_bad = _run(_pe._execute_tool_calls([{"id": "c4", "function": {"name": "weather", "arguments": "{not json"}}], _tools_map, None))
+_bad = _run(
+    _pe._execute_tool_calls(
+        [{"id": "c4", "function": {"name": "weather", "arguments": "{not json"}}], _tools_map, None
+    )
+)
 _assert("Error" in _bad[0]["content"], "invalid JSON args → error content")
+
 
 def _boom():
     raise RuntimeError("kaboom")
-_raise = _run(_pe._execute_tool_calls([{"id": "c5", "function": {"name": "b", "arguments": "{}"}}], {"b": {"spec": {}, "callable": _boom}}, None))
-_assert("Error" in _raise[0]["content"] and "kaboom" in _raise[0]["content"], "callable exception → error content, no raise")
+
+
+_raise = _run(
+    _pe._execute_tool_calls(
+        [{"id": "c5", "function": {"name": "b", "arguments": "{}"}}],
+        {"b": {"spec": {}, "callable": _boom}},
+        None,
+    )
+)
+_assert(
+    "RuntimeError" in _raise[0]["content"] and "kaboom" not in _raise[0]["content"],
+    "callable exception → sanitized error content",
+)
 
 _section("non-stream tool loop")
 
+
 class _FakeResp:
-    def __init__(self, payload): self._p = payload
-    def json(self): return self._p
-    def close(self): pass
+    def __init__(self, payload):
+        self._p = payload
+
+    def json(self):
+        return self._p
+
+    def close(self):
+        pass
+
 
 _pl = Pipe()
 _pl.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pl.valves.MAX_TOOL_ITERATIONS = 3
 
-_round1 = {"choices": [{"message": {"role": "assistant", "content": None,
-            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"city": "Rome"}'}}]}}]}
-_round2 = {"choices": [{"message": {"role": "assistant", "content": "It is sunny in Rome."}}], "model": "x"}
+_round1 = {
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "weather", "arguments": '{"city": "Rome"}'},
+                    }
+                ],
+            }
+        }
+    ]
+}
+_round2 = {
+    "choices": [{"message": {"role": "assistant", "content": "It is sunny in Rome."}}],
+    "model": "x",
+}
 _seq = [_FakeResp(_round1), _FakeResp(_round2)]
+
 
 def _fake_retry(headers, payload, stream, valves):
     return _seq.pop(0)
 
+
 _pl._retryable_request = _fake_retry  # type: ignore
-_tools_map2 = {"weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}}
-_payload = {"model": "x", "messages": [{"role": "user", "content": "weather?"}], "tools": _pl._build_tools_payload(_tools_map2)}
+_tools_map2 = {
+    "weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}
+}
+_payload = {
+    "model": "x",
+    "messages": [{"role": "user", "content": "weather?"}],
+    "tools": _pl._build_tools_payload(_tools_map2),
+}
 _out = _run(_pl._run_tools_nonstream({}, _payload, _pl.valves, _tools_map2, None))
 _assert("It is sunny in Rome." in _out, "final content returned after tool round")
 _roles = [m.get("role") for m in _payload["messages"]]
 _assert("tool" in _roles and "assistant" in _roles, "assistant + tool messages appended")
-_assert(any(m.get("tool_call_id") == "c1" for m in _payload["messages"]), "tool result carries tool_call_id")
+_assert(
+    any(m.get("tool_call_id") == "c1" for m in _payload["messages"]),
+    "tool result carries tool_call_id",
+)
 
 _pl.valves.MAX_TOOL_ITERATIONS = 2
 _loopres = [_FakeResp(_round1) for _ in range(5)]
+
+
 def _always_tools(headers, payload, stream, valves):
     return _loopres.pop(0)
+
+
 _pl._retryable_request = _always_tools  # type: ignore
-_payload2 = {"model": "x", "messages": [{"role": "user", "content": "go"}], "tools": _pl._build_tools_payload(_tools_map2)}
+_payload2 = {
+    "model": "x",
+    "messages": [{"role": "user", "content": "go"}],
+    "tools": _pl._build_tools_payload(_tools_map2),
+}
 _capout = _run(_pl._run_tools_nonstream({}, _payload2, _pl.valves, _tools_map2, None))
-_assert("MAX_TOOL_ITERATIONS" in _capout or "tool" in _capout.lower(), "iteration cap produces a note")
+_assert(
+    "MAX_TOOL_ITERATIONS" in _capout or "tool" in _capout.lower(), "iteration cap produces a note"
+)
 
 _section("streaming tool loop")
 
+
 class _FakeStream:
-    def __init__(self, lines): self._lines = lines
-    def iter_lines(self, **_kw): return iter(self._lines)
-    def close(self): pass
+    def __init__(self, lines):
+        self._lines = lines
+
+    def iter_lines(self, **_kw):
+        return iter(self._lines)
+
+    def close(self):
+        pass
+
 
 def _sse(d):
     return ("data: " + json.dumps(d)).encode("utf-8")
+
 
 _ps = Pipe()
 _ps.valves.OPENROUTER_API_KEY = "sk-or-test"
 _ps.valves.MAX_TOOL_ITERATIONS = 3
 
 _r1 = [
-    _sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "weather", "arguments": '{"ci'}}]}}]}),
-    _sse({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": 'ty": "Rome"}'}}]}, "finish_reason": "tool_calls"}]}),
+    _sse(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "weather", "arguments": '{"ci'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ),
+    _sse(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"index": 0, "function": {"arguments": 'ty": "Rome"}'}}]
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+    ),
     b"data: [DONE]",
 ]
 _r2 = [
@@ -3670,18 +4250,30 @@ _r2 = [
     b"data: [DONE]",
 ]
 _streams = [_FakeStream(_r1), _FakeStream(_r2)]
+
+
 def _fake_retry_stream(headers, payload, stream, valves):
     return _streams.pop(0)
+
+
 _ps._retryable_request = _fake_retry_stream  # type: ignore
 
-_tools_map3 = {"weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}}
-_payload_s = {"model": "x", "messages": [{"role": "user", "content": "weather?"}], "tools": _ps._build_tools_payload(_tools_map3)}
+_tools_map3 = {
+    "weather": {"spec": {"name": "weather"}, "callable": lambda city=None: f"sunny {city}"}
+}
+_payload_s = {
+    "model": "x",
+    "messages": [{"role": "user", "content": "weather?"}],
+    "tools": _ps._build_tools_payload(_tools_map3),
+}
+
 
 async def _collect():
     out = []
     async for piece in _ps._run_tools_stream({}, _payload_s, _ps.valves, _tools_map3, None):
         out.append(piece)
     return "".join(out)
+
 
 _streamed = _run(_collect())
 _assert("Sunny in Rome." in _streamed, "final answer streamed after tool round")
@@ -3699,33 +4291,50 @@ _pc = Pipe()
 _pc.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pc.valves.SHOW_REMAINING_CREDIT = True
 
+
 class _CredResp:
     status_code = 200
-    def json(self): return {"data": {"total_credits": 10.0, "total_usage": 3.5}}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": {"limit_remaining": 6.5}}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
 
 _credit_calls = {"n": 0}
+
+
 def _fake_get(url, headers=None, timeout=None, allow_redirects=None, params=None):
     _credit_calls["n"] += 1
     return _CredResp()
+
+
 _pc._session.get = _fake_get  # type: ignore
 
 _bal = _pc._fetch_credit_balance(_pc.valves)
-_assert(abs(_bal - 6.5) < 1e-9, "remaining = total_credits - total_usage")
+_assert(_bal == 6.5, "remaining key limit from /key")
 _bal2 = _pc._fetch_credit_balance(_pc.valves)
 _assert(_credit_calls["n"] == 1, "second call within TTL served from cache (no refetch)")
 _line = _pc._format_credit_info(6.5, "USD")
-_assert("6.5" in _line and "credit" in _line.lower(), "credit line formatted")
+_assert("6.5" in _line and "API-key limit" in _line, "key-limit line formatted")
+
 
 def _boom_get(*a, **k):
     raise RuntimeError("net down")
-_pc2 = Pipe(); _pc2.valves.OPENROUTER_API_KEY = "sk-or-x"
+
+
+_pc2 = Pipe()
+_pc2.valves.OPENROUTER_API_KEY = "sk-or-x"
 _pc2._session.get = _boom_get  # type: ignore
 _assert(_pc2._fetch_credit_balance(_pc2.valves) is None, "fetch failure → None")
 _assert(_pc2._format_credit_info(None, "USD") == "", "None remaining → empty line")
 
 # ── retry test scaffolding (v1.8.1) ─────────────────────────────────────────────
+
 
 class _FakeHTTPResp:
     def __init__(self, status, headers=None, body=None):
@@ -3733,20 +4342,27 @@ class _FakeHTTPResp:
         self.headers = headers or {}
         self._body = body or {}
         self.closed = False
+
     def raise_for_status(self):
         if self.status_code >= 400:
             raise mod.requests.exceptions.HTTPError(response=self)
+
     def json(self):
         return self._body
+
     def close(self):
         self.closed = True
 
+
 def _script_post(pipe, responses):
     pipe._post_calls = 0
+
     def _post(*a, **k):
         pipe._post_calls += 1
         return responses.pop(0)
+
     pipe._session.post = _post  # type: ignore
+
 
 # ── retry helpers (v1.8.1) ──────────────────────────────────────────────────────
 
@@ -3754,10 +4370,17 @@ _section("_parse_retry_after / _backoff_delay")
 
 _pr = Pipe()
 _assert(_pr._parse_retry_after("5") == 5.0, "integer seconds parsed")
-_assert(_pr._parse_retry_after("99999") == mod._MAX_RETRY_AFTER, "huge value capped at _MAX_RETRY_AFTER")
+_assert(
+    _pr._parse_retry_after("99999") == mod._MAX_RETRY_AFTER, "huge value capped at _MAX_RETRY_AFTER"
+)
 _assert(_pr._parse_retry_after("-3") == 0.0, "negative clamped to 0")
-_assert(_pr._parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT") == mod._MAX_RETRY_AFTER, "far-future HTTP-date capped")
-_assert(_pr._parse_retry_after("Mon, 01 Jan 2001 00:00:00 GMT") == 0.0, "past HTTP-date clamped to 0")
+_assert(
+    _pr._parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT") == mod._MAX_RETRY_AFTER,
+    "far-future HTTP-date capped",
+)
+_assert(
+    _pr._parse_retry_after("Mon, 01 Jan 2001 00:00:00 GMT") == 0.0, "past HTTP-date clamped to 0"
+)
 _assert(_pr._parse_retry_after("") is None, "empty → None")
 _assert(_pr._parse_retry_after(None) is None, "None → None")
 _assert(_pr._parse_retry_after("abc") is None, "garbage → None")
@@ -3773,7 +4396,9 @@ _assert(mod._RETRYABLE_STATUS == frozenset({429, 500, 502, 503, 504}), "retryabl
 _section("retryable_request transient HTTP retries")
 
 # 429 (with Retry-After) then 200 → one retry, returns 200, slept the Retry-After value
-_p_r = Pipe(); _p_r.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_r.valves.MAX_RETRIES = 2
+_p_r = Pipe()
+_p_r.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_r.valves.MAX_RETRIES = 2
 _script_post(_p_r, [_FakeHTTPResp(429, {"Retry-After": "7"}), _FakeHTTPResp(200, body={"ok": 1})])
 with patch.object(mod.time, "sleep") as _sl:
     _resp = _p_r._retryable_request({}, {}, False, _p_r.valves)
@@ -3782,7 +4407,9 @@ _assert(_p_r._post_calls == 2, "429→200: exactly one retry")
 _assert(_sl.call_args_list[0][0][0] == 7.0, "429: slept the Retry-After value (7s)")
 
 # 503 without Retry-After then 200 → retried with a backoff delay (attempt 0 → [1,2))
-_p_s = Pipe(); _p_s.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_s.valves.MAX_RETRIES = 2
+_p_s = Pipe()
+_p_s.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_s.valves.MAX_RETRIES = 2
 _script_post(_p_s, [_FakeHTTPResp(503), _FakeHTTPResp(200, body={"ok": 1})])
 with patch.object(mod.time, "sleep") as _sl2:
     _resp2 = _p_s._retryable_request({}, {}, False, _p_s.valves)
@@ -3791,7 +4418,9 @@ _assert(1.0 <= _sl2.call_args_list[0][0][0] < 2.0, "503 no Retry-After: backoff 
 
 # Non-retryable 4xx → raise immediately, no retry
 for _code in (400, 401, 403, 404):
-    _p_e = Pipe(); _p_e.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_e.valves.MAX_RETRIES = 2
+    _p_e = Pipe()
+    _p_e.valves.OPENROUTER_API_KEY = "sk-or-test"
+    _p_e.valves.MAX_RETRIES = 2
     _script_post(_p_e, [_FakeHTTPResp(_code), _FakeHTTPResp(200)])
     _raised = False
     with patch.object(mod.time, "sleep"):
@@ -3803,7 +4432,9 @@ for _code in (400, 401, 403, 404):
     _assert(_p_e._post_calls == 1, f"HTTP {_code} not retried")
 
 # Retryable every time → raises after MAX_RETRIES+1 attempts, sleeps MAX_RETRIES times
-_p_x = Pipe(); _p_x.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_x.valves.MAX_RETRIES = 2
+_p_x = Pipe()
+_p_x.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_x.valves.MAX_RETRIES = 2
 _script_post(_p_x, [_FakeHTTPResp(429), _FakeHTTPResp(429), _FakeHTTPResp(429)])
 _raised_x = False
 with patch.object(mod.time, "sleep") as _sl3:
@@ -3816,7 +4447,9 @@ _assert(_p_x._post_calls == 3, "MAX_RETRIES=2 → 3 attempts total")
 _assert(_sl3.call_count == 2, "slept twice (between the 3 attempts)")
 
 # MAX_RETRIES=0 → no retry even on 429
-_p_z = Pipe(); _p_z.valves.OPENROUTER_API_KEY = "sk-or-test"; _p_z.valves.MAX_RETRIES = 0
+_p_z = Pipe()
+_p_z.valves.OPENROUTER_API_KEY = "sk-or-test"
+_p_z.valves.MAX_RETRIES = 0
 _script_post(_p_z, [_FakeHTTPResp(429), _FakeHTTPResp(200)])
 _raised_z = False
 with patch.object(mod.time, "sleep"):
@@ -3828,8 +4461,10 @@ _assert(_raised_z and _p_z._post_calls == 1, "MAX_RETRIES=0 disables retry")
 
 _section("_format_http_error new status codes")
 
+
 def _err(status):
     return mod.requests.exceptions.HTTPError(response=_FakeHTTPResp(status))
+
 
 _pf = Pipe()
 _assert("not found" in _pf._format_http_error(_err(404)).lower(), "404 → 'not found' wording")
@@ -3843,61 +4478,120 @@ _assert("504" in _pf._format_http_error(_err(504)), "504 message")
 
 _section("plain-stream credit footer + cap-note guard")
 
+
 # (A) plain streaming emits credit footer when SHOW_REMAINING_CREDIT on
 class _CreditStream:
-    def __init__(self, lines): self._lines = lines
-    def iter_lines(self, **_kw): return iter(self._lines)
-    def close(self): pass
+    def __init__(self, lines):
+        self._lines = lines
 
-_pcs = Pipe(); _pcs.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcs.valves.SHOW_REMAINING_CREDIT = True
+    def iter_lines(self, **_kw):
+        return iter(self._lines)
+
+    def close(self):
+        pass
+
+
+_pcs = Pipe()
+_pcs.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pcs.valves.SHOW_REMAINING_CREDIT = True
 # Footers now read cache-only; stub both helpers so prefetch + footer
 # work without HTTP.
 _pcs._fetch_credit_balance = lambda valves: 4.25  # type: ignore
 _pcs._credit_balance_cached = lambda valves: 4.25  # type: ignore
-_lines = [b"data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}).encode(), b"data: [DONE]"]
+_lines = [
+    b"data: " + json.dumps({"choices": [{"delta": {"content": "hi"}}]}).encode(),
+    b"data: [DONE]",
+]
 _pcs._retryable_request = lambda headers, payload, stream, valves: _CreditStream(_lines)  # type: ignore
 _out_cs = "".join(_pcs._stream_response({}, {"model": "x"}, _pcs.valves))
-_assert("credit remaining" in _out_cs.lower(), "plain stream shows credit footer when enabled")
+_assert("limit remaining" in _out_cs.lower(), "plain stream shows key-limit footer when enabled")
 _assert("hi" in _out_cs, "plain stream still yields content")
+
 
 # (B) cap-exit returning an error string does NOT get the cap note appended
 class _CapResp:
-    def __init__(self, body): self._b = body
-    def json(self): return self._b
-    def close(self): pass
-_pcn = Pipe(); _pcn.valves.OPENROUTER_API_KEY = "sk-or-test"; _pcn.valves.MAX_TOOL_ITERATIONS = 1
-_tc = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]}}]}
+    def __init__(self, body):
+        self._b = body
+
+    def json(self):
+        return self._b
+
+    def close(self):
+        pass
+
+
+_pcn = Pipe()
+_pcn.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pcn.valves.MAX_TOOL_ITERATIONS = 1
+_tc = {
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}],
+            }
+        }
+    ]
+}
 _seq = [_CapResp(_tc), _CapResp({"error": {"message": "boom"}})]
 _pcn._retryable_request = lambda headers, payload, stream, valves: _seq.pop(0)  # type: ignore
-_capout = _run(_pcn._run_tools_nonstream({}, {"model": "x", "messages": []}, _pcn.valves, {"t": {"spec": {}, "callable": lambda: "ok"}}, None))
+_capout = _run(
+    _pcn._run_tools_nonstream(
+        {},
+        {"model": "x", "messages": []},
+        _pcn.valves,
+        {"t": {"spec": {}, "callable": lambda: "ok"}},
+        None,
+    )
+)
 _assert(_capout.startswith("OpenRouter Error:"), "cap-exit error returns the error string")
 _assert("MAX_TOOL_ITERATIONS" not in _capout, "cap note NOT appended to an error string")
 
 _section("retry sleep does not block the event loop")
 
 import threading as _threading
-_pb = Pipe(); _pb.valves.OPENROUTER_API_KEY = "sk-or-test"; _pb.valves.MAX_RETRIES = 1
-_seqb = [_FakeHTTPResp(429, {"Retry-After": "0"}), _FakeHTTPResp(200, body={"choices": [{"message": {"content": "ok"}}]})]
+
+_pb = Pipe()
+_pb.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pb.valves.MAX_RETRIES = 1
+_seqb = [
+    _FakeHTTPResp(429, {"Retry-After": "0"}),
+    _FakeHTTPResp(200, body={"choices": [{"message": {"content": "ok"}}]}),
+]
 _pb._post_calls = 0
+
+
 def _postb(*a, **k):
     _pb._post_calls += 1
     return _seqb.pop(0)
+
+
 _pb._session.post = _postb  # type: ignore
 
 _main_thread = _threading.get_ident()
 _sleep_threads = []
 _orig_sleep = mod.time.sleep
+
+
 def _track_sleep(s):
     _sleep_threads.append(_threading.get_ident())
+
+
 mod.time.sleep = _track_sleep
 try:
+
     async def _drive():
         return await _pb._call_request_async(False, {}, {"model": "x"}, _pb.valves)
+
     _r = _run(_drive())
 finally:
     mod.time.sleep = _orig_sleep
 _assert(_r.status_code == 200, "async retry returns success")
-_assert(_sleep_threads and all(t != _main_thread for t in _sleep_threads), "retry sleep ran off the main/event-loop thread")
+_assert(
+    _sleep_threads and all(t != _main_thread for t in _sleep_threads),
+    "retry sleep ran off the main/event-loop thread",
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
@@ -3906,19 +4600,38 @@ _assert(_sleep_threads and all(t != _main_thread for t in _sleep_threads), "retr
 _section("security sanitization")
 
 with patch.dict(os.environ, {"WEBUI_NAME": "Evil\r\nX-Inject: 1"}):
-    _px = Pipe(); _px.valves.OPENROUTER_API_KEY = "sk-or-x"
+    _px = Pipe()
+    _px.valves.OPENROUTER_API_KEY = "sk-or-x"
     _h = _px._build_headers(valves=_px.valves)
     _assert("\r" not in _h["X-Title"] and "\n" not in _h["X-Title"], "X-Title strips CR/LF")
 
 _pm = Pipe()
 _res_fb = {"choices": [{"message": {"content": "hi"}}], "model": "evil`x", "models": ["a"]}
 _msg = _pm._format_final_message(_res_fb, {"model": "a", "models": ["a", "b"]}, _pm.valves)
-_assert("Responded by" in _msg and "`" not in _msg.split("Responded by")[-1], "Responded-by strips backticks")
+_assert(
+    "Responded by" in _msg and "`" not in _msg.split("Responded by")[-1],
+    "Responded-by strips backticks",
+)
 
-_assert(mod._format_image_output([{"image_url": {"url": "data:image/svg+xml,<svg onload=alert(1)>"}}]) == "", "svg data URL rejected")
-_assert("data:image/png;base64,iVBOR" in mod._format_image_output([{"image_url": {"url": "data:image/png;base64,iVBOR"}}]), "png data URL allowed")
-_assert(mod._format_image_output([{"image_url": {"url": "data:image/png;base64," + ("A" * 3_000_000)}}]) == "", "oversized data URL rejected")
-_assert("https://x/y.png" in mod._format_image_output([{"image_url": {"url": "https://x/y.png"}}]), "http image URL still allowed")
+_assert(
+    mod._format_image_output([{"image_url": {"url": "data:image/svg+xml,<svg onload=alert(1)>"}}])
+    == "",
+    "svg data URL rejected",
+)
+_assert(
+    "data:image/png;base64,iVBOR"
+    in mod._format_image_output([{"image_url": {"url": "data:image/png;base64,iVBOR"}}]),
+    "png data URL allowed",
+)
+_assert(
+    mod._format_image_output([{"image_url": {"url": "data:image/png;base64," + ("A" * 3_000_000)}}])
+    == "",
+    "oversized data URL rejected",
+)
+_assert(
+    "https://x/y.png" in mod._format_image_output([{"image_url": {"url": "https://x/y.png"}}]),
+    "http image URL still allowed",
+)
 
 with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretA"}):
     _ct = mod.EncryptedStr.encrypt("sk-or-real")
@@ -3929,25 +4642,38 @@ with patch.dict(os.environ, {"WEBUI_SECRET_KEY": "secretB"}):
     )
 
 with patch.dict(os.environ, {"WEBUI_URL": "http://h\r\nX-Inject: 1"}):
-    _pr2 = Pipe(); _pr2.valves.OPENROUTER_API_KEY = "sk-or-x"
+    _pr2 = Pipe()
+    _pr2.valves.OPENROUTER_API_KEY = "sk-or-x"
     _hr = _pr2._build_headers(valves=_pr2.valves)
-    _assert("\r" not in _hr["HTTP-Referer"] and "\n" not in _hr["HTTP-Referer"], "HTTP-Referer (env) strips CR/LF")
+    _assert(
+        "\r" not in _hr["HTTP-Referer"] and "\n" not in _hr["HTTP-Referer"],
+        "HTTP-Referer (env) strips CR/LF",
+    )
 
 _cl = mod._format_citation_list(["https://ok.com/a", "https://evil.com\r\nINJECT"])
 _assert("\r" not in _cl, "citation list strips CR from URLs")
 # The CR/LF inside the malicious URL must be removed, not turned into a new line:
 # the rendered block has exactly the header lines + one line per citation (no extra).
-_assert(len(_cl.strip().split(chr(10))) == 4, "citation list: no extra lines injected (--- + Citations: + 2 urls)")
-_assert("2. https://evil.comINJECT" in _cl, "citation URL CR/LF stripped, content kept on its own line")
+_assert(
+    len(_cl.strip().split(chr(10))) == 4,
+    "citation list: no extra lines injected (--- + Citations: + 2 urls)",
+)
+_assert(
+    "2. https://evil.comINJECT" in _cl, "citation URL CR/LF stripped, content kept on its own line"
+)
 
 _section("usage.include + user-id forwarding")
 
-_pu = Pipe(); _pu.valves.SHOW_COST_INFO = True
-_pp = _pu._prepare_payload({"model": "x", "messages": [], "user": {"id": "u123", "name": "n"}}, _pu.valves)
+_pu = Pipe()
+_pu.valves.SHOW_COST_INFO = True
+_pp = _pu._prepare_payload(
+    {"model": "x", "messages": [], "user": {"id": "u123", "name": "n"}}, _pu.valves
+)
 _assert(_pp.get("usage") == {"include": True}, "usage.include injected when SHOW_COST_INFO on")
 _assert(_pp.get("user") == "u123", "user dict reduced to its id string")
 
-_pu2 = Pipe(); _pu2.valves.SHOW_COST_INFO = False
+_pu2 = Pipe()
+_pu2.valves.SHOW_COST_INFO = False
 _pp2 = _pu2._prepare_payload({"model": "x", "messages": []}, _pu2.valves)
 _assert("usage" not in _pp2, "no usage.include when SHOW_COST_INFO off")
 
@@ -3965,21 +4691,33 @@ _assert(Pipe.UserValves().TOOL_CHOICE is None, "UserValves TOOL_CHOICE inherits 
 
 _prf.valves.RESPONSE_FORMAT = "json_object"
 _pp = _prf._prepare_payload({"model": "x", "messages": []}, _prf.valves)
-_assert(_pp.get("response_format") == {"type": "json_object"}, "json_object response_format injected")
+_assert(
+    _pp.get("response_format") == {"type": "json_object"}, "json_object response_format injected"
+)
 
 _prf.valves.TOOL_CHOICE = "required"
 _pp2 = _prf._prepare_payload({"model": "x", "messages": []}, _prf.valves)
 _assert(_pp2.get("tool_choice") == "required", "tool_choice injected from valve")
 
 # body wins over valve
-_pp3 = _prf._prepare_payload({"model": "x", "messages": [], "response_format": {"type": "json_schema", "json_schema": {}}, "tool_choice": "none"}, _prf.valves)
+_pp3 = _prf._prepare_payload(
+    {
+        "model": "x",
+        "messages": [],
+        "response_format": {"type": "json_schema", "json_schema": {}},
+        "tool_choice": "none",
+    },
+    _prf.valves,
+)
 _assert(_pp3["response_format"]["type"] == "json_schema", "explicit body response_format preserved")
 _assert(_pp3["tool_choice"] == "none", "explicit body tool_choice preserved")
 
 # empty valve → nothing injected
 _prf2 = Pipe()
 _pp4 = _prf2._prepare_payload({"model": "x", "messages": []}, _prf2.valves)
-_assert("response_format" not in _pp4 and "tool_choice" not in _pp4, "no injection when valves empty")
+_assert(
+    "response_format" not in _pp4 and "tool_choice" not in _pp4, "no injection when valves empty"
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Robustness polish
@@ -4004,58 +4742,132 @@ _assert(len(_pcc._credit_cache) <= 1000, "credit cache capped at 1000")
 _section("coverage: pipe() tool dispatch + stream cap + credit in final message")
 
 # (a) pipe() entry with __tools__ (non-stream) runs the tool loop and returns the final answer
-_pe9 = Pipe(); _pe9.valves.OPENROUTER_API_KEY = "sk-or-test"; _pe9.valves.MAX_TOOL_ITERATIONS = 3
+_pe9 = Pipe()
+_pe9.valves.OPENROUTER_API_KEY = "sk-or-test"
+_pe9.valves.MAX_TOOL_ITERATIONS = 3
 _pe9._lazy_populated = True  # skip the catalog fetch; leave tool-capability unknown (tools attach)
-_r1 = {"choices": [{"message": {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}}]}
+_r1 = {
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+                ],
+            }
+        }
+    ]
+}
 _r2 = {"choices": [{"message": {"role": "assistant", "content": "final answer"}}]}
+
+
 class _R9:
-    def __init__(self, b): self._b = b
-    def json(self): return self._b
-    def close(self): pass
+    def __init__(self, b):
+        self._b = b
+
+    def json(self):
+        return self._b
+
+    def close(self):
+        pass
+
+
 _seq9 = [_R9(_r1), _R9(_r2)]
 _pe9._retryable_request = lambda headers, payload, stream, valves: _seq9.pop(0)  # type: ignore
 _tools9 = {"t": {"spec": {"name": "t"}, "callable": lambda: "tool-result"}}
-_res9 = _run(_pe9.pipe({"model": "x", "messages": [{"role": "user", "content": "hi"}], "stream": False}, __tools__=_tools9))
+_res9 = _run(
+    _pe9.pipe(
+        {"model": "x", "messages": [{"role": "user", "content": "hi"}], "stream": False},
+        __tools__=_tools9,
+    )
+)
 _assert("final answer" in _res9, "pipe() with __tools__ runs the loop and returns the final answer")
 
 # (b) streaming tool loop hits the iteration cap → cap note emitted
-_ps9 = Pipe(); _ps9.valves.OPENROUTER_API_KEY = "sk-or-test"; _ps9.valves.MAX_TOOL_ITERATIONS = 1
+_ps9 = Pipe()
+_ps9.valves.OPENROUTER_API_KEY = "sk-or-test"
+_ps9.valves.MAX_TOOL_ITERATIONS = 1
+
+
 def _toolround():
-    return _FakeStream([
-        b"data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}).encode(),
-        b"data: [DONE]",
-    ])
+    return _FakeStream(
+        [
+            b"data: "
+            + json.dumps(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {"name": "t", "arguments": "{}"},
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                }
+            ).encode(),
+            b"data: [DONE]",
+        ]
+    )
+
+
 _streams9 = [_toolround(), _toolround(), _toolround()]
 _ps9._retryable_request = lambda headers, payload, stream, valves: _streams9.pop(0)  # type: ignore
 _tools9b = {"t": {"spec": {"name": "t"}, "callable": lambda: "r"}}
+
+
 async def _collect9():
     out = []
-    async for piece in _ps9._run_tools_stream({}, {"model": "x", "messages": []}, _ps9.valves, _tools9b, None):
+    async for piece in _ps9._run_tools_stream(
+        {}, {"model": "x", "messages": []}, _ps9.valves, _tools9b, None
+    ):
         out.append(piece)
     return "".join(out)
+
+
 _capstream = _run(_collect9())
 _assert("MAX_TOOL_ITERATIONS" in _capstream, "streaming tool loop emits cap note at the limit")
 
 # (c) credit line appears in _format_final_message when enabled
-_pf9 = Pipe(); _pf9.valves.SHOW_REMAINING_CREDIT = True
+_pf9 = Pipe()
+_pf9.valves.SHOW_REMAINING_CREDIT = True
 # Footer now reads cache-only; stub _credit_balance_cached directly.
 _pf9._credit_balance_cached = lambda valves: 7.5  # type: ignore
-_fm9 = _pf9._format_final_message({"choices": [{"message": {"content": "ok"}}]}, {"model": "x"}, _pf9.valves)
-_assert("credit remaining" in _fm9.lower(), "credit line in _format_final_message when enabled")
+_fm9 = _pf9._format_final_message(
+    {"choices": [{"message": {"content": "ok"}}]}, {"model": "x"}, _pf9.valves
+)
+_assert("limit remaining" in _fm9.lower(), "key-limit line in _format_final_message when enabled")
 
 # ── credit prefetch off-loop in tool footers ───────────────────────────────────
 
 _section("credit prefetch off-loop in tool footers")
 
 import threading as _thr_pf
-_p_pf = Pipe(); _p_pf.valves.SHOW_REMAINING_CREDIT = True
+
+_p_pf = Pipe()
+_p_pf.valves.SHOW_REMAINING_CREDIT = True
 _threads_pf = []
+
+
 def _fake_fetch_pf(valves):
-    _threads_pf.append(_thr_pf.get_ident()); return 1.23
+    _threads_pf.append(_thr_pf.get_ident())
+    return 1.23
+
+
 _p_pf._fetch_credit_balance = _fake_fetch_pf  # type: ignore
 _main_pf = _thr_pf.get_ident()
 asyncio.run(_p_pf._prefetch_credit_if_enabled(_p_pf.valves))
-_assert(_threads_pf and all(t != _main_pf for t in _threads_pf), "credit prefetch runs off the main thread")
+_assert(
+    _threads_pf and all(t != _main_pf for t in _threads_pf),
+    "credit prefetch runs off the main thread",
+)
 
 _threads_pf.clear()
 _p_pf.valves.SHOW_REMAINING_CREDIT = False
@@ -4074,88 +4886,159 @@ _p_im = Pipe()
 # Missing request → no-op
 _msg_im1 = {"images": [{"image_url": {"url": "data:image/png;base64,iVBOR"}}]}
 _ok_im1 = asyncio.run(_p_im._emit_image_files(None, _msg_im1))
-_assert(_ok_im1 is False and _msg_im1["images"], "no runtime context (no request) → False, images untouched")
+_assert(
+    _ok_im1 is False and _msg_im1["images"],
+    "no runtime context (no request) → False, images untouched",
+)
 
 # Missing user dict → no-op
 _msg_im2 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
-_ok_im2 = asyncio.run(_p_im._emit_image_files(None, _msg_im2, request=object(), user=None, metadata={"chat_id": "c", "message_id": "m"}))
+_ok_im2 = asyncio.run(
+    _p_im._emit_image_files(
+        None, _msg_im2, request=object(), user=None, metadata={"chat_id": "c", "message_id": "m"}
+    )
+)
 _assert(_ok_im2 is False and _msg_im2["images"], "no user dict → False, images untouched")
 
 # Empty user id → no-op
 _msg_im3 = {"images": [{"image_url": {"url": "data:image/png;base64,xx"}}]}
-_ok_im3 = asyncio.run(_p_im._emit_image_files(None, _msg_im3, request=object(), user={"id": ""}, metadata={"chat_id": "c"}))
+_ok_im3 = asyncio.run(
+    _p_im._emit_image_files(
+        None, _msg_im3, request=object(), user={"id": ""}, metadata={"chat_id": "c"}
+    )
+)
 _assert(_ok_im3 is False and _msg_im3["images"], "empty user id → False, images untouched")
 
 # No images → no-op
 _msg_im4 = {"content": "text only"}
-_ok_im4 = asyncio.run(_p_im._emit_image_files(None, _msg_im4, request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}))
+_ok_im4 = asyncio.run(
+    _p_im._emit_image_files(
+        None, _msg_im4, request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}
+    )
+)
 _assert(_ok_im4 is False, "no images key → False")
 
 # Non-dict message → no-op (defensive)
-_ok_im5 = asyncio.run(_p_im._emit_image_files(None, "not a dict", request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}))
+_ok_im5 = asyncio.run(
+    _p_im._emit_image_files(
+        None, "not a dict", request=object(), user={"id": "u1"}, metadata={"chat_id": "c"}
+    )
+)
 _assert(_ok_im5 is False, "non-dict message → False")
 
 # With runtime context but OWUI helpers unavailable locally (no `open_webui`
 # module on the test machine) → helper logs + returns False without crashing.
 _msg_im6 = {"images": [{"image_url": {"url": "data:image/png;base64,iVBOR"}}]}
-_ok_im6 = asyncio.run(_p_im._emit_image_files(None, _msg_im6, request=object(), user={"id": "u1"}, metadata={"chat_id": "c", "message_id": "m"}))
+_ok_im6 = asyncio.run(
+    _p_im._emit_image_files(
+        None,
+        _msg_im6,
+        request=object(),
+        user={"id": "u1"},
+        metadata={"chat_id": "c", "message_id": "m"},
+    )
+)
 _assert(_ok_im6 is False, "OWUI helpers missing locally → False, no crash")
-_assert(_msg_im6["images"], "OWUI helpers missing → images untouched (formatter falls back to data URL)")
+_assert(
+    _msg_im6["images"], "OWUI helpers missing → images untouched (formatter falls back to data URL)"
+)
 
 # _format_image_output now accepts OWUI internal file paths so the markdown
 # carries the small `/api/v1/files/.../content` link that OWUI renders inline.
-_md_internal = mod._format_image_output([
-    {"image_url": {"url": "/api/v1/files/abc-def/content"}},
-])
-_assert("![Generated image](/api/v1/files/abc-def/content)" in _md_internal, "_format_image_output accepts /api/v1/files/ relative URLs")
-_md_http = mod._format_image_output([
-    {"image_url": {"url": "https://example.com/x.png"}},
-])
-_assert("![Generated image](https://example.com/x.png)" in _md_http, "_format_image_output still accepts https URLs")
-_md_data = mod._format_image_output([
-    {"image_url": {"url": "data:image/png;base64,iVBOR"}},
-])
-_assert("![Generated image](data:image/png;base64,iVBOR)" in _md_data, "_format_image_output still accepts data:image/* URLs")
-_md_bad = mod._format_image_output([
-    {"image_url": {"url": "javascript:alert(1)"}},
-    {"image_url": {"url": "/other/path"}},
-])
-_assert(_md_bad == "", "_format_image_output rejects javascript: and non-/api/v1/files/ relative URLs")
+_md_internal = mod._format_image_output(
+    [
+        {"image_url": {"url": "/api/v1/files/abc-def/content"}},
+    ]
+)
+_assert(
+    "![Generated image](/api/v1/files/abc-def/content)" in _md_internal,
+    "_format_image_output accepts /api/v1/files/ relative URLs",
+)
+_md_http = mod._format_image_output(
+    [
+        {"image_url": {"url": "https://example.com/x.png"}},
+    ]
+)
+_assert(
+    "![Generated image](https://example.com/x.png)" in _md_http,
+    "_format_image_output still accepts https URLs",
+)
+_md_data = mod._format_image_output(
+    [
+        {"image_url": {"url": "data:image/png;base64,iVBOR"}},
+    ]
+)
+_assert(
+    "![Generated image](data:image/png;base64,iVBOR)" in _md_data,
+    "_format_image_output still accepts data:image/* URLs",
+)
+_md_bad = mod._format_image_output(
+    [
+        {"image_url": {"url": "javascript:alert(1)"}},
+        {"image_url": {"url": "/other/path"}},
+    ]
+)
+_assert(
+    _md_bad == "", "_format_image_output rejects javascript: and non-/api/v1/files/ relative URLs"
+)
 
 # ── video generation: detection + submit/poll/upload flow ──────────────────────
 
 _section("video generation: detection + async /videos flow")
 
 # _extract_video_prompt: latest user message wins; flattens list-of-parts.
-_vp1 = Pipe._extract_video_prompt({"messages": [
-    {"role": "user", "content": "old prompt"},
-    {"role": "assistant", "content": "hi"},
-    {"role": "user", "content": "a red car driving"},
-]})
+_vp1 = Pipe._extract_video_prompt(
+    {
+        "messages": [
+            {"role": "user", "content": "old prompt"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "a red car driving"},
+        ]
+    }
+)
 _assert(_vp1 == "a red car driving", "_extract_video_prompt picks latest user message")
 
-_vp2 = Pipe._extract_video_prompt({"messages": [
-    {"role": "user", "content": [
-        {"type": "text", "text": "a red"},
-        {"type": "text", "text": "car driving"},
-    ]},
-]})
+_vp2 = Pipe._extract_video_prompt(
+    {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "a red"},
+                    {"type": "text", "text": "car driving"},
+                ],
+            },
+        ]
+    }
+)
 _assert(_vp2 == "a red car driving", "_extract_video_prompt flattens text parts")
 
 _vp3 = Pipe._extract_video_prompt({"messages": []})
 _assert(_vp3 == "", "_extract_video_prompt returns empty when no user message")
 
-_vp4 = Pipe._extract_video_prompt({"messages": [{"role": "user", "content": [
-    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}
-]}]})
+_vp4 = Pipe._extract_video_prompt(
+    {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,xx"}}
+                ],
+            }
+        ]
+    }
+)
 _assert(_vp4 == "", "_extract_video_prompt returns empty when only non-text parts")
 
 # Empty prompt → friendly error, no HTTP call
 _p_vg = Pipe()
-_vg_empty = asyncio.run(_p_vg._run_video_generation(
-    {"messages": []}, "google/veo-3.1-fast", _p_vg.valves, None, None, None, None
-))
+_vg_empty = asyncio.run(
+    _p_vg._run_video_generation(
+        {"messages": []}, "google/veo-3.1-fast", _p_vg.valves, None, None, None, None
+    )
+)
 _assert("non-empty text prompt" in _vg_empty, "empty prompt → friendly error")
+
 
 # Submit returns 500 → wrapped error, no polling
 class _FakeResp:
@@ -4165,54 +5048,81 @@ class _FakeResp:
         self.headers = headers or {}
         self.text = text
         self.content = b""
+
     def json(self):
         if isinstance(self._data, Exception):
             raise self._data
         return self._data
+
     def raise_for_status(self):
         if self.status_code >= 400:
             import requests as _rq
+
             raise _rq.exceptions.HTTPError(f"{self.status_code}", response=self)
+
     # iter_content mirrors requests.Response so tests can stand in for the
     # streaming video download path added by the security batch.
     def iter_content(self, chunk_size=8192):
         if not self.content:
             return iter(())
-        return iter([self.content[i:i + chunk_size]
-                     for i in range(0, len(self.content), chunk_size)])
+        return iter(
+            [self.content[i : i + chunk_size] for i in range(0, len(self.content), chunk_size)]
+        )
+
     def close(self):
         pass
+
 
 class _FakeSession:
     def __init__(self, plan):
         self.plan = list(plan)
         self.calls = []
+
     def post(self, url, **kw):
         self.calls.append(("POST", url, kw))
         return self.plan.pop(0)
+
     def get(self, url, **kw):
         self.calls.append(("GET", url, kw))
         return self.plan.pop(0)
 
+
 _p_vg2 = Pipe()
-_p_vg2._session = _FakeSession([
-    _FakeResp(500, {"error": {"message": "upstream down"}}),
-])
-_vg_500 = asyncio.run(_p_vg2._run_video_generation(
-    {"messages": [{"role": "user", "content": "a red car"}]},
-    "google/veo-3.1-fast",
-    _p_vg2.valves, None, None, None, None,
-))
-_assert("Failed to start video job" in _vg_500 and "upstream down" in _vg_500, "submit 500 → wrapped error with detail")
+_p_vg2._session = _FakeSession(
+    [
+        _FakeResp(500, {"error": {"message": "upstream down"}}),
+    ]
+)
+_vg_500 = asyncio.run(
+    _p_vg2._run_video_generation(
+        {"messages": [{"role": "user", "content": "a red car"}]},
+        "google/veo-3.1-fast",
+        _p_vg2.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Failed to start video job" in _vg_500 and "upstream down" in _vg_500,
+    "submit 500 → wrapped error with detail",
+)
 
 # Submit returns 401 → auth message
 _p_vg3 = Pipe()
 _p_vg3._session = _FakeSession([_FakeResp(401, {"error": {"message": "no key"}})])
-_vg_401 = asyncio.run(_p_vg3._run_video_generation(
-    {"messages": [{"role": "user", "content": "a red car"}]},
-    "google/veo-3.1-fast",
-    _p_vg3.valves, None, None, None, None,
-))
+_vg_401 = asyncio.run(
+    _p_vg3._run_video_generation(
+        {"messages": [{"role": "user", "content": "a red car"}]},
+        "google/veo-3.1-fast",
+        _p_vg3.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("Authentication failed" in _vg_401, "submit 401 → auth error")
 
 # Success path: submit accepted → poll completed → upload (mock) → <video> tag.
@@ -4220,26 +5130,56 @@ _assert("Authentication failed" in _vg_401, "submit 401 → auth error")
 _p_vg4 = Pipe()
 _p_vg4.valves.VIDEO_POLL_INTERVAL = 0.01
 _p_vg4.valves.VIDEO_GENERATION_TIMEOUT = 30
-_p_vg4._session = _FakeSession([
-    _FakeResp(202, {"id": "job-1", "polling_url": "https://openrouter.ai/api/v1/videos/job-1", "status": "pending"}),
-    _FakeResp(200, {"id": "job-1", "status": "in_progress"}),
-    _FakeResp(200, {"id": "job-1", "status": "completed", "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-1/content?index=0"], "usage": {"cost": 0.25}}),
-    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
-])
+_p_vg4._session = _FakeSession(
+    [
+        _FakeResp(
+            202,
+            {
+                "id": "job-1",
+                "polling_url": "https://openrouter.ai/api/v1/videos/job-1",
+                "status": "pending",
+            },
+        ),
+        _FakeResp(200, {"id": "job-1", "status": "in_progress"}),
+        _FakeResp(
+            200,
+            {
+                "id": "job-1",
+                "status": "completed",
+                "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-1/content?index=0"],
+                "usage": {"cost": 0.25},
+            },
+        ),
+        _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+    ]
+)
 # Patch the download response to carry bytes (FakeResp.content is b"" by default).
 _p_vg4._session.plan[-1].content = b"\x00\x00\x00 ftypmp42"
+
+
 # Patch the upload helper to skip OWUI imports.
 async def _fake_upload(self, request, user, metadata, video_bytes, content_type="video/mp4"):
     _fake_upload.last = {"bytes_len": len(video_bytes), "ct": content_type}
     return ("vid-abc", "/api/v1/files/vid-abc/content")
+
+
 _p_vg4._upload_video_to_owui = _fake_upload.__get__(_p_vg4, Pipe)  # type: ignore
 
-_vg_ok = asyncio.run(_p_vg4._run_video_generation(
-    {"messages": [{"role": "user", "content": "a red car"}]},
-    "google/veo-3.1-fast",
-    _p_vg4.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
-))
-_assert("<div><video>/api/v1/files/vid-abc/content</video></div>" in _vg_ok, "success → block-level <div><video>URL</video></div> token")
+_vg_ok = asyncio.run(
+    _p_vg4._run_video_generation(
+        {"messages": [{"role": "user", "content": "a red car"}]},
+        "google/veo-3.1-fast",
+        _p_vg4.valves,
+        None,
+        object(),
+        {"id": "u1"},
+        {"chat_id": "c", "message_id": "m"},
+    )
+)
+_assert(
+    "<div><video>/api/v1/files/vid-abc/content</video></div>" in _vg_ok,
+    "success → block-level <div><video>URL</video></div> token",
+)
 _assert("Video cost" not in _vg_ok, "cost footer hidden when SHOW_COST_INFO=False by default")
 
 # Cost footer appears when SHOW_COST_INFO is on.
@@ -4247,35 +5187,75 @@ _p_vg5 = Pipe()
 _p_vg5.valves.VIDEO_POLL_INTERVAL = 0.01
 _p_vg5.valves.VIDEO_GENERATION_TIMEOUT = 30
 _p_vg5.valves.SHOW_COST_INFO = True
-_p_vg5._session = _FakeSession([
-    _FakeResp(202, {"id": "job-2", "polling_url": "https://openrouter.ai/api/v1/videos/job-2", "status": "pending"}),
-    _FakeResp(200, {"id": "job-2", "status": "completed", "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-2/content?index=0"], "usage": {"cost": 0.25}}),
-    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
-])
+_p_vg5._session = _FakeSession(
+    [
+        _FakeResp(
+            202,
+            {
+                "id": "job-2",
+                "polling_url": "https://openrouter.ai/api/v1/videos/job-2",
+                "status": "pending",
+            },
+        ),
+        _FakeResp(
+            200,
+            {
+                "id": "job-2",
+                "status": "completed",
+                "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job-2/content?index=0"],
+                "usage": {"cost": 0.25},
+            },
+        ),
+        _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+    ]
+)
 _p_vg5._session.plan[-1].content = b"\x00bytes"
+
+
 async def _fake_upload2(self, request, user, metadata, video_bytes, content_type="video/mp4"):
     return ("vid-def", "/api/v1/files/vid-def/content")
+
+
 _p_vg5._upload_video_to_owui = _fake_upload2.__get__(_p_vg5, Pipe)  # type: ignore
-_vg_cost = asyncio.run(_p_vg5._run_video_generation(
-    {"messages": [{"role": "user", "content": "a blue car"}]},
-    "google/veo-3.1-fast",
-    _p_vg5.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
-))
+_vg_cost = asyncio.run(
+    _p_vg5._run_video_generation(
+        {"messages": [{"role": "user", "content": "a blue car"}]},
+        "google/veo-3.1-fast",
+        _p_vg5.valves,
+        None,
+        object(),
+        {"id": "u1"},
+        {"chat_id": "c", "message_id": "m"},
+    )
+)
 _assert("Video cost" in _vg_cost and "0.2500" in _vg_cost, "cost footer rendered with USD value")
 
 # Failed job → wrapped error
 _p_vg6 = Pipe()
 _p_vg6.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_vg6._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
-    _FakeResp(200, {"id": "j", "status": "failed", "error": {"message": "content policy block"}}),
-])
-_vg_fail = asyncio.run(_p_vg6._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_vg6.valves, None, None, None, None,
-))
-_assert("Video generation failed" in _vg_fail and "content policy block" in _vg_fail, "polled status=failed → wrapped error")
+_p_vg6._session = _FakeSession(
+    [
+        _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+        _FakeResp(
+            200, {"id": "j", "status": "failed", "error": {"message": "content policy block"}}
+        ),
+    ]
+)
+_vg_fail = asyncio.run(
+    _p_vg6._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_vg6.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Video generation failed" in _vg_fail and "content policy block" in _vg_fail,
+    "polled status=failed → wrapped error",
+)
 
 # _upload_video_to_owui: no runtime context → None (no crash)
 _p_vg7 = Pipe()
@@ -4288,25 +5268,47 @@ _assert(_uv2 is None, "upload helper: OWUI helpers missing locally → None, no 
 # reports output_modalities=["video"], so pipe() can route them.
 _p_vg8 = Pipe()
 _fake_models_data = [
-    {"id": "google/veo-3.1-fast", "name": "Veo 3.1 Fast",
-     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
-    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude 3.5 Sonnet",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+    {
+        "id": "google/veo-3.1-fast",
+        "name": "Veo 3.1 Fast",
+        "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "anthropic/claude-3.5-sonnet",
+        "name": "Claude 3.5 Sonnet",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]},
+    },
 ]
+
+
 class _FakeModelResp:
     status_code = 200
-    def json(self): return {"data": _fake_models_data}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _fake_models_data}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _ModelsSess:
-    def get(self, *a, **kw): return _FakeModelResp()
+    def get(self, *a, **kw):
+        return _FakeModelResp()
+
+
 _p_vg8._session = _ModelsSess()
 _p_vg8.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_vg8.valves.SYNC_PROVIDER_ICONS = False
 _models = _p_vg8.pipes()
 _video_ids = _p_vg8._video_model_ids
 _assert("google/veo-3.1-fast" in _video_ids, "pipes() tracks video models from output_modalities")
-_assert("anthropic/claude-3.5-sonnet" not in _video_ids, "pipes() does NOT mark text-only models as video")
+_assert(
+    "anthropic/claude-3.5-sonnet" not in _video_ids,
+    "pipes() does NOT mark text-only models as video",
+)
 
 # ── background-task guard: OWUI title/follow-up calls must not fire paid media jobs ──
 
@@ -4321,32 +5323,56 @@ _p_task_v._video_model_ids = frozenset({"google/veo-3.1-fast"})  # type: ignore
 _p_task_v._lazy_populated = True
 _p_task_v.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "t" * 50
 _task_v_calls = []
+
+
 async def _rec_video(self, *a, **kw):
     _task_v_calls.append(a)
     return "real video job"
+
+
 _p_task_v._run_video_generation = _rec_video.__get__(_p_task_v, Pipe)  # type: ignore
 _task_body = {
     "model": "google/veo-3.1-fast",
     "messages": [{"role": "user", "content": "Create a concise title for the chat history..."}],
 }
-_task_res = asyncio.run(_p_task_v.pipe(
-    _task_body, {"id": "u"}, None, None, object(),
-    {"chat_id": "c", "task": "title_generation"},
-))
+_task_res = asyncio.run(
+    _p_task_v.pipe(
+        _task_body,
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        {"chat_id": "c", "task": "title_generation"},
+    )
+)
 _assert(_task_res == "Video Generation", "task call on video model → placeholder, no job")
 _assert(not _task_v_calls, "task call on video model never reaches _run_video_generation")
 
 # Normal chat call (metadata without "task") still routes to the video flow.
-_chat_res = asyncio.run(_p_task_v.pipe(
-    dict(_task_body), {"id": "u"}, None, None, object(), {"chat_id": "c"},
-))
+_chat_res = asyncio.run(
+    _p_task_v.pipe(
+        dict(_task_body),
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        {"chat_id": "c"},
+    )
+)
 _assert(_chat_res == "real video job", "non-task call on video model still routes to video flow")
 _assert(len(_task_v_calls) == 1, "non-task call reached _run_video_generation exactly once")
 
 # __metadata__=None (direct API call) must not trip the guard either.
-_none_res = asyncio.run(_p_task_v.pipe(
-    dict(_task_body), {"id": "u"}, None, None, object(), None,
-))
+_none_res = asyncio.run(
+    _p_task_v.pipe(
+        dict(_task_body),
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        None,
+    )
+)
 _assert(_none_res == "real video job", "__metadata__=None does not trip the task guard")
 _assert(len(_task_v_calls) == 2, "__metadata__=None still routes to video flow")
 
@@ -4356,15 +5382,27 @@ _p_task_s._speech_model_ids = frozenset({"hexgrad/kokoro-82m"})  # type: ignore
 _p_task_s._lazy_populated = True
 _p_task_s.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "s" * 50
 _task_s_calls = []
+
+
 async def _rec_speech(self, *a, **kw):
     _task_s_calls.append(a)
     return "real speech job"
+
+
 _p_task_s._run_speech_generation = _rec_speech.__get__(_p_task_s, Pipe)  # type: ignore
-_task_s_res = asyncio.run(_p_task_s.pipe(
-    {"model": "hexgrad/kokoro-82m", "messages": [{"role": "user", "content": "suggest follow-ups"}]},
-    {"id": "u"}, None, None, object(),
-    {"chat_id": "c", "task": "follow_up_generation"},
-))
+_task_s_res = asyncio.run(
+    _p_task_s.pipe(
+        {
+            "model": "hexgrad/kokoro-82m",
+            "messages": [{"role": "user", "content": "suggest follow-ups"}],
+        },
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        {"chat_id": "c", "task": "follow_up_generation"},
+    )
+)
 _assert(_task_s_res == "Speech Generation", "task call on speech model → placeholder, no job")
 _assert(not _task_s_calls, "task call on speech model never reaches _run_speech_generation")
 
@@ -4376,36 +5414,73 @@ _section("audio output: model detection + materialize")
 # reports output_modalities includes "audio".
 _p_au1 = Pipe()
 _fake_audio_data = [
-    {"id": "google/lyria-3-clip-preview", "name": "Lyria 3 Clip",
-     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "image"]}},
-    {"id": "openai/gpt-audio", "name": "GPT Audio",
-     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "audio"]}},
-    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+    {
+        "id": "google/lyria-3-clip-preview",
+        "name": "Lyria 3 Clip",
+        "architecture": {
+            "output_modalities": ["text", "audio"],
+            "input_modalities": ["text", "image"],
+        },
+    },
+    {
+        "id": "openai/gpt-audio",
+        "name": "GPT Audio",
+        "architecture": {
+            "output_modalities": ["text", "audio"],
+            "input_modalities": ["text", "audio"],
+        },
+    },
+    {
+        "id": "anthropic/claude-3.5-sonnet",
+        "name": "Claude",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]},
+    },
 ]
+
+
 class _AudioModelsResp:
     status_code = 200
-    def json(self): return {"data": _fake_audio_data}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _fake_audio_data}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _AudioModelsSess:
-    def get(self, *a, **kw): return _AudioModelsResp()
+    def get(self, *a, **kw):
+        return _AudioModelsResp()
+
+
 _p_au1._session = _AudioModelsSess()
 _p_au1.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_au1.valves.SYNC_PROVIDER_ICONS = False
 _p_au1.pipes()
 _assert("google/lyria-3-clip-preview" in _p_au1._audio_model_ids, "pipes() tracks lyria as audio")
 _assert("openai/gpt-audio" in _p_au1._audio_model_ids, "pipes() tracks gpt-audio as audio")
-_assert("anthropic/claude-3.5-sonnet" not in _p_au1._audio_model_ids, "pipes() does NOT mark text-only as audio")
+_assert(
+    "anthropic/claude-3.5-sonnet" not in _p_au1._audio_model_ids,
+    "pipes() does NOT mark text-only as audio",
+)
 
 # _materialize_audio_output: no runtime context → "" (no crash, no embed).
 _p_au2 = Pipe()
 _p_au2.valves.AUDIO_OUTPUT_FORMAT = "mp3"
-_au_empty = asyncio.run(_p_au2._materialize_audio_output("aGVsbG8=", _p_au2.valves, None, None, None))
+_au_empty = asyncio.run(
+    _p_au2._materialize_audio_output("aGVsbG8=", _p_au2.valves, None, None, None)
+)
 _assert(_au_empty == "", "no runtime context → empty embed")
 
 # _materialize_audio_output: bad base64 → "" (logged + no crash).
-_au_badb64 = asyncio.run(_p_au2._materialize_audio_output("not!base64@@@", _p_au2.valves, object(), {"id": "u"}, {"chat_id": "c"}))
+_au_badb64 = asyncio.run(
+    _p_au2._materialize_audio_output(
+        "not!base64@@@", _p_au2.valves, object(), {"id": "u"}, {"chat_id": "c"}
+    )
+)
 _assert(_au_badb64 == "", "garbage base64 → empty embed")
 
 # _materialize_audio_output: success path with patched uploader → emits
@@ -4413,16 +5488,26 @@ _assert(_au_badb64 == "", "garbage base64 → empty embed")
 # html token (OWUI HtmlToken only renders audio for token.type==='html').
 _p_au3 = Pipe()
 _p_au3.valves.AUDIO_OUTPUT_FORMAT = "mp3"
+
+
 async def _fake_upload_audio(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     _fake_upload_audio.last = {"len": len(audio_bytes), "ct": content_type}
     return ("aud-1", "/api/v1/files/aud-1/content")
+
+
 _p_au3._upload_audio_to_owui = _fake_upload_audio.__get__(_p_au3, Pipe)  # type: ignore
 import base64 as _b64m
+
 _payload_b64 = _b64m.b64encode(b"\xff\xfb\x90\x00fake-mp3-bytes").decode()
-_au_ok = asyncio.run(_p_au3._materialize_audio_output(
-    _payload_b64, _p_au3.valves, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"}
-))
-_assert("<div><audio>/api/v1/files/aud-1/content</audio></div>" in _au_ok, "audio embed wraps URL in <div><audio>")
+_au_ok = asyncio.run(
+    _p_au3._materialize_audio_output(
+        _payload_b64, _p_au3.valves, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"}
+    )
+)
+_assert(
+    "<div><audio>/api/v1/files/aud-1/content</audio></div>" in _au_ok,
+    "audio embed wraps URL in <div><audio>",
+)
 _assert(_fake_upload_audio.last["ct"] == "audio/mpeg", "mp3 format → audio/mpeg content-type")
 
 # pcm16: raw PCM gets wrapped in a WAV container before upload so the
@@ -4430,50 +5515,76 @@ _assert(_fake_upload_audio.last["ct"] == "audio/mpeg", "mp3 format → audio/mpe
 # MIME bumps to audio/wav.
 _p_pcm = Pipe()
 _ct_pcm = {"ct": None, "bytes": None}
+
+
 async def _capture_pcm(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     _ct_pcm["ct"] = content_type
     _ct_pcm["bytes"] = audio_bytes
     return ("pcm-1", "/api/v1/files/pcm-1/content")
+
+
 _p_pcm._upload_audio_to_owui = _capture_pcm.__get__(_p_pcm, Pipe)  # type: ignore
 _raw_pcm = bytes(range(48))  # arbitrary PCM samples
 _b64_pcm = _b64m.b64encode(_raw_pcm).decode()
-_pcm_out = asyncio.run(_p_pcm._materialize_audio_output(
-    _b64_pcm, _p_pcm.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="pcm16"
-))
+_pcm_out = asyncio.run(
+    _p_pcm._materialize_audio_output(
+        _b64_pcm, _p_pcm.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="pcm16"
+    )
+)
 _assert(_ct_pcm["ct"] == "audio/wav", "pcm16 → MIME audio/wav")
-_assert(_ct_pcm["bytes"][:4] == b"RIFF" and _ct_pcm["bytes"][8:12] == b"WAVE",
-        "pcm16 bytes wrapped with RIFF/WAVE header")
-_assert(len(_ct_pcm["bytes"]) == 44 + len(_raw_pcm),
-        "WAV header is 44 bytes prepended to raw PCM payload")
-_assert("<div><audio>/api/v1/files/pcm-1/content</audio></div>" in _pcm_out,
-        "pcm16 path still emits block <div><audio> embed")
+_assert(
+    _ct_pcm["bytes"][:4] == b"RIFF" and _ct_pcm["bytes"][8:12] == b"WAVE",
+    "pcm16 bytes wrapped with RIFF/WAVE header",
+)
+_assert(
+    len(_ct_pcm["bytes"]) == 44 + len(_raw_pcm),
+    "WAV header is 44 bytes prepended to raw PCM payload",
+)
+_assert(
+    "<div><audio>/api/v1/files/pcm-1/content</audio></div>" in _pcm_out,
+    "pcm16 path still emits block <div><audio> embed",
+)
 
 # audio_format kwarg takes precedence over the valve default.
 _p_fmt = Pipe()
 _p_fmt.valves.AUDIO_OUTPUT_FORMAT = "mp3"
 _ct_fmt = {"ct": None}
+
+
 async def _capture_fmt(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     _ct_fmt["ct"] = content_type
     return ("f", "/api/v1/files/f/content")
+
+
 _p_fmt._upload_audio_to_owui = _capture_fmt.__get__(_p_fmt, Pipe)  # type: ignore
-asyncio.run(_p_fmt._materialize_audio_output(
-    _b64m.b64encode(b"\xff\xfb data").decode(),
-    _p_fmt.valves, object(), {"id": "u"}, {"chat_id": "c"},
-    audio_format="flac",
-))
-_assert(_ct_fmt["ct"] == "audio/flac",
-        "audio_format kwarg ('flac') beats valve default ('mp3')")
+asyncio.run(
+    _p_fmt._materialize_audio_output(
+        _b64m.b64encode(b"\xff\xfb data").decode(),
+        _p_fmt.valves,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+        audio_format="flac",
+    )
+)
+_assert(_ct_fmt["ct"] == "audio/flac", "audio_format kwarg ('flac') beats valve default ('mp3')")
 
 # Different formats map to correct MIME types.
 for _fmt, _expected_ct in [("wav", "audio/wav"), ("flac", "audio/flac"), ("opus", "audio/ogg")]:
     _p = Pipe()
     _p.valves.AUDIO_OUTPUT_FORMAT = _fmt
     _ct_seen = {"ct": None}
+
     async def _capture_ct(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
         _ct_seen["ct"] = content_type
         return ("f", "/api/v1/files/f/content")
+
     _p._upload_audio_to_owui = _capture_ct.__get__(_p, Pipe)  # type: ignore
-    asyncio.run(_p._materialize_audio_output(_payload_b64, _p.valves, object(), {"id": "u"}, {"chat_id": "c"}))
+    asyncio.run(
+        _p._materialize_audio_output(
+            _payload_b64, _p.valves, object(), {"id": "u"}, {"chat_id": "c"}
+        )
+    )
     _assert(_ct_seen["ct"] == _expected_ct, f"format {_fmt} → MIME {_expected_ct}")
 
 # ── text-to-speech (TTS): detection + /audio/speech routing ───────────────────
@@ -4485,48 +5596,95 @@ _section("text-to-speech (TTS): detection + /audio/speech routing")
 # and must NOT conflate them with chat-served audio-output models.
 _p_tts1 = Pipe()
 _fake_tts_data = [
-    {"id": "hexgrad/kokoro-82m", "name": "Kokoro",
-     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
-     "supported_voices": ["af_bella", "af_nova", "am_adam"]},
-    {"id": "deepgram/aura-2", "name": "Aura 2",
-     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]}},
-    {"id": "openai/gpt-audio", "name": "GPT Audio",
-     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text", "audio"]}},
-    {"id": "openai/whisper-1", "name": "Whisper",
-     "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]}},
-    {"id": "anthropic/claude-3.5-sonnet", "name": "Claude",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]}},
+    {
+        "id": "hexgrad/kokoro-82m",
+        "name": "Kokoro",
+        "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
+        "supported_voices": ["af_bella", "af_nova", "am_adam"],
+    },
+    {
+        "id": "deepgram/aura-2",
+        "name": "Aura 2",
+        "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "openai/gpt-audio",
+        "name": "GPT Audio",
+        "architecture": {
+            "output_modalities": ["text", "audio"],
+            "input_modalities": ["text", "audio"],
+        },
+    },
+    {
+        "id": "openai/whisper-1",
+        "name": "Whisper",
+        "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]},
+    },
+    {
+        "id": "anthropic/claude-3.5-sonnet",
+        "name": "Claude",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+    },
 ]
+
+
 class _TTSModelsResp:
     status_code = 200
-    def json(self): return {"data": _fake_tts_data}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _fake_tts_data}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _TTSModelsSess:
-    def get(self, *a, **kw): return _TTSModelsResp()
+    def get(self, *a, **kw):
+        return _TTSModelsResp()
+
+
 _p_tts1._session = _TTSModelsSess()
 _p_tts1.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_tts1.valves.SYNC_PROVIDER_ICONS = False
 _p_tts1.pipes()
 _assert("hexgrad/kokoro-82m" in _p_tts1._speech_model_ids, "pipes() tracks kokoro as speech/TTS")
 _assert("deepgram/aura-2" in _p_tts1._speech_model_ids, "pipes() tracks aura-2 as speech/TTS")
-_assert("openai/gpt-audio" not in _p_tts1._speech_model_ids, "audio-output model is NOT tracked as speech")
-_assert("hexgrad/kokoro-82m" not in _p_tts1._audio_model_ids, "speech model is NOT tracked as chat-audio")
-_assert("anthropic/claude-3.5-sonnet" not in _p_tts1._speech_model_ids, "text-only model is NOT speech")
+_assert(
+    "openai/gpt-audio" not in _p_tts1._speech_model_ids,
+    "audio-output model is NOT tracked as speech",
+)
+_assert(
+    "hexgrad/kokoro-82m" not in _p_tts1._audio_model_ids,
+    "speech model is NOT tracked as chat-audio",
+)
+_assert(
+    "anthropic/claude-3.5-sonnet" not in _p_tts1._speech_model_ids, "text-only model is NOT speech"
+)
 # All five modality kinds still land in the catalog (import is complete).
-_assert(len([m for m in _p_tts1.pipes() if m.get("id") != "error"]) == 5,
-        "all speech/audio/transcription/text models imported into catalog")
+_assert(
+    len([m for m in _p_tts1.pipes() if m.get("id") != "error"]) == 5,
+    "all speech/audio/transcription/text models imported into catalog",
+)
 # pipes() harvests provider-specific voice lists from `supported_voices`.
-_assert(_p_tts1._speech_voices.get("hexgrad/kokoro-82m") == ["af_bella", "af_nova", "am_adam"],
-        "pipes() captures supported_voices for speech models")
-_assert("deepgram/aura-2" not in _p_tts1._speech_voices,
-        "speech model without supported_voices is absent from the voice map")
+_assert(
+    _p_tts1._speech_voices.get("hexgrad/kokoro-82m") == ["af_bella", "af_nova", "am_adam"],
+    "pipes() captures supported_voices for speech models",
+)
+_assert(
+    "deepgram/aura-2" not in _p_tts1._speech_voices,
+    "speech model without supported_voices is absent from the voice map",
+)
 
 # Empty prompt → friendly error, no HTTP call.
 _p_tts2 = Pipe()
-_tts_empty = asyncio.run(_p_tts2._run_speech_generation(
-    {"messages": []}, "hexgrad/kokoro-82m", _p_tts2.valves, None, None, None, None
-))
+_tts_empty = asyncio.run(
+    _p_tts2._run_speech_generation(
+        {"messages": []}, "hexgrad/kokoro-82m", _p_tts2.valves, None, None, None, None
+    )
+)
 _assert("non-empty text prompt" in _tts_empty, "TTS empty prompt → friendly error")
 
 # Success path: POST /audio/speech returns raw mp3 bytes → upload (mock) →
@@ -4534,31 +5692,48 @@ _assert("non-empty text prompt" in _tts_empty, "TTS empty prompt → friendly er
 # model/input/voice/response_format=mp3.
 _p_tts3 = Pipe()
 _p_tts3.valves.AUDIO_OUTPUT_VOICE = "nova"
-_tts_ok_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "X-Generation-Id": "gen-tts-1"})
+_tts_ok_resp = _FakeResp(
+    200, headers={"Content-Type": "audio/mpeg", "X-Generation-Id": "gen-tts-1"}
+)
 _tts_ok_resp.content = b"\xff\xfb\x90\x00fake-mp3-bytes"
 _p_tts3._session = _FakeSession([_tts_ok_resp])
 _tts_up = {"len": None, "ct": None}
+
+
 async def _fake_upload_tts(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     _tts_up["len"] = len(audio_bytes)
     _tts_up["ct"] = content_type
     return ("tts-abc", "/api/v1/files/tts-abc/content")
+
+
 _p_tts3._upload_audio_to_owui = _fake_upload_tts.__get__(_p_tts3, Pipe)  # type: ignore
-_tts_ok = asyncio.run(_p_tts3._run_speech_generation(
-    {"messages": [{"role": "user", "content": "Hello world"}]},
-    "hexgrad/kokoro-82m",
-    _p_tts3.valves, None, object(), {"id": "u1"}, {"chat_id": "c", "message_id": "m"},
-))
-_assert("<div><audio>/api/v1/files/tts-abc/content</audio></div>" in _tts_ok,
-        "TTS success → block-level <div><audio>URL</audio></div> token")
+_tts_ok = asyncio.run(
+    _p_tts3._run_speech_generation(
+        {"messages": [{"role": "user", "content": "Hello world"}]},
+        "hexgrad/kokoro-82m",
+        _p_tts3.valves,
+        None,
+        object(),
+        {"id": "u1"},
+        {"chat_id": "c", "message_id": "m"},
+    )
+)
+_assert(
+    "<div><audio>/api/v1/files/tts-abc/content</audio></div>" in _tts_ok,
+    "TTS success → block-level <div><audio>URL</audio></div> token",
+)
 _assert(_tts_up["ct"] == "audio/mpeg", "TTS persists as audio/mpeg (always mp3)")
 _tts_post = [c for c in _p_tts3._session.calls if c[0] == "POST"]
-_assert(len(_tts_post) == 1 and _tts_post[0][1].endswith("/audio/speech"),
-        "TTS POSTs to the /audio/speech endpoint")
+_assert(
+    len(_tts_post) == 1 and _tts_post[0][1].endswith("/audio/speech"),
+    "TTS POSTs to the /audio/speech endpoint",
+)
 _tts_body = _tts_post[0][2].get("json") or {}
 _assert(_tts_body.get("model") == "hexgrad/kokoro-82m", "TTS payload carries model id")
 _assert(_tts_body.get("input") == "Hello world", "TTS payload carries the user text as input")
 _assert(_tts_body.get("voice") == "nova", "TTS with no voice list → valve voice passed verbatim")
 _assert(_tts_body.get("response_format") == "mp3", "TTS always requests mp3")
+
 
 # ── per-provider voice resolution ─────────────────────────────────────────────
 # Helper: run TTS against a fake /audio/speech and return the voice actually sent.
@@ -4569,29 +5744,47 @@ def _tts_voice_sent(model_id, valve_voice, voice_map):
     _r = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
     _r.content = b"\xff\xfbxx"
     _p._session = _FakeSession([_r])
+
     async def _up(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
         return ("x", "/api/v1/files/x/content")
+
     _p._upload_audio_to_owui = _up.__get__(_p, Pipe)  # type: ignore
-    asyncio.run(_p._run_speech_generation(
-        {"messages": [{"role": "user", "content": "hi"}]},
-        model_id, _p.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-    ))
+    asyncio.run(
+        _p._run_speech_generation(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            model_id,
+            _p.valves,
+            None,
+            object(),
+            {"id": "u"},
+            {"chat_id": "c"},
+        )
+    )
     return ([c for c in _p._session.calls if c[0] == "POST"][0][2].get("json") or {}).get("voice")
+
 
 _kv = {"hexgrad/kokoro-82m": ["af_bella", "af_nova", "am_adam"]}
 # Configured voice valid for this model → used as-is.
-_assert(_tts_voice_sent("hexgrad/kokoro-82m", "am_adam", _kv) == "am_adam",
-        "configured voice valid for model → kept")
+_assert(
+    _tts_voice_sent("hexgrad/kokoro-82m", "am_adam", _kv) == "am_adam",
+    "configured voice valid for model → kept",
+)
 # Configured voice invalid for this model (e.g. OpenAI 'alloy' on kokoro) →
 # falls back to the model's first advertised voice instead of 400ing.
-_assert(_tts_voice_sent("hexgrad/kokoro-82m", "alloy", _kv) == "af_bella",
-        "invalid voice → first supported voice for the model")
+_assert(
+    _tts_voice_sent("hexgrad/kokoro-82m", "alloy", _kv) == "af_bella",
+    "invalid voice → first supported voice for the model",
+)
 # Blank valve + known voice list → first supported voice (not 'alloy').
-_assert(_tts_voice_sent("hexgrad/kokoro-82m", "", _kv) == "af_bella",
-        "blank voice + voice list → first supported voice")
+_assert(
+    _tts_voice_sent("hexgrad/kokoro-82m", "", _kv) == "af_bella",
+    "blank voice + voice list → first supported voice",
+)
 # Blank valve + no voice list for model → 'alloy' fallback.
-_assert(_tts_voice_sent("minimax/speech-2.8-hd", "", {}) == "alloy",
-        "blank voice + no voice list → 'alloy'")
+_assert(
+    _tts_voice_sent("minimax/speech-2.8-hd", "", {}) == "alloy",
+    "blank voice + no voice list → 'alloy'",
+)
 
 # Blank voice valve falls back to 'alloy' (voice is a required upstream field).
 _p_tts_v = Pipe()
@@ -4599,57 +5792,103 @@ _p_tts_v.valves.AUDIO_OUTPUT_VOICE = ""
 _tts_v_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
 _tts_v_resp.content = b"\xff\xfbxx"
 _p_tts_v._session = _FakeSession([_tts_v_resp])
+
+
 async def _fake_upload_tts_v(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     return ("v", "/api/v1/files/v/content")
+
+
 _p_tts_v._upload_audio_to_owui = _fake_upload_tts_v.__get__(_p_tts_v, Pipe)  # type: ignore
-asyncio.run(_p_tts_v._run_speech_generation(
-    {"messages": [{"role": "user", "content": "hi"}]},
-    "hexgrad/kokoro-82m", _p_tts_v.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-))
+asyncio.run(
+    _p_tts_v._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        "hexgrad/kokoro-82m",
+        _p_tts_v.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
 _tts_v_body = [c for c in _p_tts_v._session.calls if c[0] == "POST"][0][2].get("json") or {}
 _assert(_tts_v_body.get("voice") == "alloy", "blank voice valve → defaults to 'alloy'")
 
 # Upstream error statuses → wrapped, human-readable errors (no bytes uploaded).
-for _code, _needle in [(401, "Authentication failed"), (402, "Insufficient credits"),
-                       (429, "Rate limited")]:
+for _code, _needle in [
+    (401, "Authentication failed"),
+    (402, "Insufficient credits"),
+    (429, "Rate limited"),
+]:
     _p_e = Pipe()
     _p_e._session = _FakeSession([_FakeResp(_code, {"error": {"message": "x"}})])
-    _tts_err = asyncio.run(_p_e._run_speech_generation(
-        {"messages": [{"role": "user", "content": "hi"}]},
-        "hexgrad/kokoro-82m", _p_e.valves, None, None, None, None,
-    ))
+    _tts_err = asyncio.run(
+        _p_e._run_speech_generation(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            "hexgrad/kokoro-82m",
+            _p_e.valves,
+            None,
+            None,
+            None,
+            None,
+        )
+    )
     _assert(_needle in _tts_err, f"TTS HTTP {_code} → '{_needle}' error")
 
 # Generic 400 → wrapped error surfaces upstream detail (e.g. bad voice for provider).
 _p_e400 = Pipe()
 _p_e400._session = _FakeSession([_FakeResp(400, {"error": {"message": "invalid voice 'nova'"}})])
-_tts_400 = asyncio.run(_p_e400._run_speech_generation(
-    {"messages": [{"role": "user", "content": "hi"}]},
-    "deepgram/aura-2", _p_e400.valves, None, None, None, None,
-))
-_assert("Speech synthesis failed" in _tts_400 and "invalid voice" in _tts_400,
-        "TTS 400 → wrapped error with upstream detail")
+_tts_400 = asyncio.run(
+    _p_e400._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        "deepgram/aura-2",
+        _p_e400.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Speech synthesis failed" in _tts_400 and "invalid voice" in _tts_400,
+    "TTS 400 → wrapped error with upstream detail",
+)
 
 # No OWUI runtime context (upload returns None) → explanatory persist error.
 _p_tts_noctx = Pipe()
 _tts_nc_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
 _tts_nc_resp.content = b"\xff\xfbbytes"
 _p_tts_noctx._session = _FakeSession([_tts_nc_resp])
-_tts_nc = asyncio.run(_p_tts_noctx._run_speech_generation(
-    {"messages": [{"role": "user", "content": "hi"}]},
-    "hexgrad/kokoro-82m", _p_tts_noctx.valves, None, None, None, None,
-))
+_tts_nc = asyncio.run(
+    _p_tts_noctx._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        "hexgrad/kokoro-82m",
+        _p_tts_noctx.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("could not be persisted" in _tts_nc, "TTS without OWUI context → persist error message")
 
 # Byte cap enforced mid-stream (declared Content-Length over the cap → reject).
 _p_tts_cap = Pipe()
-_tts_cap_resp = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "Content-Length": str(60 * 1024 * 1024)})
+_tts_cap_resp = _FakeResp(
+    200, headers={"Content-Type": "audio/mpeg", "Content-Length": str(60 * 1024 * 1024)}
+)
 _tts_cap_resp.content = b"x"
 _p_tts_cap._session = _FakeSession([_tts_cap_resp])
-_tts_cap = asyncio.run(_p_tts_cap._run_speech_generation(
-    {"messages": [{"role": "user", "content": "hi"}]},
-    "hexgrad/kokoro-82m", _p_tts_cap.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-))
+_tts_cap = asyncio.run(
+    _p_tts_cap._run_speech_generation(
+        {"messages": [{"role": "user", "content": "hi"}]},
+        "hexgrad/kokoro-82m",
+        _p_tts_cap.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
 _assert("byte cap" in _tts_cap, "TTS declared size over cap → rejected before download")
 
 # ── tool-capability gate: don't forward tools to non-tool models (avoids 404) ─
@@ -4659,35 +5898,66 @@ _section("tool-capability gate: non-tool models don't 404 on attached tools")
 # pipes() tracks tool-capable models from supported_parameters.
 _p_tc = Pipe()
 _fake_tc_data = [
-    {"id": "openai/gpt-4o", "name": "GPT-4o",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
-     "supported_parameters": ["tools", "tool_choice", "temperature"]},
-    {"id": "deepgram/aura-2", "name": "Aura 2",
-     "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
-     "supported_parameters": ["temperature"]},
-    {"id": "some/text-no-tools", "name": "No Tools",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]}},
+    {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+        "supported_parameters": ["tools", "tool_choice", "temperature"],
+    },
+    {
+        "id": "deepgram/aura-2",
+        "name": "Aura 2",
+        "architecture": {"output_modalities": ["speech"], "input_modalities": ["text"]},
+        "supported_parameters": ["temperature"],
+    },
+    {
+        "id": "some/text-no-tools",
+        "name": "No Tools",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+    },
 ]
+
+
 class _TCResp:
     status_code = 200
-    def json(self): return {"data": _fake_tc_data}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _fake_tc_data}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _TCSess:
-    def get(self, *a, **kw): return _TCResp()
+    def get(self, *a, **kw):
+        return _TCResp()
+
+
 _p_tc._session = _TCSess()
 _p_tc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_tc.valves.SYNC_PROVIDER_ICONS = False
 _p_tc.pipes()
 _assert("openai/gpt-4o" in _p_tc._tool_capable_ids, "pipes() tracks tool-capable model")
 _assert("deepgram/aura-2" not in _p_tc._tool_capable_ids, "pipes() excludes non-tool model")
-_assert("some/text-no-tools" not in _p_tc._tool_capable_ids, "pipes() excludes model with no supported_parameters")
+_assert(
+    "some/text-no-tools" not in _p_tc._tool_capable_ids,
+    "pipes() excludes model with no supported_parameters",
+)
 
 # _model_supports_tools semantics.
 _assert(_p_tc._model_supports_tools("openai/gpt-4o") is True, "gate: tool-capable model allowed")
-_assert(_p_tc._model_supports_tools("openai/gpt-4o:nitro") is True, "gate: variant inherits base capability")
+_assert(
+    _p_tc._model_supports_tools("openai/gpt-4o:nitro") is True,
+    "gate: variant inherits base capability",
+)
 _assert(_p_tc._model_supports_tools("deepgram/aura-2") is False, "gate: non-tool model blocked")
-_assert(Pipe()._model_supports_tools("anything") is True, "gate: unknown (empty set) → allow (don't break tools)")
+_assert(
+    Pipe()._model_supports_tools("anything") is True,
+    "gate: unknown (empty set) → allow (don't break tools)",
+)
 
 # End-to-end: pipe() with a tool + a NON-tool model must NOT attach tools and
 # must NOT 404 — it answers normally. Capture the outgoing payload.
@@ -4696,19 +5966,38 @@ _pe_gate.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pe_gate._lazy_populated = True
 _pe_gate._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _gate_seen = {"payload": None}
+
+
 def _cap_req(headers, payload, stream, valves):
     _gate_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "hello without tools"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "hello without tools"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _pe_gate._retryable_request = _cap_req  # type: ignore
-_tools_gate = {"get_current_timestamp": {"spec": {"name": "get_current_timestamp"}, "callable": lambda: "now"}}
-_res_gate = _run(_pe_gate.pipe(
-    {"model": "some/non-tool-model", "messages": [{"role": "user", "content": "hi"}], "stream": False},
-    __tools__=_tools_gate,
-))
-_assert("tools" not in (_gate_seen["payload"] or {}), "gate: tools NOT forwarded to a non-tool model")
+_tools_gate = {
+    "get_current_timestamp": {"spec": {"name": "get_current_timestamp"}, "callable": lambda: "now"}
+}
+_res_gate = _run(
+    _pe_gate.pipe(
+        {
+            "model": "some/non-tool-model",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        },
+        __tools__=_tools_gate,
+    )
+)
+_assert(
+    "tools" not in (_gate_seen["payload"] or {}), "gate: tools NOT forwarded to a non-tool model"
+)
 _assert("hello without tools" in _res_gate, "gate: non-tool model still answers (no 404)")
 
 # Body-injected tools/tool_choice (OWUI native function-calling puts them
@@ -4719,21 +6008,42 @@ _pe_body.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pe_body._lazy_populated = True
 _pe_body._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _body_seen = {"payload": None}
+
+
 def _cap_req2(headers, payload, stream, valves):
     _body_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "answered"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "answered"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _pe_body._retryable_request = _cap_req2  # type: ignore
-_res_body = _run(_pe_body.pipe({
-    "model": "some/non-tool-model", "stream": False,
-    "messages": [{"role": "user", "content": "hi"}],
-    "tools": [{"type": "function", "function": {"name": "get_current_timestamp"}}],
-    "tool_choice": "auto",
-}, __tools__=None))
-_assert("tools" not in (_body_seen["payload"] or {}), "gate: body-injected tools stripped for non-tool model")
-_assert("tool_choice" not in (_body_seen["payload"] or {}), "gate: body-injected tool_choice stripped for non-tool model")
+_res_body = _run(
+    _pe_body.pipe(
+        {
+            "model": "some/non-tool-model",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "get_current_timestamp"}}],
+            "tool_choice": "auto",
+        },
+        __tools__=None,
+    )
+)
+_assert(
+    "tools" not in (_body_seen["payload"] or {}),
+    "gate: body-injected tools stripped for non-tool model",
+)
+_assert(
+    "tool_choice" not in (_body_seen["payload"] or {}),
+    "gate: body-injected tool_choice stripped for non-tool model",
+)
 _assert("answered" in _res_body, "gate: non-tool model answers despite body tools (no 404)")
 
 # A tool-capable model KEEPS body-level tool_choice WHEN tools are present.
@@ -4742,18 +6052,37 @@ _pe_keep.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pe_keep._lazy_populated = True
 _pe_keep._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _keep_seen = {"payload": None}
+
+
 def _cap_req3(headers, payload, stream, valves):
     _keep_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "final answer"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "final answer"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _pe_keep._retryable_request = _cap_req3  # type: ignore
-_run(_pe_keep.pipe({
-    "model": "openai/gpt-4o", "stream": False,
-    "messages": [{"role": "user", "content": "hi"}], "tool_choice": "auto",
-}, __tools__={"t": {"spec": {"name": "t"}, "callable": lambda: "r"}}))
-_assert((_keep_seen["payload"] or {}).get("tool_choice") == "auto", "gate: tool-capable model keeps tool_choice when tools present")
+_run(
+    _pe_keep.pipe(
+        {
+            "model": "openai/gpt-4o",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "auto",
+        },
+        __tools__={"t": {"spec": {"name": "t"}, "callable": lambda: "r"}},
+    )
+)
+_assert(
+    (_keep_seen["payload"] or {}).get("tool_choice") == "auto",
+    "gate: tool-capable model keeps tool_choice when tools present",
+)
 _assert("tools" in (_keep_seen["payload"] or {}), "gate: tool-capable model keeps tools")
 
 # Orphan tool_choice (no tools present) is stripped even on a tool-capable model.
@@ -4762,18 +6091,37 @@ _pe_orphan.valves.OPENROUTER_API_KEY = "sk-or-test"
 _pe_orphan._lazy_populated = True
 _pe_orphan._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _orphan_seen = {"payload": None}
+
+
 def _cap_req4(headers, payload, stream, valves):
     _orphan_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _pe_orphan._retryable_request = _cap_req4  # type: ignore
-_run(_pe_orphan.pipe({
-    "model": "openai/gpt-4o", "stream": False,
-    "messages": [{"role": "user", "content": "hi"}], "tool_choice": "required",
-}, __tools__=None))
-_assert("tool_choice" not in (_orphan_seen["payload"] or {}), "gate: orphan tool_choice (no tools) stripped even on tool-capable model")
+_run(
+    _pe_orphan.pipe(
+        {
+            "model": "openai/gpt-4o",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hi"}],
+            "tool_choice": "required",
+        },
+        __tools__=None,
+    )
+)
+_assert(
+    "tool_choice" not in (_orphan_seen["payload"] or {}),
+    "gate: orphan tool_choice (no tools) stripped even on tool-capable model",
+)
 
 # Control: a tool-capable model DOES get the tools forwarded.
 _pe_ok = Pipe()
@@ -4782,16 +6130,33 @@ _pe_ok._lazy_populated = True
 _pe_ok._tool_capable_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _ok_seen = {"payload": None}
 _ok_seq = [
-    type("R", (), {"json": lambda s: {"choices": [{"message": {"content": "final answer"}}]}, "close": lambda s: None})(),
+    type(
+        "R",
+        (),
+        {
+            "json": lambda s: {"choices": [{"message": {"content": "final answer"}}]},
+            "close": lambda s: None,
+        },
+    )(),
 ]
+
+
 def _ok_req(headers, payload, stream, valves):
     _ok_seen["payload"] = payload
     return _ok_seq.pop(0)
+
+
 _pe_ok._retryable_request = _ok_req  # type: ignore
-_run(_pe_ok.pipe(
-    {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False},
-    __tools__=_tools_gate,
-))
+_run(
+    _pe_ok.pipe(
+        {
+            "model": "openai/gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        },
+        __tools__=_tools_gate,
+    )
+)
 _assert("tools" in (_ok_seen["payload"] or {}), "gate: tools ARE forwarded to a tool-capable model")
 
 # ── capability gating: response_format / reasoning / non-chat models ──────────
@@ -4801,46 +6166,91 @@ _section("capability gating: response_format, reasoning, non-chat models")
 # pipes() tracks structured-output, reasoning capability, and non-chat kinds.
 _p_cap = Pipe()
 _fake_cap_data = [
-    {"id": "openai/gpt-4o", "name": "GPT-4o",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
-     "supported_parameters": ["tools", "structured_outputs", "response_format", "reasoning"]},
-    {"id": "plain/text-model", "name": "Plain",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
-     "supported_parameters": ["temperature"]},
-    {"id": "nvidia/embed-1b", "name": "Embed",
-     "architecture": {"output_modalities": ["embeddings"], "input_modalities": ["text"]}},
-    {"id": "cohere/rerank-v3", "name": "Rerank",
-     "architecture": {"output_modalities": ["rerank"], "input_modalities": ["text"]}},
-    {"id": "openai/whisper-1", "name": "Whisper",
-     "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]}},
+    {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+        "supported_parameters": ["tools", "structured_outputs", "response_format", "reasoning"],
+    },
+    {
+        "id": "plain/text-model",
+        "name": "Plain",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text"]},
+        "supported_parameters": ["temperature"],
+    },
+    {
+        "id": "nvidia/embed-1b",
+        "name": "Embed",
+        "architecture": {"output_modalities": ["embeddings"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "cohere/rerank-v3",
+        "name": "Rerank",
+        "architecture": {"output_modalities": ["rerank"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "openai/whisper-1",
+        "name": "Whisper",
+        "architecture": {"output_modalities": ["transcription"], "input_modalities": ["audio"]},
+    },
 ]
+
+
 class _CapResp:
     status_code = 200
-    def json(self): return {"data": _fake_cap_data}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _fake_cap_data}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _CapSess:
-    def get(self, *a, **kw): return _CapResp()
+    def get(self, *a, **kw):
+        return _CapResp()
+
+
 _p_cap._session = _CapSess()
 _p_cap.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_cap.valves.SYNC_PROVIDER_ICONS = False
 _p_cap.pipes()
 _assert("openai/gpt-4o" in _p_cap._structured_output_ids, "pipes() tracks structured-output model")
-_assert("plain/text-model" not in _p_cap._structured_output_ids, "pipes() excludes non-structured model")
+_assert(
+    "plain/text-model" not in _p_cap._structured_output_ids, "pipes() excludes non-structured model"
+)
 _assert("openai/gpt-4o" in _p_cap._reasoning_ids, "pipes() tracks reasoning model")
 _assert("plain/text-model" not in _p_cap._reasoning_ids, "pipes() excludes non-reasoning model")
-_assert(_p_cap._nonchat_kind.get("nvidia/embed-1b") == "embeddings", "pipes() flags embeddings as non-chat")
-_assert(_p_cap._nonchat_kind.get("cohere/rerank-v3") == "rerank", "pipes() flags rerank as non-chat")
-_assert(_p_cap._nonchat_kind.get("openai/whisper-1") == "transcription", "pipes() flags transcription as non-chat")
-_assert("openai/gpt-4o" not in _p_cap._nonchat_kind, "pipes() does NOT flag a text model as non-chat")
+_assert(
+    _p_cap._nonchat_kind.get("nvidia/embed-1b") == "embeddings",
+    "pipes() flags embeddings as non-chat",
+)
+_assert(
+    _p_cap._nonchat_kind.get("cohere/rerank-v3") == "rerank", "pipes() flags rerank as non-chat"
+)
+_assert(
+    _p_cap._nonchat_kind.get("openai/whisper-1") == "transcription",
+    "pipes() flags transcription as non-chat",
+)
+_assert(
+    "openai/gpt-4o" not in _p_cap._nonchat_kind, "pipes() does NOT flag a text model as non-chat"
+)
 
 # Non-chat model selected → clear error, no HTTP call.
 _p_nc = Pipe()
 _p_nc.valves.OPENROUTER_API_KEY = "sk-or-test"
 _p_nc._lazy_populated = True
 _p_nc._nonchat_kind = {"nvidia/embed-1b": "embeddings"}  # type: ignore
-_nc_out = _run(_p_nc.pipe({"model": "nvidia/embed-1b", "messages": [{"role": "user", "content": "hi"}]}))
-_assert("embeddings-type model" in _nc_out and "can't be used in a chat" in _nc_out, "non-chat model → clear error")
+_nc_out = _run(
+    _p_nc.pipe({"model": "nvidia/embed-1b", "messages": [{"role": "user", "content": "hi"}]})
+)
+_assert(
+    "embeddings-type model" in _nc_out and "can't be used in a chat" in _nc_out,
+    "non-chat model → clear error",
+)
 _assert("/api/v1/embeddings" in _nc_out, "non-chat error names the right endpoint")
 
 # response_format stripped for a model without structured-output support.
@@ -4850,15 +6260,35 @@ _p_rf.valves.RESPONSE_FORMAT = "json_object"
 _p_rf._lazy_populated = True
 _p_rf._structured_output_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _rf_seen = {"payload": None}
+
+
 def _rf_req(headers, payload, stream, valves):
     _rf_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _p_rf._retryable_request = _rf_req  # type: ignore
-_run(_p_rf.pipe({"model": "plain/no-structured", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
-_assert("response_format" not in (_rf_seen["payload"] or {}), "response_format stripped for non-structured model")
+_run(
+    _p_rf.pipe(
+        {
+            "model": "plain/no-structured",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+    )
+)
+_assert(
+    "response_format" not in (_rf_seen["payload"] or {}),
+    "response_format stripped for non-structured model",
+)
 
 # response_format kept for a structured-capable model.
 _p_rf2 = Pipe()
@@ -4867,15 +6297,31 @@ _p_rf2.valves.RESPONSE_FORMAT = "json_object"
 _p_rf2._lazy_populated = True
 _p_rf2._structured_output_ids = frozenset({"openai/gpt-4o"})  # type: ignore
 _rf2_seen = {"payload": None}
+
+
 def _rf2_req(headers, payload, stream, valves):
     _rf2_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _p_rf2._retryable_request = _rf2_req  # type: ignore
-_run(_p_rf2.pipe({"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
-_assert((_rf2_seen["payload"] or {}).get("response_format") == {"type": "json_object"}, "response_format kept for structured-capable model")
+_run(
+    _p_rf2.pipe(
+        {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "hi"}], "stream": False}
+    )
+)
+_assert(
+    (_rf2_seen["payload"] or {}).get("response_format") == {"type": "json_object"},
+    "response_format kept for structured-capable model",
+)
 
 # reasoning stripped for a non-reasoning model (avoids REQUIRE_PARAMETERS 404).
 _p_rs = Pipe()
@@ -4885,16 +6331,36 @@ _p_rs.valves.REASONING_EFFORT = "high"
 _p_rs._lazy_populated = True
 _p_rs._reasoning_ids = frozenset({"openai/o3"})  # type: ignore
 _rs_seen = {"payload": None}
+
+
 def _rs_req(headers, payload, stream, valves):
     _rs_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _p_rs._retryable_request = _rs_req  # type: ignore
-_run(_p_rs.pipe({"model": "plain/no-reasoning", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
-_assert("reasoning" not in (_rs_seen["payload"] or {}) and "include_reasoning" not in (_rs_seen["payload"] or {}),
-        "reasoning/include_reasoning stripped for non-reasoning model")
+_run(
+    _p_rs.pipe(
+        {
+            "model": "plain/no-reasoning",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+    )
+)
+_assert(
+    "reasoning" not in (_rs_seen["payload"] or {})
+    and "include_reasoning" not in (_rs_seen["payload"] or {}),
+    "reasoning/include_reasoning stripped for non-reasoning model",
+)
 
 # reasoning kept for a reasoning-capable model.
 _p_rs2 = Pipe()
@@ -4903,20 +6369,39 @@ _p_rs2.valves.INCLUDE_REASONING = True
 _p_rs2._lazy_populated = True
 _p_rs2._reasoning_ids = frozenset({"openai/o3"})  # type: ignore
 _rs2_seen = {"payload": None}
+
+
 def _rs2_req(headers, payload, stream, valves):
     _rs2_seen["payload"] = payload
+
     class _R:
-        def json(self): return {"choices": [{"message": {"content": "ok"}}]}
-        def close(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        def close(self):
+            pass
+
     return _R()
+
+
 _p_rs2._retryable_request = _rs2_req  # type: ignore
-_run(_p_rs2.pipe({"model": "openai/o3", "messages": [{"role": "user", "content": "hi"}], "stream": False}))
-_assert((_rs2_seen["payload"] or {}).get("include_reasoning") is True, "include_reasoning kept for reasoning-capable model")
+_run(
+    _p_rs2.pipe(
+        {"model": "openai/o3", "messages": [{"role": "user", "content": "hi"}], "stream": False}
+    )
+)
+_assert(
+    (_rs2_seen["payload"] or {}).get("include_reasoning") is True,
+    "include_reasoning kept for reasoning-capable model",
+)
 
 # Unknown capability set (empty) → don't strip (don't break when data absent).
 _p_unk = Pipe()
 _assert(_p_unk._model_has_cap("any/model", frozenset()) is True, "empty cap set → allow (unknown)")
-_assert(_p_unk._model_has_cap("a/b:nitro", frozenset({"a/b"})) is True, "variant inherits base capability")
+_assert(
+    _p_unk._model_has_cap("a/b:nitro", frozenset({"a/b"})) is True,
+    "variant inherits base capability",
+)
 
 # ── TTS text cleaning (mirrors OWUI removeFormattings + removeEmojis) ──────────
 
@@ -4925,11 +6410,19 @@ _section("text-to-speech: text cleaning, splitting, source, directives")
 _ct = Pipe._clean_tts_text
 _assert(_ct("**bold** and *italic*") == "bold and italic", "clean: bold/italic markers stripped")
 _assert(_ct("# Heading here") == "Heading here", "clean: ATX header marker stripped")
-_assert(_ct("see [the docs](https://example.com/x)") == "see the docs", "clean: link → label, URL dropped")
+_assert(
+    _ct("see [the docs](https://example.com/x)") == "see the docs",
+    "clean: link → label, URL dropped",
+)
 _assert(_ct("![alt text](https://img/x.png)") == "alt text", "clean: image → alt text")
-_assert(_ct("text\n```python\nprint('hi')\n```\nmore") == "text\nmore",
-        "clean: fenced code block dropped entirely")
-_assert(_ct("use the `run()` function") == "use the run() function", "clean: inline code keeps inner text")
+_assert(
+    _ct("text\n```python\nprint('hi')\n```\nmore") == "text\nmore",
+    "clean: fenced code block dropped entirely",
+)
+_assert(
+    _ct("use the `run()` function") == "use the run() function",
+    "clean: inline code keeps inner text",
+)
 _assert(_ct("- one\n- two") == "one\ntwo", "clean: bullet markers stripped")
 _assert(_ct("1. first\n2. second") == "first\nsecond", "clean: numbered-list markers stripped")
 _assert(_ct("> quoted line") == "quoted line", "clean: blockquote marker stripped")
@@ -4937,8 +6430,11 @@ _assert(_ct("done ✅ great 🎉") == "done great", "clean: emoji removed (colla
 _assert(_ct("hello 👨‍👩‍👧‍👦 family") == "hello family", "clean: ZWJ emoji family removed")
 _assert(_ct("value is $x^2 + 1$ ok") == "value is ok", "clean: inline LaTeX stripped")
 _assert(_ct("block $$\\int_0^1 x dx$$ end") == "block end", "clean: block LaTeX stripped")
-_assert(_ct("keep this\n\n<details><summary>reasoning</summary>secret thoughts</details>\n\nvisible")
-        == "keep this\nvisible", "clean: <details> reasoning panel stripped")
+_assert(
+    _ct("keep this\n\n<details><summary>reasoning</summary>secret thoughts</details>\n\nvisible")
+    == "keep this\nvisible",
+    "clean: <details> reasoning panel stripped",
+)
 _assert(_ct("~~gone~~ stays") == "gone stays", "clean: strikethrough markers stripped")
 _assert(_ct("plain sentence.") == "plain sentence.", "clean: plain prose untouched")
 _assert(_ct("") == "" and _ct(None) == "", "clean: empty/None → empty")
@@ -4946,9 +6442,14 @@ _assert(_ct("") == "" and _ct(None) == "", "clean: empty/None → empty")
 # ── TTS splitting ─────────────────────────────────────────────────────────────
 
 _sp = Pipe._split_tts_text
-_assert(_sp("Just one short sentence.") == ["Just one short sentence."], "split: short text → single chunk")
-_two = _sp("This is the first reasonably long sentence that clears fifty characters. "
-           "And here is the second reasonably long sentence also over fifty characters.")
+_assert(
+    _sp("Just one short sentence.") == ["Just one short sentence."],
+    "split: short text → single chunk",
+)
+_two = _sp(
+    "This is the first reasonably long sentence that clears fifty characters. "
+    "And here is the second reasonably long sentence also over fifty characters."
+)
 _assert(len(_two) == 2, "split(punctuation): two full sentences → two chunks")
 # merge pass: a tiny leading fragment merges into the following sentence.
 _merged = _sp("Hi. This is a much longer following sentence that stands on its own fine.")
@@ -4960,38 +6461,73 @@ _assert(_none == ["a. b. c. d."], "split(none): whole text as one chunk when und
 # hard-wrap: text longer than the cap is broken into <= cap pieces on whitespace.
 _long = " ".join(["word"] * 2000)  # ~10000 chars
 _wrapped = _sp(_long, 100, "none")
-_assert(len(_wrapped) > 1 and all(len(c) <= 100 for c in _wrapped), "split: over-cap text hard-wrapped under cap")
-_assert(_sp("", 3900, "punctuation") == [] and _sp("   ", 3900, "none") == [], "split: empty/whitespace → []")
+_assert(
+    len(_wrapped) > 1 and all(len(c) <= 100 for c in _wrapped),
+    "split: over-cap text hard-wrapped under cap",
+)
+_assert(
+    _sp("", 3900, "punctuation") == [] and _sp("   ", 3900, "none") == [],
+    "split: empty/whitespace → []",
+)
 
 # ── TTS source selection (TTS_SOURCE auto/user/assistant) ─────────────────────
 
-_body_conv = {"messages": [
-    {"role": "user", "content": "please read the answer"},
-    {"role": "assistant", "content": "The answer is 42."},
-]}
-_assert(Pipe._extract_tts_text(_body_conv, "auto") == "The answer is 42.", "source auto: reads assistant reply when present")
-_assert(Pipe._extract_tts_text(_body_conv, "user") == "please read the answer", "source user: always the user message")
-_assert(Pipe._extract_tts_text(_body_conv, "assistant") == "The answer is 42.", "source assistant: the assistant reply")
-_assert(Pipe._extract_tts_text({"messages": [{"role": "user", "content": "hi"}]}, "auto") == "hi",
-        "source auto: falls back to user when no assistant reply")
+_body_conv = {
+    "messages": [
+        {"role": "user", "content": "please read the answer"},
+        {"role": "assistant", "content": "The answer is 42."},
+    ]
+}
+_assert(
+    Pipe._extract_tts_text(_body_conv, "auto") == "The answer is 42.",
+    "source auto: reads assistant reply when present",
+)
+_assert(
+    Pipe._extract_tts_text(_body_conv, "user") == "please read the answer",
+    "source user: always the user message",
+)
+_assert(
+    Pipe._extract_tts_text(_body_conv, "assistant") == "The answer is 42.",
+    "source assistant: the assistant reply",
+)
+_assert(
+    Pipe._extract_tts_text({"messages": [{"role": "user", "content": "hi"}]}, "auto") == "hi",
+    "source auto: falls back to user when no assistant reply",
+)
 # auto must NOT try to speak a prior TTS turn (our own <audio> embed).
-_body_prev_tts = {"messages": [
-    {"role": "user", "content": "say hello"},
-    {"role": "assistant", "content": "\n\n<div><audio>/api/v1/files/x/content</audio></div>\n\n"},
-    {"role": "user", "content": "now say goodbye"},
-]}
-_assert(Pipe._extract_tts_text(_body_prev_tts, "auto") == "now say goodbye",
-        "source auto: skips our own audio embed, reads the new user message")
-_assert(Pipe._clean_tts_text("<div><audio>/api/v1/files/x/content</audio></div>") == "",
-        "clean: our audio embed strips to empty (never spoken)")
+_body_prev_tts = {
+    "messages": [
+        {"role": "user", "content": "say hello"},
+        {
+            "role": "assistant",
+            "content": "\n\n<div><audio>/api/v1/files/x/content</audio></div>\n\n",
+        },
+        {"role": "user", "content": "now say goodbye"},
+    ]
+}
+_assert(
+    Pipe._extract_tts_text(_body_prev_tts, "auto") == "now say goodbye",
+    "source auto: skips our own audio embed, reads the new user message",
+)
+_assert(
+    Pipe._clean_tts_text("<div><audio>/api/v1/files/x/content</audio></div>") == "",
+    "clean: our audio embed strips to empty (never spoken)",
+)
 
 # ── TTS per-message voice directive ───────────────────────────────────────────
 
 _dv, _dt = Pipe._parse_voice_directive("[voice=nova] read this aloud")
-_assert(_dv == "nova" and _dt.strip() == "read this aloud", "directive: [voice=nova] parsed + stripped from text")
-_assert(Pipe._parse_voice_directive("no directive here") == (None, "no directive here"), "directive: none → (None, text)")
+_assert(
+    _dv == "nova" and _dt.strip() == "read this aloud",
+    "directive: [voice=nova] parsed + stripped from text",
+)
+_assert(
+    Pipe._parse_voice_directive("no directive here") == (None, "no directive here"),
+    "directive: none → (None, text)",
+)
 
 # ── _run_speech_generation: cleaning applied end-to-end + directive voice ──────
+
 
 def _tts_run(body, pipe=None, voices=None, valve_setup=None):
     _p = pipe or Pipe()
@@ -5002,21 +6538,39 @@ def _tts_run(body, pipe=None, voices=None, valve_setup=None):
     _r = _FakeResp(200, headers={"Content-Type": "audio/mpeg", "X-Generation-Id": "g"})
     _r.content = b"\xff\xfbmp3"
     _p._session = _FakeSession([_r] * 8)
+
     async def _up(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
         _tts_run.last = {"ct": content_type, "len": len(audio_bytes)}
         return ("id", "/api/v1/files/id/content")
+
     _p._upload_audio_to_owui = _up.__get__(_p, Pipe)  # type: ignore
-    out = asyncio.run(_p._run_speech_generation(
-        body, "hexgrad/kokoro-82m", _p.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-    ))
+    out = asyncio.run(
+        _p._run_speech_generation(
+            body,
+            "hexgrad/kokoro-82m",
+            _p.valves,
+            None,
+            object(),
+            {"id": "u"},
+            {"chat_id": "c"},
+        )
+    )
     posts = [c for c in _p._session.calls if c[0] == "POST"]
     return out, posts, _p
 
+
 # Markdown input is cleaned before it reaches /audio/speech.
-_out_md, _posts_md, _ = _tts_run({"messages": [{"role": "user", "content": "# Title\n**bold** and `code` done ✅"}]})
-_assert("<div><audio>/api/v1/files/id/content</audio></div>" in _out_md, "run: cleaned TTS still embeds <audio>")
+_out_md, _posts_md, _ = _tts_run(
+    {"messages": [{"role": "user", "content": "# Title\n**bold** and `code` done ✅"}]}
+)
+_assert(
+    "<div><audio>/api/v1/files/id/content</audio></div>" in _out_md,
+    "run: cleaned TTS still embeds <audio>",
+)
 _sent_md = (_posts_md[0][2].get("json") or {}).get("input")
-_assert(_sent_md == "Title bold and code done", "run: markdown/emoji cleaned out of the spoken input")
+_assert(
+    _sent_md == "Title bold and code done", "run: markdown/emoji cleaned out of the spoken input"
+)
 
 # Per-message [voice=...] directive overrides the valve and is not spoken.
 _out_dir, _posts_dir, _ = _tts_run(
@@ -5032,43 +6586,81 @@ _out_sp, _posts_sp, _ = _tts_run(
     {"messages": [{"role": "user", "content": "hello"}]},
     valve_setup=lambda v: setattr(v, "AUDIO_OUTPUT_SPEED", 1.5),
 )
-_assert((_posts_sp[0][2].get("json") or {}).get("speed") == 1.5, "run: AUDIO_OUTPUT_SPEED forwarded as speed")
+_assert(
+    (_posts_sp[0][2].get("json") or {}).get("speed") == 1.5,
+    "run: AUDIO_OUTPUT_SPEED forwarded as speed",
+)
 
 # TTS_SOURCE=auto reads the prior assistant reply.
-_out_src, _posts_src, _ = _tts_run({"messages": [
-    {"role": "user", "content": "read it"},
-    {"role": "assistant", "content": "Spoken answer."},
-]})
-_assert((_posts_src[0][2].get("json") or {}).get("input") == "Spoken answer.", "run: TTS_SOURCE=auto speaks the assistant reply")
+_out_src, _posts_src, _ = _tts_run(
+    {
+        "messages": [
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": "Spoken answer."},
+        ]
+    }
+)
+_assert(
+    (_posts_src[0][2].get("json") or {}).get("input") == "Spoken answer.",
+    "run: TTS_SOURCE=auto speaks the assistant reply",
+)
 
 # Empty-after-cleaning (e.g. only a code block) → friendly error, no POST.
 _p_empty = Pipe()
 _p_empty._session = _FakeSession([])
-_out_empty = asyncio.run(_p_empty._run_speech_generation(
-    {"messages": [{"role": "user", "content": "```\njust code\n```"}]},
-    "hexgrad/kokoro-82m", _p_empty.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-))
+_out_empty = asyncio.run(
+    _p_empty._run_speech_generation(
+        {"messages": [{"role": "user", "content": "```\njust code\n```"}]},
+        "hexgrad/kokoro-82m",
+        _p_empty.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
 _assert("nothing speakable" in _out_empty, "run: text that cleans to empty → friendly error")
 
 # ── multi-chunk: split long text, synthesize each, concatenate into one <audio> ─
 
 _p_multi = Pipe()
 _p_multi.valves.AUDIO_TTS_SPLIT = "paragraphs"
-_r1 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _r1.content = b"AAAA"
-_r2 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _r2.content = b"BBBB"
+_r1 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+_r1.content = b"AAAA"
+_r2 = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+_r2.content = b"BBBB"
 _p_multi._session = _FakeSession([_r1, _r2])
 _multi_up = {"len": None, "ct": None}
+
+
 async def _up_multi(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
-    _multi_up["len"] = len(audio_bytes); _multi_up["ct"] = content_type
+    _multi_up["len"] = len(audio_bytes)
+    _multi_up["ct"] = content_type
     return ("m", "/api/v1/files/m/content")
+
+
 _p_multi._upload_audio_to_owui = _up_multi.__get__(_p_multi, Pipe)  # type: ignore
-_out_multi = asyncio.run(_p_multi._run_speech_generation(
-    {"messages": [{"role": "user", "content": "First paragraph here.\n\nSecond paragraph here."}]},
-    "hexgrad/kokoro-82m", _p_multi.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-))
+_out_multi = asyncio.run(
+    _p_multi._run_speech_generation(
+        {
+            "messages": [
+                {"role": "user", "content": "First paragraph here.\n\nSecond paragraph here."}
+            ]
+        },
+        "hexgrad/kokoro-82m",
+        _p_multi.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
 _multi_posts = [c for c in _p_multi._session.calls if c[0] == "POST"]
 _assert(len(_multi_posts) == 2, "multi-chunk: two paragraphs → two /audio/speech POSTs")
-_assert(_multi_up["len"] == 8 and _multi_up["ct"] == "audio/mpeg", "multi-chunk: mp3 bytes concatenated into one clip")
+_assert(
+    _multi_up["len"] == 8 and _multi_up["ct"] == "audio/mpeg",
+    "multi-chunk: mp3 bytes concatenated into one clip",
+)
 _assert(_out_multi.count("<audio>") == 1, "multi-chunk: still ONE <audio> embed")
 
 # ── PCM fallback: provider ignores mp3 and returns raw PCM → wrapped as WAV ────
@@ -5078,30 +6670,72 @@ _rpcm = _FakeResp(200, headers={"Content-Type": "audio/pcm; rate=24000"})
 _rpcm.content = bytes(range(32))  # raw PCM samples
 _p_pcm2._session = _FakeSession([_rpcm])
 _pcm_up = {"ct": None, "head": None}
+
+
 async def _up_pcm(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
-    _pcm_up["ct"] = content_type; _pcm_up["head"] = bytes(audio_bytes[:4])
+    _pcm_up["ct"] = content_type
+    _pcm_up["head"] = bytes(audio_bytes[:4])
     return ("p", "/api/v1/files/p/content")
+
+
 _p_pcm2._upload_audio_to_owui = _up_pcm.__get__(_p_pcm2, Pipe)  # type: ignore
-_out_pcm = asyncio.run(_p_pcm2._run_speech_generation(
-    {"messages": [{"role": "user", "content": "speak this"}]},
-    "google/gemini-tts", _p_pcm2.valves, None, object(), {"id": "u"}, {"chat_id": "c"},
-))
-_assert(_pcm_up["ct"] == "audio/wav" and _pcm_up["head"] == b"RIFF", "pcm fallback: raw PCM wrapped in a WAV container")
-_assert(Pipe._pcm_rate_from_ct("audio/pcm; rate=16000") == 16000, "pcm rate parsed from Content-Type")
+_out_pcm = asyncio.run(
+    _p_pcm2._run_speech_generation(
+        {"messages": [{"role": "user", "content": "speak this"}]},
+        "google/gemini-tts",
+        _p_pcm2.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
+_assert(
+    _pcm_up["ct"] == "audio/wav" and _pcm_up["head"] == b"RIFF",
+    "pcm fallback: raw PCM wrapped in a WAV container",
+)
+_assert(
+    Pipe._pcm_rate_from_ct("audio/pcm; rate=16000") == 16000, "pcm rate parsed from Content-Type"
+)
 _assert(Pipe._pcm_rate_from_ct("audio/pcm") == 24000, "pcm rate defaults to 24000")
 
 # ── cache: identical text returns the hosted clip without a second POST ────────
 
 _p_cache = Pipe()
-_rc = _FakeResp(200, headers={"Content-Type": "audio/mpeg"}); _rc.content = b"\xff\xfbmp3"
+_rc = _FakeResp(200, headers={"Content-Type": "audio/mpeg"})
+_rc.content = b"\xff\xfbmp3"
 _p_cache._session = _FakeSession([_rc])  # exactly ONE response available
+
+
 async def _up_cache(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     return ("c", "/api/v1/files/c/content")
+
+
 _p_cache._upload_audio_to_owui = _up_cache.__get__(_p_cache, Pipe)  # type: ignore
 _cbody = {"messages": [{"role": "user", "content": "cache me please"}]}
 with patch.object(_p_cache, "_speech_file_exists", new=AsyncMock(return_value=True)):
-    _c1 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
-    _c2 = asyncio.run(_p_cache._run_speech_generation(_cbody, "hexgrad/kokoro-82m", _p_cache.valves, None, object(), {"id": "u"}, {"chat_id": "c"}))
+    _c1 = asyncio.run(
+        _p_cache._run_speech_generation(
+            _cbody,
+            "hexgrad/kokoro-82m",
+            _p_cache.valves,
+            None,
+            object(),
+            {"id": "u"},
+            {"chat_id": "c"},
+        )
+    )
+    _c2 = asyncio.run(
+        _p_cache._run_speech_generation(
+            _cbody,
+            "hexgrad/kokoro-82m",
+            _p_cache.valves,
+            None,
+            object(),
+            {"id": "u"},
+            {"chat_id": "c"},
+        )
+    )
 _cache_posts = [c for c in _p_cache._session.calls if c[0] == "POST"]
 _assert(len(_cache_posts) == 1, "cache: second identical request makes NO new POST")
 _assert("/api/v1/files/c/content" in _c2, "cache: second request returns the cached clip URL")
@@ -5110,59 +6744,104 @@ _assert("/api/v1/files/c/content" in _c2, "cache: second request returns the cac
 
 _section("audit fixes: tool-stream media + video 402 + non-stream status finalize")
 
+
 # Tool-stream + image: _stream_one_round captures message.images so the
 # tool-loop caller can materialize them. Drive the generator manually with
 # a fake SSE response that includes a completed message containing images.
 class _FakeSSEResp:
     def __init__(self, lines):
-        self._lines = [l.encode() if isinstance(l, str) else l for l in lines]
+        self._lines = [line.encode() if isinstance(line, str) else line for line in lines]
+
     def iter_lines(self, **_kw):
         for ln in self._lines:
             yield ln
-    def close(self): pass
+
+    def close(self):
+        pass
+
     @property
-    def status_code(self): return 200
-    def raise_for_status(self): pass
+    def status_code(self):
+        return 200
+
+    def raise_for_status(self):
+        pass
+
 
 _p_aud_img = Pipe()
+
+
 def _fake_retry_img(headers, payload, stream, valves):
     chunk = {
         "id": "gen-1",
-        "choices": [{
-            "index": 0,
-            "finish_reason": "stop",
-            "delta": {"content": ""},
-            "message": {"role": "assistant", "content": "",
-                        "images": [{"image_url": {"url": "data:image/png;base64,aGVsbG8="}}]},
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "delta": {"content": ""},
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "images": [{"image_url": {"url": "data:image/png;base64,aGVsbG8="}}],
+                },
+            }
+        ],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
     }
-    return _FakeSSEResp([b"data: " + _b64m.b64encode(b"x").decode().encode()[:0] + json.dumps(chunk).encode(), b"data: [DONE]"])
+    return _FakeSSEResp(
+        [
+            b"data: " + _b64m.b64encode(b"x").decode().encode()[:0] + json.dumps(chunk).encode(),
+            b"data: [DONE]",
+        ]
+    )
+
+
 _p_aud_img._retryable_request = _fake_retry_img  # type: ignore
 _state_img = {}
 _chunks = list(_p_aud_img._stream_one_round({}, {"messages": []}, _p_aud_img.valves, _state_img))
-_assert("images" in _state_img and len(_state_img["images"]) == 1,
-        "_stream_one_round captures message.images into state")
+_assert(
+    "images" in _state_img and len(_state_img["images"]) == 1,
+    "_stream_one_round captures message.images into state",
+)
 
 # Tool-stream + audio: _stream_one_round captures delta.audio.data.
 _p_aud = Pipe()
+
+
 def _fake_retry_audio(headers, payload, stream, valves):
     chunk1 = {"id": "gen-a", "choices": [{"index": 0, "delta": {"audio": {"data": "QUJD"}}}]}
-    chunk2 = {"id": "gen-a", "choices": [{"index": 0, "delta": {"audio": {"data": "REVG"}}, "finish_reason": "stop"}],
-              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
-    return _FakeSSEResp([b"data: " + json.dumps(chunk1).encode(),
-                         b"data: " + json.dumps(chunk2).encode(),
-                         b"data: [DONE]"])
+    chunk2 = {
+        "id": "gen-a",
+        "choices": [{"index": 0, "delta": {"audio": {"data": "REVG"}}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    return _FakeSSEResp(
+        [
+            b"data: " + json.dumps(chunk1).encode(),
+            b"data: " + json.dumps(chunk2).encode(),
+            b"data: [DONE]",
+        ]
+    )
+
+
 _p_aud._retryable_request = _fake_retry_audio  # type: ignore
 _state_aud = {}
 list(_p_aud._stream_one_round({}, {"messages": []}, _p_aud.valves, _state_aud))
-_assert(_state_aud.get("audio_b64") == "QUJDREVG", "_stream_one_round accumulates delta.audio.data parts")
+_assert(
+    _state_aud.get("audio_b64") == "QUJDREVG",
+    "_stream_one_round accumulates delta.audio.data parts",
+)
 
 # _stream_media_embeds: composes image markdown + audio embed from state.
 _p_mm = Pipe()
+
+
 async def _fake_upload_a(self, request, user, metadata, audio_bytes, content_type="audio/mpeg"):
     return ("aud-x", "/api/v1/files/aud-x/content")
+
+
 _p_mm._upload_audio_to_owui = _fake_upload_a.__get__(_p_mm, Pipe)  # type: ignore
+
+
 # emit_image_files no-op without OWUI runtime context → image_md falls back to
 # the data URL inside fake_msg (no rewrite). To verify the helper combines
 # both sources, we override _emit_image_files to rewrite directly.
@@ -5171,96 +6850,136 @@ async def _fake_emit(self, emitter, message, request=None, user=None, metadata=N
         message["images"][0]["image_url"]["url"] = "/api/v1/files/img-y/content"
         return True
     return False
+
+
 _p_mm._emit_image_files = _fake_emit.__get__(_p_mm, Pipe)  # type: ignore
 _state_mm = {
     "images": [{"image_url": {"url": "data:image/png;base64,aGVsbG8="}}],
     "audio_b64": _b64m.b64encode(b"ID3 audio").decode(),
 }
-_out = asyncio.run(_p_mm._stream_media_embeds(_state_mm, _p_mm.valves, object(), {"id": "u"}, {"chat_id": "c"}))
-_assert("![Generated image](/api/v1/files/img-y/content)" in _out, "_stream_media_embeds yields image markdown")
-_assert("<div><audio>/api/v1/files/aud-x/content</audio></div>" in _out, "_stream_media_embeds yields audio embed")
+_out = asyncio.run(
+    _p_mm._stream_media_embeds(_state_mm, _p_mm.valves, object(), {"id": "u"}, {"chat_id": "c"})
+)
+_assert(
+    "![Generated image](/api/v1/files/img-y/content)" in _out,
+    "_stream_media_embeds yields image markdown",
+)
+_assert(
+    "<div><audio>/api/v1/files/aud-x/content</audio></div>" in _out,
+    "_stream_media_embeds yields audio embed",
+)
 
 # Empty state → empty string (no crash).
-_assert(asyncio.run(_p_mm._stream_media_embeds({}, _p_mm.valves, None, None, None)) == "",
-        "_stream_media_embeds returns '' for empty state")
+_assert(
+    asyncio.run(_p_mm._stream_media_embeds({}, _p_mm.valves, None, None, None)) == "",
+    "_stream_media_embeds returns '' for empty state",
+)
 
 # Video 402 → friendly insufficient-credits message (not generic "Failed to start").
 _p_402 = Pipe()
+
+
 class _FakeSession402:
     def __init__(self):
         self.posts = 0
+
     def post(self, *a, **kw):
         self.posts += 1
         return _FakeResp(402, {"error": {"message": "Insufficient credits"}})
+
+
 _p_402._session = _FakeSession402()
-_vg_402 = asyncio.run(_p_402._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_402.valves, None, None, None, None,
-))
-_assert("Insufficient credits" in _vg_402 and "402" in _vg_402,
-        "video 402 maps to Insufficient credits message")
+_vg_402 = asyncio.run(
+    _p_402._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_402.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Insufficient credits" in _vg_402 and "402" in _vg_402,
+    "video 402 maps to Insufficient credits message",
+)
 
 # Video 429 → friendly rate-limit message.
 _p_429 = Pipe()
+
+
 class _FakeSession429:
-    def post(self, *a, **kw): return _FakeResp(429, {"error": {"message": "Too many"}})
+    def post(self, *a, **kw):
+        return _FakeResp(429, {"error": {"message": "Too many"}})
+
+
 _p_429._session = _FakeSession429()
-_vg_429 = asyncio.run(_p_429._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_429.valves, None, None, None, None,
-))
-_assert("Rate limited" in _vg_429 and "429" in _vg_429,
-        "video 429 maps to Rate limited message")
+_vg_429 = asyncio.run(
+    _p_429._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_429.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert("Rate limited" in _vg_429 and "429" in _vg_429, "video 429 maps to Rate limited message")
 
 # ── icon coverage 3: 26 hardcoded official brand icons for community providers
 
 _section("icon coverage 3: official brand/HF avatar entries")
 
 import openrouter_pipe as _mp_off
+
 # 26 newly-hardcoded providers must resolve to a real public icon URL.
 _OFFICIAL = {
-    "nousresearch":          "cdn-avatars.huggingface.co",
-    "bytedance-seed":        "cdn-avatars.huggingface.co",
-    "bytedance":             "cdn-avatars.huggingface.co",
-    "sao10k":                "cdn-avatars.huggingface.co",
+    "nousresearch": "cdn-avatars.huggingface.co",
+    "bytedance-seed": "cdn-avatars.huggingface.co",
+    "bytedance": "cdn-avatars.huggingface.co",
+    "sao10k": "cdn-avatars.huggingface.co",
     "sentence-transformers": "sbert.net/_static/logo.png",
-    "openrouter":            "openrouter.ai/apple-touch-icon.png",
-    "inclusionai":           "cdn-avatars.huggingface.co",
-    "baai":                  "cdn-avatars.huggingface.co",
-    "intfloat":              "huggingface.co/avatars/",
-    "tencent":               "cdn-avatars.huggingface.co",
-    "zyphra":                "cdn-avatars.huggingface.co",
-    "thenlper":              "cdn-avatars.huggingface.co",
-    "allenai":               "allenai.org/favicon.ico",
-    "kwaipilot":             "cdn-avatars.huggingface.co",
-    "deepcogito":            "cdn-avatars.huggingface.co",
-    "gryphe":                "cdn-avatars.huggingface.co",
-    "essentialai":           "cdn-avatars.huggingface.co",
-    "undi95":                "cdn-avatars.huggingface.co",
+    "openrouter": "openrouter.ai/apple-touch-icon.png",
+    "inclusionai": "cdn-avatars.huggingface.co",
+    "baai": "cdn-avatars.huggingface.co",
+    "intfloat": "huggingface.co/avatars/",
+    "tencent": "cdn-avatars.huggingface.co",
+    "zyphra": "cdn-avatars.huggingface.co",
+    "thenlper": "cdn-avatars.huggingface.co",
+    "allenai": "allenai.org/favicon.ico",
+    "kwaipilot": "cdn-avatars.huggingface.co",
+    "deepcogito": "cdn-avatars.huggingface.co",
+    "gryphe": "cdn-avatars.huggingface.co",
+    "essentialai": "cdn-avatars.huggingface.co",
+    "undi95": "cdn-avatars.huggingface.co",
     "cognitivecomputations": "gravatar.com",
-    "writer":                "cdn-avatars.huggingface.co",
-    "anthracite-org":        "cdn-avatars.huggingface.co",
-    "prime-intellect":       "cdn-avatars.huggingface.co",
-    "canopylabs":            "cdn-avatars.huggingface.co",
-    "hexgrad":               "cdn-avatars.huggingface.co",
-    "sesame":                "cdn-avatars.huggingface.co",
-    "thedrummer":            "openrouter.ai/images/icons/TheDrummer",
+    "writer": "cdn-avatars.huggingface.co",
+    "anthracite-org": "cdn-avatars.huggingface.co",
+    "prime-intellect": "cdn-avatars.huggingface.co",
+    "canopylabs": "cdn-avatars.huggingface.co",
+    "hexgrad": "cdn-avatars.huggingface.co",
+    "sesame": "cdn-avatars.huggingface.co",
+    "thedrummer": "openrouter.ai/images/icons/TheDrummer",
 }
 for key, expected_substring in _OFFICIAL.items():
     url = _mp_off._PROVIDER_ICONS.get(key, "")
-    _assert(url.startswith("https://") and expected_substring in url,
-            f"_PROVIDER_ICONS[{key}] points at {expected_substring}")
+    _assert(
+        url.startswith("https://") and expected_substring in url,
+        f"_PROVIDER_ICONS[{key}] points at {expected_substring}",
+    )
 
 # Empty-registry Pipe still resolves via hardcoded dict
 _p_off = Pipe()
 _p_off._provider_registry = {}
 _p_off._provider_registry_ts = 1e18
-for key in ("nousresearch","baai","tencent","writer","allenai","openrouter","sesame"):
+for key in ("nousresearch", "baai", "tencent", "writer", "allenai", "openrouter", "sesame"):
     icon = _p_off._get_provider_icon(key)
-    _assert(icon and icon.startswith("https://"),
-            f"_get_provider_icon({key}) returns the hardcoded official URL with empty registry")
+    _assert(
+        icon and icon.startswith("https://"),
+        f"_get_provider_icon({key}) returns the hardcoded official URL with empty registry",
+    )
 
 # _is_owui_managed_icon recognises the CDNs we ship as managed so future
 # refreshes can rotate stale URLs without touching user-set custom icons.
@@ -5273,14 +6992,18 @@ for managed in [
     "https://www.sbert.net/_static/logo.png",
     "https://www.bytedance.com/favicon.svg",
 ]:
-    _assert(mod._is_owui_managed_icon(managed),
-            f"_is_owui_managed_icon: managed CDN ({managed.split('/')[2]})")
+    _assert(
+        not mod._is_owui_managed_icon(managed),
+        f"_is_owui_managed_icon: CDN ownership requires provenance ({managed.split('/')[2]})",
+    )
 
 # User-set custom icons on these same CDNs (with paths beyond what we use)
 # still considered managed (acceptable trade-off — these are all generic
 # CDNs; users wanting absolute persistence pick a different host).
-_assert(not mod._is_owui_managed_icon("https://example.com/custom/icon.svg"),
-        "user-set example.com URL NOT managed")
+_assert(
+    not mod._is_owui_managed_icon("https://example.com/custom/icon.svg"),
+    "user-set example.com URL NOT managed",
+)
 
 # ── icon coverage 2: provider-domain favicon fallback (vs gstatic) ───────────
 
@@ -5291,31 +7014,52 @@ _section("icon coverage 2: provider-domain favicon fallback")
 _dom_payload = {
     "data": [
         {"slug": "openai", "name": "OpenAI", "icon": {"url": "/images/icons/OpenAI.svg"}},
-        {"slug": "nvidia", "name": "NVIDIA",
-         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://www.nvidia.com/en-us/&size=128"}},
-        {"slug": "z-ai", "name": "Z.ai",
-         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://z.ai/model-api&size=128"}},
-        {"slug": "xai", "name": "xAI",
-         "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"}},
+        {
+            "slug": "nvidia",
+            "name": "NVIDIA",
+            "icon": {
+                "url": "https://t0.gstatic.com/faviconV2?url=https://www.nvidia.com/en-us/&size=128"
+            },
+        },
+        {
+            "slug": "z-ai",
+            "name": "Z.ai",
+            "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://z.ai/model-api&size=128"},
+        },
+        {
+            "slug": "xai",
+            "name": "xAI",
+            "icon": {"url": "https://t0.gstatic.com/faviconV2?url=https://x.ai/&size=256"},
+        },
     ]
 }
-_mock_dom = MagicMock(); _mock_dom.status_code = 200; _mock_dom.json.return_value = _dom_payload
-def _dom_get(*a, **kw): return _mock_dom
+_mock_dom = MagicMock()
+_mock_dom.status_code = 200
+_mock_dom.json.return_value = _dom_payload
+
+
+def _dom_get(*a, **kw):
+    return _mock_dom
+
 
 # Domain extraction populates _provider_domain_cache.
 _p_dom = Pipe()
-_p_dom.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")  # USE_PROVIDER_DOMAIN_FAVICON default True
+_p_dom.valves = Pipe.Valves(
+    OPENROUTER_API_KEY="test-key"
+)  # USE_PROVIDER_DOMAIN_FAVICON default True
 with patch.object(_p_dom._session, "get", side_effect=_dom_get):
     _p_dom._load_provider_registry()
-_assert(_p_dom._provider_domain_cache.get("nvidia") == "www.nvidia.com",
-        "domain extracted: nvidia → www.nvidia.com")
-_assert(_p_dom._provider_domain_cache.get("z-ai") == "z.ai",
-        "domain extracted: z-ai → z.ai")
-_assert(_p_dom._provider_domain_cache.get("xai") == "x.ai",
-        "domain extracted: xai → x.ai")
+_assert(
+    _p_dom._provider_domain_cache.get("nvidia") == "www.nvidia.com",
+    "domain extracted: nvidia → www.nvidia.com",
+)
+_assert(_p_dom._provider_domain_cache.get("z-ai") == "z.ai", "domain extracted: z-ai → z.ai")
+_assert(_p_dom._provider_domain_cache.get("xai") == "x.ai", "domain extracted: xai → x.ai")
 # Hyphen-stripped slug also indexed
-_assert(_p_dom._provider_domain_cache.get("zai") == "z.ai",
-        "hyphen-stripped variant also in domain cache")
+_assert(
+    _p_dom._provider_domain_cache.get("zai") == "z.ai",
+    "hyphen-stripped variant also in domain cache",
+)
 
 # Lookup flow: gstatic blocked → returns provider favicon URL
 _p_dom2 = Pipe()
@@ -5325,39 +7069,58 @@ with patch.object(_p_dom2._session, "get", side_effect=_dom_get):
     # hardcoded (HF avatar) → pop it to verify the fallback path still
     # works as designed when no hardcoded entry exists.
     import openrouter_pipe as _mp_test_dom
+
     _saved_z = _mp_test_dom._PROVIDER_ICONS.pop("z-ai", None)
     try:
-        _assert(_p_dom2._get_provider_icon("nvidia") == "https://www.nvidia.com/favicon.ico",
-                "nvidia → provider favicon (USE_GSTATIC off, USE_PROVIDER_DOMAIN_FAVICON on)")
-        _assert(_p_dom2._get_provider_icon("z-ai") == "https://z.ai/favicon.ico",
-                "z-ai → provider favicon (hardcoded entry removed for test)")
+        _assert(
+            _p_dom2._get_provider_icon("nvidia") == "https://www.nvidia.com/favicon.ico",
+            "nvidia → provider favicon (USE_GSTATIC off, USE_PROVIDER_DOMAIN_FAVICON on)",
+        )
+        _assert(
+            _p_dom2._get_provider_icon("z-ai") == "https://z.ai/favicon.ico",
+            "z-ai → provider favicon (hardcoded entry removed for test)",
+        )
         # x-ai (model author) hyphen-strips to xai → registry has xai → extracts x.ai
-        _assert(_p_dom2._get_provider_icon("x-ai") == "https://x.ai/favicon.ico",
-                "x-ai author slug → x.ai favicon via hyphen-strip")
+        _assert(
+            _p_dom2._get_provider_icon("x-ai") == "https://x.ai/favicon.ico",
+            "x-ai author slug → x.ai favicon via hyphen-strip",
+        )
     finally:
         if _saved_z is not None:
             _mp_test_dom._PROVIDER_ICONS["z-ai"] = _saved_z
     # openai hardcoded — provider-domain fallback skipped
-    _assert(_p_dom2._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
-            "openai still uses hardcoded URL")
+    _assert(
+        _p_dom2._get_provider_icon("openai") == "https://openrouter.ai/images/icons/OpenAI.svg",
+        "openai still uses hardcoded URL",
+    )
 
 # Provider not in registry + USE_PROVIDER_DOMAIN_FAVICON on → letter-SVG (no domain known)
 _p_dom3 = Pipe()
 _p_dom3.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 with patch.object(_p_dom3._session, "get", side_effect=_dom_get):
     _icon_unk = _p_dom3._get_provider_icon("totally-unknown")
-    _assert(_icon_unk and _icon_unk.startswith("data:image/svg+xml;base64,"),
-            "unknown provider without domain → letter-SVG")
+    _assert(
+        _icon_unk and _icon_unk.startswith("data:image/svg+xml;base64,"),
+        "unknown provider without domain → letter-SVG",
+    )
 
 # _is_owui_managed_icon recognises provider-domain favicons as managed
-_assert(mod._is_owui_managed_icon("https://www.nvidia.com/favicon.ico"),
-        "_is_owui_managed_icon: provider-domain /favicon.ico → True")
-_assert(mod._is_owui_managed_icon("https://x.ai/favicon.ico"),
-        "_is_owui_managed_icon: short-host /favicon.ico → True")
-_assert(not mod._is_owui_managed_icon("https://custom.example.com/icons/special.svg"),
-        "_is_owui_managed_icon: user-set custom URL still NOT managed")
-_assert(not mod._is_owui_managed_icon("https://example.com/some/path/favicon.ico"),
-        "_is_owui_managed_icon: favicon.ico nested inside a path → NOT managed (probably user-set)")
+_assert(
+    not mod._is_owui_managed_icon("https://www.nvidia.com/favicon.ico"),
+    "provider favicon requires exact provenance marker",
+)
+_assert(
+    not mod._is_owui_managed_icon("https://x.ai/favicon.ico"),
+    "short-host favicon requires exact provenance marker",
+)
+_assert(
+    not mod._is_owui_managed_icon("https://custom.example.com/icons/special.svg"),
+    "_is_owui_managed_icon: user-set custom URL still NOT managed",
+)
+_assert(
+    not mod._is_owui_managed_icon("https://example.com/some/path/favicon.ico"),
+    "_is_owui_managed_icon: favicon.ico nested inside a path → NOT managed (probably user-set)",
+)
 
 # ── icon coverage: letter-SVG fallback + slug aliases + new hosted icons ─────
 
@@ -5365,18 +7128,15 @@ _section("icon coverage: letter-SVG + slug aliases + new hosted icons")
 
 # Generated letter-SVG is deterministic and decodable
 import base64 as _b64_ic
+
 _ico1 = Pipe._generate_letter_icon("nvidia")
 _ico2 = Pipe._generate_letter_icon("nvidia")
 _assert(_ico1 == _ico2, "letter-SVG deterministic for same provider key")
-_assert(_ico1.startswith("data:image/svg+xml;base64,"),
-        "letter-SVG is a data: SVG URL")
+_assert(_ico1.startswith("data:image/svg+xml;base64,"), "letter-SVG is a data: SVG URL")
 _svg_payload = _b64_ic.b64decode(_ico1.split(",", 1)[1]).decode()
-_assert("<svg" in _svg_payload and "</svg>" in _svg_payload,
-        "decoded payload is valid SVG markup")
-_assert(">N</text>" in _svg_payload,
-        "letter-SVG uses provider initial (N for nvidia)")
-_assert("hsl(" in _svg_payload,
-        "letter-SVG uses HSL color from hash")
+_assert("<svg" in _svg_payload and "</svg>" in _svg_payload, "decoded payload is valid SVG markup")
+_assert(">N</text>" in _svg_payload, "letter-SVG uses provider initial (N for nvidia)")
+_assert("hsl(" in _svg_payload, "letter-SVG uses HSL color from hash")
 # Different providers → different colors (hash-derived)
 _ico3 = Pipe._generate_letter_icon("zulu")
 _assert(_ico1 != _ico3, "different provider keys → different letter-SVGs")
@@ -5393,21 +7153,29 @@ _assert(">?</text>" in _pl_sym, "non-alnum first char falls back to '?'")
 
 # Newly hardcoded provider icons exist and resolve via _get_provider_icon
 import openrouter_pipe as _mp_ic
+
 for _key, _expected in [
     ("thedrummer", "https://openrouter.ai/images/icons/TheDrummer.png"),
     ("ibm-granite", "https://openrouter.ai/images/icons/IBMGranite.svg"),
     ("nex-agi", "https://openrouter.ai/images/icons/NexAGI.svg"),
 ]:
-    _assert(_mp_ic._PROVIDER_ICONS.get(_key) == _expected,
-            f"_PROVIDER_ICONS[{_key}] = {_expected}")
+    _assert(_mp_ic._PROVIDER_ICONS.get(_key) == _expected, f"_PROVIDER_ICONS[{_key}] = {_expected}")
 # And the lookup hits the hardcoded entry even when the registry doesn't have it
-_p_ic = Pipe(); _p_ic._provider_registry = {}; _p_ic._provider_registry_ts = 1e18
-_assert(_p_ic._get_provider_icon("thedrummer") == "https://openrouter.ai/images/icons/TheDrummer.png",
-        "thedrummer resolves to hardcoded URL with empty registry")
-_assert(_p_ic._get_provider_icon("ibm-granite") == "https://openrouter.ai/images/icons/IBMGranite.svg",
-        "ibm-granite resolves to hardcoded URL")
-_assert(_p_ic._get_provider_icon("nex-agi") == "https://openrouter.ai/images/icons/NexAGI.svg",
-        "nex-agi resolves to hardcoded URL")
+_p_ic = Pipe()
+_p_ic._provider_registry = {}
+_p_ic._provider_registry_ts = 1e18
+_assert(
+    _p_ic._get_provider_icon("thedrummer") == "https://openrouter.ai/images/icons/TheDrummer.png",
+    "thedrummer resolves to hardcoded URL with empty registry",
+)
+_assert(
+    _p_ic._get_provider_icon("ibm-granite") == "https://openrouter.ai/images/icons/IBMGranite.svg",
+    "ibm-granite resolves to hardcoded URL",
+)
+_assert(
+    _p_ic._get_provider_icon("nex-agi") == "https://openrouter.ai/images/icons/NexAGI.svg",
+    "nex-agi resolves to hardcoded URL",
+)
 
 # Slug aliases: bytedance-seed → bytedance (when bytedance has a registry entry)
 _p_alias = Pipe()
@@ -5419,12 +7187,15 @@ _p_alias.valves.USE_GSTATIC_FAVICONS = True  # accept the non-gstatic example
 # Temporarily drop both so the test can verify the alias-resolution
 # fallback still works as designed.
 import openrouter_pipe as _mp_alias
+
 _saved_bs = _mp_alias._PROVIDER_ICONS.pop("bytedance-seed", None)
 _saved_b = _mp_alias._PROVIDER_ICONS.pop("bytedance", None)
 try:
     _alias_icon = _p_alias._get_provider_icon("bytedance-seed")
-    _assert(_alias_icon == "https://example.com/bytedance.svg",
-            "bytedance-seed alias resolves to bytedance registry entry (with hardcoded entries removed)")
+    _assert(
+        _alias_icon == "https://example.com/bytedance.svg",
+        "bytedance-seed alias resolves to bytedance registry entry (with hardcoded entries removed)",
+    )
 finally:
     if _saved_bs is not None:
         _mp_alias._PROVIDER_ICONS["bytedance-seed"] = _saved_bs
@@ -5436,8 +7207,10 @@ _p_alias2._provider_registry = {"xai": "https://example.com/xai.svg"}
 _p_alias2._provider_registry_ts = 1e18
 _p_alias2.valves.USE_GSTATIC_FAVICONS = True
 _grok_icon = _p_alias2._get_provider_icon("grok")
-_assert(_grok_icon == "https://example.com/xai.svg",
-        "grok alias resolves to xai (x-ai stripped) registry entry")
+_assert(
+    _grok_icon == "https://example.com/xai.svg",
+    "grok alias resolves to xai (x-ai stripped) registry entry",
+)
 
 # Letter-SVG fallback never blocks the sync; for unknown provider the icon
 # string is short enough to fit in a model meta record (sanity bound).
@@ -5451,12 +7224,21 @@ _section("sprint E MED/LOW: MIME table + auth cache + tool cap branch + remainin
 
 # _AUDIO_FORMAT_TO_MIME table is the single source of truth for audio MIME.
 import openrouter_pipe as _mod_e
-for _fmt, _expected in [("mp3", "audio/mpeg"), ("wav", "audio/wav"),
-                        ("flac", "audio/flac"), ("opus", "audio/ogg"),
-                        ("ogg", "audio/ogg"), ("pcm16", "audio/wav"),
-                        ("aac", "audio/aac"), ("m4a", "audio/mp4")]:
-    _assert(_mod_e._AUDIO_FORMAT_TO_MIME[_fmt] == _expected,
-            f"_AUDIO_FORMAT_TO_MIME[{_fmt}] = {_expected}")
+
+for _fmt, _expected in [
+    ("mp3", "audio/mpeg"),
+    ("wav", "audio/wav"),
+    ("flac", "audio/flac"),
+    ("opus", "audio/ogg"),
+    ("ogg", "audio/ogg"),
+    ("pcm16", "audio/wav"),
+    ("aac", "audio/aac"),
+    ("m4a", "audio/mp4"),
+]:
+    _assert(
+        _mod_e._AUDIO_FORMAT_TO_MIME[_fmt] == _expected,
+        f"_AUDIO_FORMAT_TO_MIME[{_fmt}] = {_expected}",
+    )
 
 # Auth-header cache: EncryptedStr.decrypt() is called only on the first
 # build, subsequent builds with the same ciphertext reuse the cached
@@ -5465,10 +7247,15 @@ _p_cache = Pipe()
 _p_cache.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "k" * 50
 _decrypt_calls = {"n": 0}
 from openrouter_pipe import EncryptedStr as _ES
+
 _orig_decrypt = _ES.decrypt
+
+
 def _counting_decrypt(s):
     _decrypt_calls["n"] += 1
     return _orig_decrypt(s)
+
+
 _ES.decrypt = staticmethod(_counting_decrypt)  # type: ignore
 try:
     _h1 = _p_cache._build_headers(valves=_p_cache.valves)
@@ -5477,10 +7264,14 @@ try:
     _h4 = _p_cache._build_headers(valves=_p_cache.valves)
 finally:
     _ES.decrypt = staticmethod(_orig_decrypt)  # type: ignore
-_assert(_decrypt_calls["n"] == 1,
-        f"EncryptedStr.decrypt called exactly once across 4 _build_headers calls (got {_decrypt_calls['n']})")
-_assert(_h1["Authorization"] == _h2["Authorization"] == _h3["Authorization"] == _h4["Authorization"],
-        "cached Authorization header is stable across rebuilds")
+_assert(
+    _decrypt_calls["n"] == 1,
+    f"EncryptedStr.decrypt called exactly once across 4 _build_headers calls (got {_decrypt_calls['n']})",
+)
+_assert(
+    _h1["Authorization"] == _h2["Authorization"] == _h3["Authorization"] == _h4["Authorization"],
+    "cached Authorization header is stable across rebuilds",
+)
 
 # Auth cache invalidation on key change
 _p_cache.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "Z" * 50
@@ -5490,8 +7281,7 @@ try:
     _p_cache._build_headers(valves=_p_cache.valves)
 finally:
     _ES.decrypt = staticmethod(_orig_decrypt)  # type: ignore
-_assert(_decrypt_calls["n"] == 1,
-        "key rotation → cache miss → decrypt re-runs exactly once")
+_assert(_decrypt_calls["n"] == 1, "key rotation → cache miss → decrypt re-runs exactly once")
 
 # Auth cache eviction at 32 entries: simulate by adding 33 distinct ciphertexts
 _p_evict = Pipe()
@@ -5501,8 +7291,10 @@ _assert(len(_p_evict._auth_header_cache) == 33, "cache holds 33 entries before _
 _p_evict.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "n" * 50
 _p_evict._build_headers(valves=_p_evict.valves)
 # After the 34th entry triggers, cache cleared and only the new one re-added
-_assert(len(_p_evict._auth_header_cache) == 1,
-        "cache evicted wholesale when >= 32 entries before insert")
+_assert(
+    len(_p_evict._auth_header_cache) == 1,
+    "cache evicted wholesale when >= 32 entries before insert",
+)
 
 # User-supplied body["audio"] dict is preserved (no auto-override) when
 # the audio routing block runs. Tests the 'if not isinstance(body.get("audio"), dict)' guard.
@@ -5511,9 +7303,13 @@ _p_audio_keep._audio_model_ids = frozenset({"google/lyria-3-clip-preview"})  # t
 _p_audio_keep._lazy_populated = True
 _p_audio_keep.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "u" * 50
 _obs_audio = {}
+
+
 def _capture_payload_audio(self, headers, payload, valves, state=None):
     _obs_audio.update(payload)
     return iter(())
+
+
 _p_audio_keep._stream_response = _capture_payload_audio.__get__(_p_audio_keep, Pipe)  # type: ignore
 _user_audio_body = {
     "model": "google/lyria-3-clip-preview",
@@ -5521,14 +7317,22 @@ _user_audio_body = {
     "audio": {"format": "wav", "voice": "custom"},
     "stream": True,
 }
-_gen_au = asyncio.run(_p_audio_keep.pipe(_user_audio_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
+_gen_au = asyncio.run(
+    _p_audio_keep.pipe(_user_audio_body, {"id": "u"}, None, None, object(), {"chat_id": "c"})
+)
+
+
 async def _drain_au():
-    async for _ in _gen_au: pass
+    async for _ in _gen_au:
+        pass
+
+
 asyncio.run(_drain_au())
-_assert(_obs_audio["audio"]["format"] == "wav",
-        "user-supplied audio.format preserved (not overridden to mp3/pcm16)")
-_assert(_obs_audio["audio"].get("voice") == "custom",
-        "user-supplied audio.voice preserved")
+_assert(
+    _obs_audio["audio"]["format"] == "wav",
+    "user-supplied audio.format preserved (not overridden to mp3/pcm16)",
+)
+_assert(_obs_audio["audio"].get("voice") == "custom", "user-supplied audio.voice preserved")
 
 # User-supplied modalities preserved
 _p_mod_keep = Pipe()
@@ -5536,9 +7340,13 @@ _p_mod_keep._audio_model_ids = frozenset({"openai/gpt-audio"})  # type: ignore
 _p_mod_keep._lazy_populated = True
 _p_mod_keep.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "v" * 50
 _obs_mod = {}
+
+
 def _capture_mod(self, headers, payload, valves, state=None):
     _obs_mod.update(payload)
     return iter(())
+
+
 _p_mod_keep._stream_response = _capture_mod.__get__(_p_mod_keep, Pipe)  # type: ignore
 _user_mod_body = {
     "model": "openai/gpt-audio",
@@ -5547,28 +7355,44 @@ _user_mod_body = {
     "stream": True,
 }
 asyncio.run(_p_mod_keep.pipe(_user_mod_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
-async def _no_op_drain(): pass
+
+
+async def _no_op_drain():
+    pass
+
+
 asyncio.run(_no_op_drain())
-_assert(_obs_mod["modalities"] == ["audio"],
-        "user-supplied modalities preserved (not auto-overridden to ['text','audio'])")
+_assert(
+    _obs_mod["modalities"] == ["audio"],
+    "user-supplied modalities preserved (not auto-overridden to ['text','audio'])",
+)
 
 # _stream_one_round records state["audio_format"] from payload
 _p_af = Pipe()
+
+
 def _fake_retry_af(headers, payload, stream, valves):
-    chunk = {"id": "g", "choices": [{"delta": {"audio": {"data": "QUJD"}},
-                                       "finish_reason": "stop"}],
-              "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+    chunk = {
+        "id": "g",
+        "choices": [{"delta": {"audio": {"data": "QUJD"}}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
     return _FakeSSEResp([b"data: " + json.dumps(chunk).encode(), b"data: [DONE]"])
+
+
 _p_af._retryable_request = _fake_retry_af  # type: ignore
 _state_af = {}
 list(_p_af._stream_one_round({}, {"audio": {"format": "pcm16"}}, _p_af.valves, _state_af))
-_assert(_state_af.get("audio_format") == "pcm16",
-        "_stream_one_round records payload.audio.format into state")
+_assert(
+    _state_af.get("audio_format") == "pcm16",
+    "_stream_one_round records payload.audio.format into state",
+)
 
 # Base64 padding fix: stripped-of-padding length mod 4 in {2, 3} decodes
 # correctly (length mod 4 == 1 is not a valid base64 length even with
 # padding restored — that would imply 6 bits of data, not a whole byte).
 import base64 as _b64_d
+
 for _missing in (1, 2):
     _raw = b"Hello world " * 5
     _b64 = _b64_d.b64encode(_raw).decode().rstrip("=")
@@ -5579,90 +7403,176 @@ for _missing in (1, 2):
         _b64 = _b64[:-1]
     _p_pad = Pipe()
     _padded_bytes = {"v": None}
+
     async def _cap_pad(self, request, user, metadata, raw_bytes, content_type, modality_label):
         _padded_bytes["v"] = raw_bytes
         return ("f", "/api/v1/files/f/content")
+
     _p_pad._owui_upload_bytes = _cap_pad.__get__(_p_pad, Pipe)  # type: ignore
-    _out_pad = asyncio.run(_p_pad._materialize_audio_output(
-        _b64, _p_pad.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="mp3"
-    ))
-    _assert(_out_pad != "" and _padded_bytes["v"],
-            f"base64 length {len(_b64)} (missing {_missing} padding chars) decodes without error")
+    _out_pad = asyncio.run(
+        _p_pad._materialize_audio_output(
+            _b64, _p_pad.valves, object(), {"id": "u"}, {"chat_id": "c"}, audio_format="mp3"
+        )
+    )
+    _assert(
+        _out_pad != "" and _padded_bytes["v"],
+        f"base64 length {len(_b64)} (missing {_missing} padding chars) decodes without error",
+    )
 
 # Emitter exception inside video polling loop is swallowed; polling continues
 _p_em = Pipe()
 _p_em.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_em._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j", "status": "pending"}),
-    _FakeResp(200, {"id": "j", "status": "completed",
-                     "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]}),
-    _FakeResp(200, headers={"Content-Type": "video/mp4"}),
-])
+_p_em._session = _FakeSession(
+    [
+        _FakeResp(
+            202,
+            {
+                "id": "j",
+                "polling_url": "https://openrouter.ai/api/v1/videos/j",
+                "status": "pending",
+            },
+        ),
+        _FakeResp(
+            200,
+            {
+                "id": "j",
+                "status": "completed",
+                "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"],
+            },
+        ),
+        _FakeResp(200, headers={"Content-Type": "video/mp4"}),
+    ]
+)
 # Patch download response bytes
 _p_em._session.plan[-1].content = b"\x00fake-mp4"
+
+
 async def _raising_emitter(_ev):
     raise RuntimeError("emitter consumer down")
+
+
 async def _fake_upload_em(self, request, user, metadata, video_bytes, content_type="video/mp4"):
     return ("vid-em", "/api/v1/files/vid-em/content")
+
+
 _p_em._upload_video_to_owui = _fake_upload_em.__get__(_p_em, Pipe)  # type: ignore
-_vg_em = asyncio.run(_p_em._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_em.valves, _raising_emitter, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"},
-))
-_assert("<div><video>" in _vg_em,
-        "raising emitter in polling loop is swallowed; flow completes with video embed")
+_vg_em = asyncio.run(
+    _p_em._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_em.valves,
+        _raising_emitter,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c", "message_id": "m"},
+    )
+)
+_assert(
+    "<div><video>" in _vg_em,
+    "raising emitter in polling loop is swallowed; flow completes with video embed",
+)
 
 # Submit 2xx non-JSON body → wrapped error
 _p_njs = Pipe()
+
+
 class _NonJSONResp(_FakeResp):
     def json(self):
         raise ValueError("not JSON")
+
+
 _p_njs._session = _FakeSession([_NonJSONResp(202, text="<html>oops</html>")])
-_vg_njs = asyncio.run(_p_njs._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_njs.valves, None, None, None, None,
-))
-_assert("non-JSON" in _vg_njs,
-        "submit 2xx but body fails JSON parse → wrapped 'non-JSON' error")
+_vg_njs = asyncio.run(
+    _p_njs._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_njs.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert("non-JSON" in _vg_njs, "submit 2xx but body fails JSON parse → wrapped 'non-JSON' error")
+
 
 # Tool nonstream cap branch: Timeout in the final call yields the friendly
 # timeout message instead of dropping into the generic 'Internal error'
 async def _raise_timeout(self, stream, headers, payload, valves):
     import requests as _rq
+
     raise _rq.exceptions.Timeout("dead")
+
+
 _p_cap = Pipe()
 _p_cap.valves.MAX_TOOL_ITERATIONS = 1
 _round_with_tool = {
-    "choices": [{"message": {"role": "assistant", "content": None,
-                              "tool_calls": [{"id": "c1", "type": "function",
-                                                "function": {"name": "t",
-                                                             "arguments": "{}"}}]}}]
+    "choices": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+                ],
+            }
+        }
+    ]
 }
+
+
 class _Resp1:
-    def json(self): return _round_with_tool
-    def close(self): pass
+    def json(self):
+        return _round_with_tool
+
+    def close(self):
+        pass
+
+
 _responses = [_Resp1()]
+
+
 async def _first_then_timeout(self, stream, headers, payload, valves):
     if _responses:
         return _responses.pop(0)
     import requests as _rq
+
     raise _rq.exceptions.Timeout("final call timed out")
+
+
 _p_cap._call_request_async = _first_then_timeout.__get__(_p_cap, Pipe)  # type: ignore
+
+
 async def _fake_exec_cap(self, calls, tools, emitter):
     return [{"role": "tool", "tool_call_id": "c1", "content": "result"}]
+
+
 _p_cap._execute_tool_calls = _fake_exec_cap.__get__(_p_cap, Pipe)  # type: ignore
-async def _noop_em(*a, **kw): return None
+
+
+async def _noop_em(*a, **kw):
+    return None
+
+
 _p_cap._emit_image_files = _noop_em  # type: ignore
 _p_cap._emit_citation_events = _noop_em  # type: ignore
 _p_cap._prefetch_credit_if_enabled = _noop_em  # type: ignore
-_cap_result = asyncio.run(_p_cap._run_tools_nonstream(
-    {}, {"model": "x", "messages": [{"role": "user", "content": "go"}]},
-    _p_cap.valves, {"t": object()}, None, None, {"id": "u"}, {"chat_id": "c"},
-))
-_assert("timed out" in _cap_result.lower(),
-        "tool-nonstream cap branch surfaces Timeout with the friendly message")
+_cap_result = asyncio.run(
+    _p_cap._run_tools_nonstream(
+        {},
+        {"model": "x", "messages": [{"role": "user", "content": "go"}]},
+        _p_cap.valves,
+        {"t": object()},
+        None,
+        None,
+        {"id": "u"},
+        {"chat_id": "c"},
+    )
+)
+_assert(
+    "timed out" in _cap_result.lower(),
+    "tool-nonstream cap branch surfaces Timeout with the friendly message",
+)
 
 # ── sprint A/B/C audit follow-ups: shared upload + size cap + MIME + perf ─────
 
@@ -5675,155 +7585,223 @@ _uo1 = asyncio.run(_p_oh._owui_upload_bytes(None, None, None, b"x", "video/mp4",
 _assert(_uo1 is None, "_owui_upload_bytes: no request → None")
 _uo2 = asyncio.run(_p_oh._owui_upload_bytes(object(), None, None, b"x", "video/mp4", "Test"))
 _assert(_uo2 is None, "_owui_upload_bytes: no user dict → None")
-_uo3 = asyncio.run(_p_oh._owui_upload_bytes(object(), {"id": "u"}, {"chat_id": "c"}, b"x", "video/mp4", "Test"))
+_uo3 = asyncio.run(
+    _p_oh._owui_upload_bytes(object(), {"id": "u"}, {"chat_id": "c"}, b"x", "video/mp4", "Test")
+)
 _assert(_uo3 is None, "_owui_upload_bytes: OWUI helpers missing locally → None, no crash")
 
 # Audio MIME whitelist: a rogue format that resolves to a non-allowed
 # content_type yields '' (rejected) instead of materializing the embed.
 _p_mw = Pipe()
+
+
 async def _capture_mw(self, request, user, metadata, raw_bytes, content_type, modality_label):
     _capture_mw.last = content_type
     return ("f", "/api/v1/files/f/content")
+
+
 _p_mw._owui_upload_bytes = _capture_mw.__get__(_p_mw, Pipe)  # type: ignore
 # Sneaky: force a format string that maps to nothing (lands at audio/mpeg
 # fallback) — whitelist still accepts audio/mpeg.
 _b64_mw = _b64m.b64encode(b"\xff\xfb data").decode()
-_mw_ok = asyncio.run(_p_mw._materialize_audio_output(
-    _b64_mw, _p_mw.valves, object(), {"id": "u"}, {"chat_id": "c"},
-    audio_format="something-weird",
-))
-_assert(_mw_ok != "" and "audio" in _mw_ok,
-        "audio fallback format defaults to audio/mpeg (whitelisted)")
+_mw_ok = asyncio.run(
+    _p_mw._materialize_audio_output(
+        _b64_mw,
+        _p_mw.valves,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+        audio_format="something-weird",
+    )
+)
+_assert(
+    _mw_ok != "" and "audio" in _mw_ok, "audio fallback format defaults to audio/mpeg (whitelisted)"
+)
 
 # Audio size cap: 51 MB synthetic blob rejected pre-upload
 import os as _os_d
+
 _huge_audio_b64 = _b64m.b64encode(_os_d.urandom(1024 * 1024) * 51).decode()
 _p_sz = Pipe()
 _called = {"upload": False}
+
+
 async def _no_call(*a, **kw):
     _called["upload"] = True
     return ("f", "/api/v1/files/f/content")
+
+
 _p_sz._owui_upload_bytes = _no_call  # type: ignore
-_sz_out = asyncio.run(_p_sz._materialize_audio_output(
-    _huge_audio_b64, _p_sz.valves, object(), {"id": "u"}, {"chat_id": "c"},
-    audio_format="mp3",
-))
-_assert(_sz_out == "" and not _called["upload"],
-        "audio > 50MB cap → '' returned, upload helper never called")
+_sz_out = asyncio.run(
+    _p_sz._materialize_audio_output(
+        _huge_audio_b64,
+        _p_sz.valves,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c"},
+        audio_format="mp3",
+    )
+)
+_assert(
+    _sz_out == "" and not _called["upload"],
+    "audio > 50MB cap → '' returned, upload helper never called",
+)
 
 # Citation URL scheme filter (defence-in-depth: javascript:, data: refused)
 _p_cit = Pipe()
 _cit_events = []
+
+
 async def _capture_cit(ev):
     _cit_events.append(ev)
-asyncio.run(_p_cit._emit_citation_events(_capture_cit,
-    ["https://safe.example.com/a",
-     "javascript:alert(1)",
-     "data:text/html,<script>x</script>",
-     "vbscript:msgbox",
-     "http://still-safe.org/x"]))
+
+
+asyncio.run(
+    _p_cit._emit_citation_events(
+        _capture_cit,
+        [
+            "https://safe.example.com/a",
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "vbscript:msgbox",
+            "http://still-safe.org/x",
+        ],
+    )
+)
 _emitted_urls = [e["data"]["source"]["url"] for e in _cit_events]
-_assert("https://safe.example.com/a" in _emitted_urls,
-        "https citation emitted")
-_assert("http://still-safe.org/x" in _emitted_urls,
-        "http citation emitted")
-_assert(not any(u.startswith(("javascript:", "data:", "vbscript:")) for u in _emitted_urls),
-        "javascript:/data:/vbscript: citations filtered")
+_assert("https://safe.example.com/a" in _emitted_urls, "https citation emitted")
+_assert("http://still-safe.org/x" in _emitted_urls, "http citation emitted")
+_assert(
+    not any(u.startswith(("javascript:", "data:", "vbscript:")) for u in _emitted_urls),
+    "javascript:/data:/vbscript: citations filtered",
+)
 
 # _effective_valves fast path: no UserValves attached → returns self.valves
 # directly (not a copy).
 _p_ev = Pipe()
 _ev_no_user = _p_ev._effective_valves(None)
-_assert(_ev_no_user is _p_ev.valves,
-        "_effective_valves(None) returns self.valves directly (no model_copy)")
+_assert(
+    _ev_no_user is _p_ev.valves,
+    "_effective_valves(None) returns self.valves directly (no model_copy)",
+)
 _ev_empty_user = _p_ev._effective_valves({})
-_assert(_ev_empty_user is _p_ev.valves,
-        "_effective_valves(no 'valves' key) returns self.valves directly")
+_assert(
+    _ev_empty_user is _p_ev.valves,
+    "_effective_valves(no 'valves' key) returns self.valves directly",
+)
 _ev_none_valves = _p_ev._effective_valves({"valves": None})
-_assert(_ev_none_valves is _p_ev.valves,
-        "_effective_valves(valves=None) returns self.valves directly")
+_assert(
+    _ev_none_valves is _p_ev.valves, "_effective_valves(valves=None) returns self.valves directly"
+)
+
 
 # When UserValves present and at least one override is set → returns a copy
 class _UV:
-    def model_dump(self): return {"COST_CURRENCY": "EUR"}
+    def model_dump(self):
+        return {"COST_CURRENCY": "EUR"}
+
+
 _ev_override = _p_ev._effective_valves({"valves": _UV()})
-_assert(_ev_override is not _p_ev.valves,
-        "_effective_valves with overrides returns a fresh copy")
-_assert(_ev_override.COST_CURRENCY == "EUR",
-        "UserValves override flows into the copy")
-_assert(_p_ev.valves.COST_CURRENCY != "EUR",
-        "self.valves NOT mutated by per-request override (isolation)")
+_assert(_ev_override is not _p_ev.valves, "_effective_valves with overrides returns a fresh copy")
+_assert(_ev_override.COST_CURRENCY == "EUR", "UserValves override flows into the copy")
+_assert(
+    _p_ev.valves.COST_CURRENCY != "EUR",
+    "self.valves NOT mutated by per-request override (isolation)",
+)
 
 # Lazy populate exception path: pipes() raising must not crash pipe(),
 # and the _lazy_populated flag must still flip so the next request doesn't
 # retry the failing fetch (no retry storm under upstream outage).
 _p_le = Pipe()
 _p_le.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "p" * 50
+
+
 def _raise_pipes(self):
     raise RuntimeError("network down at startup")
+
+
 _p_le.pipes = _raise_pipes.__get__(_p_le, Pipe)  # type: ignore
+
+
 # Stub the stream path so pipe() reaches the lazy block then returns
 def _noop_sync_le(self, headers, payload, valves, state=None):
     return iter(())
+
+
 _p_le._stream_response = _noop_sync_le.__get__(_p_le, Pipe)  # type: ignore
-_le_gen = asyncio.run(_p_le.pipe(
-    {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "x"}],
-     "stream": True},
-    {"id": "u"}, None, None, object(), {"chat_id": "c"},
-))
+_le_gen = asyncio.run(
+    _p_le.pipe(
+        {"model": "openai/gpt-4o", "messages": [{"role": "user", "content": "x"}], "stream": True},
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        {"chat_id": "c"},
+    )
+)
+
+
 async def _drain_le():
     out = []
     async for c in _le_gen:
         out.append(c)
     return out
+
+
 asyncio.run(_drain_le())
-_assert(_p_le._lazy_populated is True,
-        "_lazy_populated flag set even when pipes() raised (no retry storm)")
+_assert(
+    _p_le._lazy_populated is False and _p_le._bootstrap_retry_at > 0,
+    "failed bootstrap remains retryable with backoff",
+)
 
 # Anthropic interleaved-thinking header: when valve on + model is Anthropic
 _p_an = Pipe()
 _p_an.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "k" * 50
 _p_an.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = True
 _h_anthr = _p_an._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=_p_an.valves)
-_assert(_h_anthr.get("anthropic-beta") and "interleaved-thinking" in _h_anthr.get("anthropic-beta", ""),
-        "anthropic-beta header set for Anthropic model with valve on")
+_assert(
+    _h_anthr.get("anthropic-beta") and "interleaved-thinking" in _h_anthr.get("anthropic-beta", ""),
+    "anthropic-beta header set for Anthropic model with valve on",
+)
 _h_non = _p_an._build_headers(model_id="openai/gpt-4o", valves=_p_an.valves)
-_assert("anthropic-beta" not in _h_non,
-        "anthropic-beta header NOT set for non-Anthropic model")
+_assert("anthropic-beta" not in _h_non, "anthropic-beta header NOT set for non-Anthropic model")
 _p_an.valves.ENABLE_ANTHROPIC_INTERLEAVED_THINKING = False
 _h_off = _p_an._build_headers(model_id="anthropic/claude-3.5-sonnet", valves=_p_an.valves)
-_assert("anthropic-beta" not in _h_off,
-        "anthropic-beta header NOT set when valve off")
+_assert("anthropic-beta" not in _h_off, "anthropic-beta header NOT set when valve off")
 
 # HTTP_REFERER_OVERRIDE without scheme → silently falls back to default
 _p_rf = Pipe()
 _p_rf.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "r" * 50
 _p_rf.valves.HTTP_REFERER_OVERRIDE = "noscheme.example.com"
 _h_rf_bad = _p_rf._build_headers(valves=_p_rf.valves)
-_assert(_h_rf_bad["HTTP-Referer"] != "noscheme.example.com",
-        "schemeless referer override rejected, falls back to default")
+_assert(
+    _h_rf_bad["HTTP-Referer"] != "noscheme.example.com",
+    "schemeless referer override rejected, falls back to default",
+)
 _p_rf.valves.HTTP_REFERER_OVERRIDE = "https://my.app/x"
 _h_rf_ok = _p_rf._build_headers(valves=_p_rf.valves)
-_assert(_h_rf_ok["HTTP-Referer"] == "https://my.app/x",
-        "valid https referer override used verbatim")
+_assert(
+    _h_rf_ok["HTTP-Referer"] == "https://my.app/x", "valid https referer override used verbatim"
+)
 # CRLF injection in referer override → rejected
 _p_rf.valves.HTTP_REFERER_OVERRIDE = "https://my.app/x\r\nX-Injected: 1"
 _h_rf_crlf = _p_rf._build_headers(valves=_p_rf.valves)
-_assert("\r" not in _h_rf_crlf["HTTP-Referer"] and "\n" not in _h_rf_crlf["HTTP-Referer"],
-        "CRLF in referer override rejected")
+_assert(
+    "\r" not in _h_rf_crlf["HTTP-Referer"] and "\n" not in _h_rf_crlf["HTTP-Referer"],
+    "CRLF in referer override rejected",
+)
 
 # Module-level constants exposed for asserting via Pipe class
 import openrouter_pipe as _mod_oo
-_assert(_mod_oo._VIDEO_MAX_BYTES == 100 * 1024 * 1024,
-        "_VIDEO_MAX_BYTES = 100 MiB")
-_assert(_mod_oo._AUDIO_MAX_BYTES == 50 * 1024 * 1024,
-        "_AUDIO_MAX_BYTES = 50 MiB")
-_assert("video/mp4" in _mod_oo._VIDEO_MIME_WHITELIST,
-        "video/mp4 in MIME whitelist")
-_assert("audio/wav" in _mod_oo._AUDIO_MIME_WHITELIST,
-        "audio/wav in MIME whitelist")
-_assert(_mod_oo._CITATION_ALLOWED_SCHEMES == frozenset({"http", "https"}),
-        "citation schemes restricted to http(s)")
+
+_assert(_mod_oo._VIDEO_MAX_BYTES == 100 * 1024 * 1024, "_VIDEO_MAX_BYTES = 100 MiB")
+_assert(_mod_oo._AUDIO_MAX_BYTES == 50 * 1024 * 1024, "_AUDIO_MAX_BYTES = 50 MiB")
+_assert("video/mp4" in _mod_oo._VIDEO_MIME_WHITELIST, "video/mp4 in MIME whitelist")
+_assert("audio/wav" in _mod_oo._AUDIO_MIME_WHITELIST, "audio/wav in MIME whitelist")
+_assert(
+    _mod_oo._CITATION_ALLOWED_SCHEMES == frozenset({"http", "https"}),
+    "citation schemes restricted to http(s)",
+)
 
 # ── batch-3 audit gaps: video error branches + ZDR + media combo ──────────────
 
@@ -5831,153 +7809,277 @@ _section("batch-3 audit gaps: video error branches + ZDR + media combo")
 
 # Submit Timeout → wrapped Timeout-specific message
 import requests as _rq_t
+
 _p_t1 = Pipe()
+
+
 class _SessTimeout:
     def post(self, *a, **kw):
         raise _rq_t.exceptions.Timeout("read timeout after Xs")
+
+
 _p_t1._session = _SessTimeout()
-_vg_t = asyncio.run(_p_t1._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t1.valves, None, None, None, None,
-))
+_vg_t = asyncio.run(
+    _p_t1._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t1.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("timed out" in _vg_t.lower(), "submit Timeout → 'timed out' message")
 
 # Submit ConnectionError (RequestException) → wrapped generic message
 _p_t2 = Pipe()
+
+
 class _SessConn:
     def post(self, *a, **kw):
         raise _rq_t.exceptions.ConnectionError("network down")
+
+
 _p_t2._session = _SessConn()
-_vg_c = asyncio.run(_p_t2._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t2.valves, None, None, None, None,
-))
-_assert("Video submit failed" in _vg_c and "network down" in _vg_c,
-        "submit RequestException → 'Video submit failed' with detail")
+_vg_c = asyncio.run(
+    _p_t2._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t2.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Video submit failed" in _vg_c and "network down" not in _vg_c,
+    "submit RequestException → 'Video submit failed' with detail",
+)
 
 # Mid-poll RequestException → wrapped 'polling failed'
-_p_t3 = Pipe(); _p_t3.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t3 = Pipe()
+_p_t3.valves.VIDEO_POLL_INTERVAL = 0.01
+
+
 class _SessPollFail:
     def __init__(self):
-        self._submit = _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j",
-                                         "status": "pending"})
-    def post(self, *a, **kw): return self._submit
+        self._submit = _FakeResp(
+            202,
+            {
+                "id": "j",
+                "polling_url": "https://openrouter.ai/api/v1/videos/j",
+                "status": "pending",
+            },
+        )
+
+    def post(self, *a, **kw):
+        return self._submit
+
     def get(self, *a, **kw):
         raise _rq_t.exceptions.ConnectionError("poll RST")
+
+
 _p_t3._session = _SessPollFail()
-_vg_p = asyncio.run(_p_t3._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t3.valves, None, None, None, None,
-))
+_vg_p = asyncio.run(
+    _p_t3._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t3.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("polling failed" in _vg_p, "mid-poll RequestException → 'polling failed' message")
 
 # Polling deadline timeout: infinite 'in_progress' → wraps with job id
-_p_t4 = Pipe(); _p_t4.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t4 = Pipe()
+_p_t4.valves.VIDEO_POLL_INTERVAL = 0.01
 _p_t4.valves.VIDEO_GENERATION_TIMEOUT = 30  # min floor 30 in code
+
+
 class _SessTimeoutLoop:
     def __init__(self):
         self.posts = 0
+
     def post(self, *a, **kw):
         self.posts += 1
-        return _FakeResp(202, {"id": "longjob", "polling_url": "https://openrouter.ai/api/v1/videos/longjob",
-                                 "status": "pending"})
+        return _FakeResp(
+            202,
+            {
+                "id": "longjob",
+                "polling_url": "https://openrouter.ai/api/v1/videos/longjob",
+                "status": "pending",
+            },
+        )
+
     def get(self, *a, **kw):
         return _FakeResp(200, {"id": "longjob", "status": "in_progress"})
+
+
 # Override only the pipe's clock: patching time.monotonic globally freezes
 # asyncio's own scheduling clock and hangs sleeps once transport is off-loop.
 import time as _time_d
+
 _p_t4._session = _SessTimeoutLoop()
 _orig_mono = _time_d.monotonic
 _t0 = _orig_mono()
+
+
 def _fake_mono():
     # Jump 1000s after second call so deadline expires
     if not hasattr(_fake_mono, "_calls"):
         _fake_mono._calls = 0
     _fake_mono._calls += 1
-    return _t0 + (1000 if _fake_mono._calls > 2 else 0)
+    return _t0 + 1000 * max(0, _fake_mono._calls - 2)
+
+
 _pipe_clock = MagicMock(wraps=_time_d)
 _pipe_clock.monotonic.side_effect = _fake_mono
 with patch.object(mod, "time", _pipe_clock):
-    _vg_to = asyncio.run(_p_t4._run_video_generation(
-        {"messages": [{"role": "user", "content": "x"}]},
-        "google/veo-3.1-fast",
-        _p_t4.valves, None, None, None, None,
-    ))
-_assert("timed out" in _vg_to and "longjob" in _vg_to,
-        "polling deadline → 'timed out' + job id in message")
-_assert("https://" not in _vg_to,
-        "timeout message no longer leaks the full polling_url (security S4)")
+    _vg_to = asyncio.run(
+        _p_t4._run_video_generation(
+            {"messages": [{"role": "user", "content": "x"}]},
+            "google/veo-3.1-fast",
+            _p_t4.valves,
+            None,
+            None,
+            None,
+            None,
+        )
+    )
+_assert(
+    "timed out" in _vg_to and "longjob" in _vg_to,
+    "polling deadline → 'timed out' + job id in message",
+)
+_assert(
+    "https://" not in _vg_to, "timeout message no longer leaks the full polling_url (security S4)"
+)
 
 # Malformed unsigned_urls: None → reject
-_p_t5 = Pipe(); _p_t5.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_t5._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
-    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": None}),
-])
-_vg_u1 = asyncio.run(_p_t5._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t5.valves, None, None, None, None,
-))
+_p_t5 = Pipe()
+_p_t5.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t5._session = _FakeSession(
+    [
+        _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+        _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": None}),
+    ]
+)
+_vg_u1 = asyncio.run(
+    _p_t5._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t5.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("no download URL" in _vg_u1, "unsigned_urls=None → 'no download URL'")
 
 # Malformed unsigned_urls: empty list → reject
-_p_t6 = Pipe(); _p_t6.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_t6._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
-    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": []}),
-])
-_vg_u2 = asyncio.run(_p_t6._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t6.valves, None, None, None, None,
-))
+_p_t6 = Pipe()
+_p_t6.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t6._session = _FakeSession(
+    [
+        _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+        _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": []}),
+    ]
+)
+_vg_u2 = asyncio.run(
+    _p_t6._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t6.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("no download URL" in _vg_u2, "unsigned_urls=[] → 'no download URL'")
 
 # Malformed unsigned_urls: non-string element → reject
-_p_t7 = Pipe(); _p_t7.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_t7._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
-    _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": [123]}),
-])
-_vg_u3 = asyncio.run(_p_t7._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t7.valves, None, None, None, None,
-))
+_p_t7 = Pipe()
+_p_t7.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t7._session = _FakeSession(
+    [
+        _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+        _FakeResp(200, {"id": "j", "status": "completed", "unsigned_urls": [123]}),
+    ]
+)
+_vg_u3 = asyncio.run(
+    _p_t7._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t7.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
 _assert("no download URL" in _vg_u3, "unsigned_urls=[non-string] → 'no download URL'")
 
 # Failed status where error is non-dict (string) → still surfaces detail
-_p_t8 = Pipe(); _p_t8.valves.VIDEO_POLL_INTERVAL = 0.01
-_p_t8._session = _FakeSession([
-    _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
-    _FakeResp(200, {"id": "j", "status": "failed", "error": "policy block"}),
-])
-_vg_f = asyncio.run(_p_t8._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_t8.valves, None, None, None, None,
-))
-_assert("Video generation failed" in _vg_f and "policy block" in _vg_f,
-        "non-dict error string surfaces as detail")
+_p_t8 = Pipe()
+_p_t8.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t8._session = _FakeSession(
+    [
+        _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"}),
+        _FakeResp(200, {"id": "j", "status": "failed", "error": "policy block"}),
+    ]
+)
+_vg_f = asyncio.run(
+    _p_t8._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_t8.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    "Video generation failed" in _vg_f and "policy block" in _vg_f,
+    "non-dict error string surfaces as detail",
+)
 
 # Forwarded video knobs (duration/resolution/aspect_ratio/generate_audio/seed)
 # from body actually land in the upstream payload
-_p_t9 = Pipe(); _p_t9.valves.VIDEO_POLL_INTERVAL = 0.01
+_p_t9 = Pipe()
+_p_t9.valves.VIDEO_POLL_INTERVAL = 0.01
 _captured_payload: dict = {}
+
+
 class _CaptureSess:
     def post(self, url, **kw):
         _captured_payload.update(kw.get("json") or {})
         return _FakeResp(202, {"id": "j", "polling_url": "https://openrouter.ai/api/v1/videos/j"})
+
     def get(self, url, **kw):
-        return _FakeResp(200, {"id": "j", "status": "completed",
-                                 "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]})
+        return _FakeResp(
+            200,
+            {
+                "id": "j",
+                "status": "completed",
+                "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"],
+            },
+        )
+
+
 _p_t9._session = _CaptureSess()
+
+
 async def _fake_upload_v_t9(self, request, user, metadata, video_bytes, content_type="video/mp4"):
     return ("vid-x", "/api/v1/files/vid-x/content")
+
+
 _p_t9._upload_video_to_owui = _fake_upload_v_t9.__get__(_p_t9, Pipe)  # type: ignore
 # Patch download to return non-empty bytes
 _p_t9._session.post = _CaptureSess.post.__get__(_p_t9._session, _CaptureSess)
@@ -5986,22 +8088,45 @@ _dl_resp = _FakeResp(200, {})
 _dl_resp.content = b"\x00video"
 _dl_resp.headers = {"Content-Type": "video/mp4"}
 _orig_get = _p_t9._session.get
+
+
 class _PatchedGet:
-    def __init__(self): self.calls = 0
+    def __init__(self):
+        self.calls = 0
+
     def __call__(self, url, **kw):
         self.calls += 1
         if self.calls == 1:
-            return _FakeResp(200, {"id": "j", "status": "completed",
-                                     "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"]})
+            return _FakeResp(
+                200,
+                {
+                    "id": "j",
+                    "status": "completed",
+                    "unsigned_urls": ["https://openrouter.ai/api/v1/videos/j/content?index=0"],
+                },
+            )
         return _dl_resp
+
+
 _p_t9._session.get = _PatchedGet()  # type: ignore
-asyncio.run(_p_t9._run_video_generation(
-    {"messages": [{"role": "user", "content": "a red car"}],
-     "duration": 8, "resolution": "1080p", "aspect_ratio": "16:9",
-     "generate_audio": True, "seed": 42},
-    "google/veo-3.1-fast",
-    _p_t9.valves, None, object(), {"id": "u"}, {"chat_id": "c", "message_id": "m"},
-))
+asyncio.run(
+    _p_t9._run_video_generation(
+        {
+            "messages": [{"role": "user", "content": "a red car"}],
+            "duration": 8,
+            "resolution": "1080p",
+            "aspect_ratio": "16:9",
+            "generate_audio": True,
+            "seed": 42,
+        },
+        "google/veo-3.1-fast",
+        _p_t9.valves,
+        None,
+        object(),
+        {"id": "u"},
+        {"chat_id": "c", "message_id": "m"},
+    )
+)
 _assert(_captured_payload.get("duration") == 8, "duration forwarded to payload")
 _assert(_captured_payload.get("resolution") == "1080p", "resolution forwarded")
 _assert(_captured_payload.get("aspect_ratio") == "16:9", "aspect_ratio forwarded")
@@ -6017,16 +8142,28 @@ _p_prec._audio_model_ids = frozenset({"hybrid/model"})  # type: ignore
 _p_prec._lazy_populated = True
 _p_prec.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "z" * 50
 _video_called = {"hit": False}
+
+
 async def _fake_vg(self, body, model_id, valves, emitter, request, user, metadata):
     _video_called["hit"] = True
     return "VIDEO_RESULT"
+
+
 _p_prec._run_video_generation = _fake_vg.__get__(_p_prec, Pipe)  # type: ignore
-_result_prec = asyncio.run(_p_prec.pipe(
-    {"model": "hybrid/model", "messages": [{"role": "user", "content": "x"}]},
-    {"id": "u"}, None, None, object(), {"chat_id": "c"},
-))
-_assert(_video_called["hit"] and _result_prec == "VIDEO_RESULT",
-        "model in BOTH sets → video routing wins (checked first)")
+_result_prec = asyncio.run(
+    _p_prec.pipe(
+        {"model": "hybrid/model", "messages": [{"role": "user", "content": "x"}]},
+        {"id": "u"},
+        None,
+        None,
+        object(),
+        {"chat_id": "c"},
+    )
+)
+_assert(
+    _video_called["hit"] and _result_prec == "VIDEO_RESULT",
+    "model in BOTH sets → video routing wins (checked first)",
+)
 
 # Body deepcopy isolation + forced stream=True for audio: drive pipe() but
 # short-circuit the actual stream by patching _stream_response to a sync
@@ -6037,29 +8174,46 @@ _p_dc._audio_model_ids = frozenset({"google/lyria-3-clip-preview"})  # type: ign
 _p_dc._lazy_populated = True
 _p_dc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "z" * 50
 _observed_payload: dict = {}
+
+
 def _noop_sync_stream(self, headers, payload, valves, state=None):
     _observed_payload.update(payload)
     return iter(())  # empty sync iterator
+
+
 _p_dc._stream_response = _noop_sync_stream.__get__(_p_dc, Pipe)  # type: ignore
-caller_body: dict = {"model": "google/lyria-3-clip-preview",
-                      "messages": [{"role": "user", "content": "a melody"}],
-                      "stream": False}
+caller_body: dict = {
+    "model": "google/lyria-3-clip-preview",
+    "messages": [{"role": "user", "content": "a melody"}],
+    "stream": False,
+}
 _gen = asyncio.run(_p_dc.pipe(caller_body, {"id": "u"}, None, None, object(), {"chat_id": "c"}))
+
+
 # Drain the async generator (no actual chunks)
 async def _drain():
     out = []
     async for c in _gen:
         out.append(c)
     return out
+
+
 asyncio.run(_drain())
-_assert("modalities" not in caller_body,
-        "caller body NOT mutated with modalities (deep-copy isolation)")
-_assert("audio" not in caller_body,
-        "caller body NOT mutated with audio config (deep-copy isolation)")
-_assert(caller_body.get("stream") is False,
-        "caller body 'stream' field preserved as False (not flipped to True)")
-_assert(_observed_payload.get("audio", {}).get("format") == "mp3",
-        "audio injection lands in the per-request payload copy (lyria → mp3)")
+_assert(
+    "modalities" not in caller_body, "caller body NOT mutated with modalities (deep-copy isolation)"
+)
+_assert(
+    "audio" not in caller_body, "caller body NOT mutated with audio config (deep-copy isolation)"
+)
+_assert(
+    caller_body.get("stream") is False,
+    "caller body 'stream' field preserved as False (not flipped to True)",
+)
+_assert(
+    _observed_payload.get("audio", {}).get("format") == "mp3",
+    "audio injection lands in the per-request payload copy (lyria → mp3)",
+)
+
 
 # ZDR_MODELS_ONLY + video: video models filtered out by ZDR continue to
 # stay out of _video_model_ids (atomic-swap version of the same prior
@@ -6068,44 +8222,64 @@ class _FakeRespZdr:
     def __init__(self, status, data):
         self.status_code = status
         self._data = data
-    def json(self): return self._data
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return self._data
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 _p_zdr = Pipe()
 _zdr_data = [
-    {"id": "google/veo-3.1-fast", "name": "Veo Fast",
-     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
-    {"id": "openai/gpt-4o", "name": "GPT-4o",
-     "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]}},
+    {
+        "id": "google/veo-3.1-fast",
+        "name": "Veo Fast",
+        "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "architecture": {"output_modalities": ["text"], "input_modalities": ["text", "image"]},
+    },
 ]
+
+
 class _ZdrSess:
     def get(self, url, **kw):
         if "endpoints/zdr" in url:
             return _FakeRespZdr(200, {"data": {"endpoints": [{"model_slug": "openai/gpt-4o"}]}})
         return _FakeRespZdr(200, {"data": _zdr_data})
+
+
 _p_zdr._session = _ZdrSess()
 _p_zdr.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "y" * 50
 _p_zdr.valves.ZDR_MODELS_ONLY = True
 _p_zdr.valves.SYNC_PROVIDER_ICONS = False
 _models_zdr = _p_zdr.pipes()
-_assert("google/veo-3.1-fast" in _p_zdr._video_model_ids,
-        "hidden video retains metadata; request privacy is enforced before submit")
+_assert(
+    "google/veo-3.1-fast" in _p_zdr._video_model_ids,
+    "hidden video retains metadata; request privacy is enforced before submit",
+)
 
 # ── batch-1 audit fixes: SSRF guard + atomic set swap + body deepcopy ─────────
 
 _section("batch-1 audit fixes: SSRF + atomic swap + body deepcopy + auth-leak guards")
 
 # _is_openrouter_url whitelist
-_assert(Pipe._is_openrouter_url("https://openrouter.ai/api/v1/videos/abc/content"),
-        "openrouter.ai whitelisted")
-_assert(Pipe._is_openrouter_url("https://cdn.openrouter.ai/x"),
-        "subdomain *.openrouter.ai whitelisted")
-_assert(not Pipe._is_openrouter_url("https://evil.example.com/x"),
-        "non-OR host rejected")
-_assert(not Pipe._is_openrouter_url("http://openrouter.ai.evil.com/x"),
-        "lookalike domain rejected")
-_assert(not Pipe._is_openrouter_url("file:///etc/passwd"),
-        "non-http(s) scheme rejected")
+_assert(
+    Pipe._is_openrouter_url("https://openrouter.ai/api/v1/videos/abc/content"),
+    "openrouter.ai whitelisted",
+)
+_assert(
+    Pipe._is_openrouter_url("https://cdn.openrouter.ai/x"), "subdomain *.openrouter.ai whitelisted"
+)
+_assert(not Pipe._is_openrouter_url("https://evil.example.com/x"), "non-OR host rejected")
+_assert(not Pipe._is_openrouter_url("http://openrouter.ai.evil.com/x"), "lookalike domain rejected")
+_assert(not Pipe._is_openrouter_url("file:///etc/passwd"), "non-http(s) scheme rejected")
 _assert(not Pipe._is_openrouter_url(""), "empty URL rejected")
 _assert(not Pipe._is_openrouter_url(None), "non-string URL rejected")  # type: ignore
 
@@ -6114,64 +8288,106 @@ _assert(not Pipe._is_openrouter_url(None), "non-string URL rejected")  # type: i
 _p_ssrf = Pipe()
 _p_ssrf.valves.VIDEO_POLL_INTERVAL = 0.01
 _evil_polling = "https://evil.example.com/poll/abc"
+
+
 class _SSRFSess:
     def __init__(self):
         self.gets = []
         self.posts = []
         # Submit: returns evil polling_url
-        self._submit = _FakeResp(202, {"id": "abc", "polling_url": _evil_polling, "status": "pending"})
+        self._submit = _FakeResp(
+            202, {"id": "abc", "polling_url": _evil_polling, "status": "pending"}
+        )
         # Poll on canonical URL returns completed → unsigned ALSO evil
-        self._poll = _FakeResp(200, {"id": "abc", "status": "completed",
-                                     "unsigned_urls": ["https://evil.example.com/dl"]})
+        self._poll = _FakeResp(
+            200,
+            {"id": "abc", "status": "completed", "unsigned_urls": ["https://evil.example.com/dl"]},
+        )
+
     def post(self, url, **kw):
-        self.posts.append(url); return self._submit
+        self.posts.append(url)
+        return self._submit
+
     def get(self, url, **kw):
-        self.gets.append(url); return self._poll
+        self.gets.append(url)
+        return self._poll
+
+
 _ss = _SSRFSess()
 _p_ssrf._session = _ss
-_vg_ssrf = asyncio.run(_p_ssrf._run_video_generation(
-    {"messages": [{"role": "user", "content": "x"}]},
-    "google/veo-3.1-fast",
-    _p_ssrf.valves, None, None, None, None,
-))
-_assert(any("openrouter.ai" in g for g in _ss.gets) and not any("evil.example.com" in g for g in _ss.gets),
-        "non-OR polling_url ignored → canonical /videos/<id> used instead")
-_assert("untrusted host" in _vg_ssrf,
-        "non-OR unsigned_urls[0] rejected with explicit error")
+_vg_ssrf = asyncio.run(
+    _p_ssrf._run_video_generation(
+        {"messages": [{"role": "user", "content": "x"}]},
+        "google/veo-3.1-fast",
+        _p_ssrf.valves,
+        None,
+        None,
+        None,
+        None,
+    )
+)
+_assert(
+    any("openrouter.ai" in g for g in _ss.gets)
+    and not any("evil.example.com" in g for g in _ss.gets),
+    "non-OR polling_url ignored → canonical /videos/<id> used instead",
+)
+_assert("untrusted host" in _vg_ssrf, "non-OR unsigned_urls[0] rejected with explicit error")
 
 # Atomic set swap: pipes() builds new frozensets and assigns; concurrent
 # pipe() readers cannot see a half-rebuilt empty set.
 _p_swap = Pipe()
 _models_data_swap = [
-    {"id": "openai/gpt-audio", "name": "GPT Audio",
-     "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text"]}},
-    {"id": "google/veo-3.1-fast", "name": "Veo Fast",
-     "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]}},
+    {
+        "id": "openai/gpt-audio",
+        "name": "GPT Audio",
+        "architecture": {"output_modalities": ["text", "audio"], "input_modalities": ["text"]},
+    },
+    {
+        "id": "google/veo-3.1-fast",
+        "name": "Veo Fast",
+        "architecture": {"output_modalities": ["video"], "input_modalities": ["text"]},
+    },
 ]
+
+
 class _ResSwap:
     status_code = 200
-    def json(self): return {"data": _models_data_swap}
-    def raise_for_status(self): pass
-    def close(self): pass
+
+    def json(self):
+        return {"data": _models_data_swap}
+
+    def raise_for_status(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _SessSwap:
-    def get(self, *a, **kw): return _ResSwap()
+    def get(self, *a, **kw):
+        return _ResSwap()
+
+
 _p_swap._session = _SessSwap()
 _p_swap.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "a" * 50
 _p_swap.valves.SYNC_PROVIDER_ICONS = False
 _p_swap.pipes()
-_assert(isinstance(_p_swap._video_model_ids, frozenset),
-        "_video_model_ids is a frozenset (immutable)")
-_assert(isinstance(_p_swap._audio_model_ids, frozenset),
-        "_audio_model_ids is a frozenset (immutable)")
-_assert("openai/gpt-audio" in _p_swap._audio_model_ids,
-        "audio set populated correctly")
-_assert("google/veo-3.1-fast" in _p_swap._video_model_ids,
-        "video set populated correctly")
+_assert(
+    isinstance(_p_swap._video_model_ids, frozenset), "_video_model_ids is a frozenset (immutable)"
+)
+_assert(
+    isinstance(_p_swap._audio_model_ids, frozenset), "_audio_model_ids is a frozenset (immutable)"
+)
+_assert("openai/gpt-audio" in _p_swap._audio_model_ids, "audio set populated correctly")
+_assert("google/veo-3.1-fast" in _p_swap._video_model_ids, "video set populated correctly")
 _assert(_p_swap._lazy_populated, "_lazy_populated flag flipped on after first pipes()")
 # Second pipes() refresh atomically swaps to new frozenset
 _p_swap.pipes.__func__(_p_swap)  # type: ignore
-_assert(isinstance(_p_swap._video_model_ids, frozenset) and "google/veo-3.1-fast" in _p_swap._video_model_ids,
-        "refresh produces a new frozenset still containing the model")
+_assert(
+    isinstance(_p_swap._video_model_ids, frozenset)
+    and "google/veo-3.1-fast" in _p_swap._video_model_ids,
+    "refresh produces a new frozenset still containing the model",
+)
 
 # Frozenset rejects mutation
 try:
@@ -6193,8 +8409,10 @@ if "openai/gpt-audio" in _p_voice._audio_model_ids:
     if is_openai and _p_voice.valves.AUDIO_OUTPUT_VOICE:
         cfg["voice"] = _p_voice.valves.AUDIO_OUTPUT_VOICE
     _test_body["audio"] = cfg
-_assert(_test_body["audio"] == {"format": "pcm16", "voice": "nova"},
-        "openai gpt-audio gets pcm16 + voice when AUDIO_OUTPUT_VOICE set")
+_assert(
+    _test_body["audio"] == {"format": "pcm16", "voice": "nova"},
+    "openai gpt-audio gets pcm16 + voice when AUDIO_OUTPUT_VOICE set",
+)
 
 # Lyria (non-openai): voice omitted even when valve set
 _test_body2: dict = {}
@@ -6203,66 +8421,125 @@ cfg2 = {"format": "pcm16" if is_openai2 else "mp3"}
 if is_openai2 and _p_voice.valves.AUDIO_OUTPUT_VOICE:
     cfg2["voice"] = _p_voice.valves.AUDIO_OUTPUT_VOICE
 _test_body2["audio"] = cfg2
-_assert(_test_body2["audio"] == {"format": "mp3"},
-        "lyria gets mp3 only (voice omitted, music model)")
+_assert(
+    _test_body2["audio"] == {"format": "mp3"}, "lyria gets mp3 only (voice omitted, music model)"
+)
 
 # _credit_balance_cached: returns None when nothing cached; reads cache only
-_p_cc = Pipe(); _p_cc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "x" * 50
-_assert(_p_cc._credit_balance_cached(_p_cc.valves) is None,
-        "_credit_balance_cached returns None on cache miss")
+_p_cc = Pipe()
+_p_cc.valves.OPENROUTER_API_KEY = "sk-or-v1-" + "x" * 50
+_assert(
+    _p_cc._credit_balance_cached(_p_cc.valves) is None,
+    "_credit_balance_cached returns None on cache miss",
+)
 
 # After populating cache directly, cached read works without HTTP
 import time as _time_t
-_p_cc._credit_cache[_p_cc._credential_fingerprint("sk-or-v1-" + "x" * 50)] = (9.99, _time_t.monotonic())
-_assert(_p_cc._credit_balance_cached(_p_cc.valves) == 9.99,
-        "_credit_balance_cached returns cached value, no HTTP call")
+
+_p_cc._credit_cache[(_p_cc._base, _p_cc._credential_fingerprint("sk-or-v1-" + "x" * 50))] = (
+    9.99,
+    _time_t.monotonic(),
+)
+_assert(
+    _p_cc._credit_balance_cached(_p_cc.valves) == 9.99,
+    "_credit_balance_cached returns cached value, no HTTP call",
+)
 
 # Tool-loop non-stream: assistant_msg shape is the clean 3-field dict, not
 # the raw upstream message (which can carry refusal/legacy keys that break
 # downstream submits).
 _p_tl = Pipe()
+
+
 class _RespFinal:
     def json(self):
-        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
-    def close(self): pass
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+    def close(self):
+        pass
+
+
 class _RespFirst:
     def json(self):
-        return {"choices": [{"message": {"role": "assistant",
-                                          "content": "calling",
-                                          "tool_calls": [{"id": "c1", "type": "function",
-                                                          "function": {"name": "t",
-                                                                       "arguments": "{}"}}],
-                                          "refusal": None, "function_call": None}}]}
-    def close(self): pass
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "calling",
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "t", "arguments": "{}"},
+                            }
+                        ],
+                        "refusal": None,
+                        "function_call": None,
+                    }
+                }
+            ]
+        }
+
+    def close(self):
+        pass
+
+
 _responses_tl = [_RespFirst(), _RespFinal()]
+
+
 async def _fake_call_tl(self, stream, headers, payload, valves):
     return _responses_tl.pop(0)
+
+
 _p_tl._call_request_async = _fake_call_tl.__get__(_p_tl, Pipe)  # type: ignore
+
+
 async def _fake_exec(self, calls, tools, emitter):
     return [{"role": "tool", "tool_call_id": "c1", "content": "result"}]
+
+
 _p_tl._execute_tool_calls = _fake_exec.__get__(_p_tl, Pipe)  # type: ignore
-async def _fake_noop_tl(*a, **kw): return None
+
+
+async def _fake_noop_tl(*a, **kw):
+    return None
+
+
 _p_tl._emit_image_files = _fake_noop_tl  # type: ignore
 _p_tl._emit_citation_events = _fake_noop_tl  # type: ignore
 _p_tl._prefetch_credit_if_enabled = _fake_noop_tl  # type: ignore
 _payload_tl: dict = {"model": "x", "messages": [{"role": "user", "content": "go"}]}
-asyncio.run(_p_tl._run_tools_nonstream({}, _payload_tl, _p_tl.valves, {"t": object()}, None,
-                                        None, {"id": "u"}, {"chat_id": "c"}))
+asyncio.run(
+    _p_tl._run_tools_nonstream(
+        {}, _payload_tl, _p_tl.valves, {"t": object()}, None, None, {"id": "u"}, {"chat_id": "c"}
+    )
+)
 # After one tool round: messages = [user, clean assistant_msg, tool result, final ...]
 _assistant_msg = next(m for m in _payload_tl["messages"] if m.get("role") == "assistant")
-_assert(set(_assistant_msg.keys()) == {"role", "content", "tool_calls"},
-        "tool nonstream loop appends 3-key assistant msg only (no refusal/legacy passthrough)")
-_assert("refusal" not in _assistant_msg and "function_call" not in _assistant_msg,
-        "raw upstream refusal/function_call keys stripped from re-submission")
+_assert(
+    set(_assistant_msg.keys()) == {"role", "content", "tool_calls"},
+    "tool nonstream loop appends 3-key assistant msg only (no refusal/legacy passthrough)",
+)
+_assert(
+    "refusal" not in _assistant_msg and "function_call" not in _assistant_msg,
+    "raw upstream refusal/function_call keys stripped from re-submission",
+)
 
 # ── citation events emit ───────────────────────────────────────────────────────
 
 _section("citation events emit (OWUI native)")
 
 _emitter_calls = []
+
+
 async def _emitter_ok(ev):
     _emitter_calls.append(ev)
+
+
 _p_ce = Pipe()
 
 asyncio.run(_p_ce._emit_citation_events(_emitter_ok, ["https://a.com", "https://b.com"]))
@@ -6283,15 +8560,18 @@ _assert(_emitter_calls == [], "no emit when citations list empty")
 
 asyncio.run(_p_ce._emit_citation_events(_emitter_ok, [None, "", 123, "https://ok.com"]))
 _assert(
-    len(_emitter_calls) == 1
-    and _emitter_calls[0]["data"]["source"]["url"] == "https://ok.com",
+    len(_emitter_calls) == 1 and _emitter_calls[0]["data"]["source"]["url"] == "https://ok.com",
     "non-string / empty citations skipped, valid ones emitted",
 )
 
 # Emitter raising must not break the loop
 _emitter_calls.clear()
+
+
 async def _emitter_boom(ev):
     raise RuntimeError("boom")
+
+
 asyncio.run(_p_ce._emit_citation_events(_emitter_boom, ["https://x.com", "https://y.com"]))
 _assert(True, "raising emitter swallowed (no exception leaks)")
 
@@ -6301,7 +8581,9 @@ _section("RESPONSE_FORMAT json_schema valve")
 
 _pjs = Pipe()
 _pjs.valves.RESPONSE_FORMAT = "json_schema"
-_pjs.valves.RESPONSE_SCHEMA = '{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}'
+_pjs.valves.RESPONSE_SCHEMA = (
+    '{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}'
+)
 _pp_js = _pjs._prepare_payload({"model": "x", "messages": []}, _pjs.valves)
 _assert(_pp_js["response_format"]["type"] == "json_schema", "json_schema injected")
 _assert(_pp_js["response_format"]["json_schema"]["strict"] is True, "strict=True")
@@ -6314,15 +8596,21 @@ _assert(
 _pp_js2 = _pjs._prepare_payload(
     {"model": "x", "messages": [], "response_format": {"type": "json_object"}}, _pjs.valves
 )
-_assert(_pp_js2["response_format"] == {"type": "json_object"}, "body response_format wins over json_schema valve")
+_assert(
+    _pp_js2["response_format"] == {"type": "json_object"},
+    "body response_format wins over json_schema valve",
+)
 
 # invalid JSON → no inject
-_pjs2 = Pipe(); _pjs2.valves.RESPONSE_FORMAT = "json_schema"; _pjs2.valves.RESPONSE_SCHEMA = "not json"
+_pjs2 = Pipe()
+_pjs2.valves.RESPONSE_FORMAT = "json_schema"
+_pjs2.valves.RESPONSE_SCHEMA = "not json"
 _pp_js3 = _pjs2._prepare_payload({"model": "x", "messages": []}, _pjs2.valves)
 _assert("response_format" not in _pp_js3, "invalid RESPONSE_SCHEMA → no inject")
 
 # empty RESPONSE_SCHEMA → no inject
-_pjs3 = Pipe(); _pjs3.valves.RESPONSE_FORMAT = "json_schema"
+_pjs3 = Pipe()
+_pjs3.valves.RESPONSE_FORMAT = "json_schema"
 _pp_js4 = _pjs3._prepare_payload({"model": "x", "messages": []}, _pjs3.valves)
 _assert("response_format" not in _pp_js4, "empty RESPONSE_SCHEMA → no inject")
 
@@ -6334,20 +8622,29 @@ _section("cost footer: cached tokens across providers")
 
 # OpenAI implicit caching + Gemini context caching shape: prompt_tokens_details.cached_tokens
 _us_oa = {
-    "prompt_tokens": 100, "completion_tokens": 50,
-    "prompt_tokens_details": {"cached_tokens": 70}, "cost": 0.001,
+    "prompt_tokens": 100,
+    "completion_tokens": 50,
+    "prompt_tokens_details": {"cached_tokens": 70},
+    "cost": 0.001,
 }
 _msg_oa = mod._format_cost_info(_us_oa, "USD")
-_assert("70" in _msg_oa and "cached" in _msg_oa, "OpenAI/Gemini cached_tokens surfaced in cost footer")
+_assert(
+    "70" in _msg_oa and "cached" in _msg_oa, "OpenAI/Gemini cached_tokens surfaced in cost footer"
+)
 _assert("30" in _msg_oa, "non-cached prompt count (100-70=30) shown")
 
 # Anthropic prompt-cache shape: cache_read_input_tokens
 _us_an = {
-    "prompt_tokens": 100, "completion_tokens": 50,
-    "cache_read_input_tokens": 70, "cost": 0.001,
+    "prompt_tokens": 100,
+    "completion_tokens": 50,
+    "cache_read_input_tokens": 70,
+    "cost": 0.001,
 }
 _msg_an = mod._format_cost_info(_us_an, "USD")
-_assert("70" in _msg_an and "cached" in _msg_an, "Anthropic cache_read_input_tokens surfaced in cost footer")
+_assert(
+    "70" in _msg_an and "cached" in _msg_an,
+    "Anthropic cache_read_input_tokens surfaced in cost footer",
+)
 
 # No cache → no cached fragment
 _us_nc = {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.001}
@@ -6362,16 +8659,24 @@ _pmm = Pipe()
 _body_vis = {
     "model": "openai/gpt-4o-mini",
     "messages": [
-        {"role": "user", "content": [
-            {"type": "text", "text": "What's in this image?"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What's in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR..."}},
+            ],
+        },
     ],
 }
 _pp_vis = _pmm._prepare_payload(_body_vis, _pmm.valves)
-_assert(isinstance(_pp_vis["messages"][0]["content"], list), "list content preserved (no flattening)")
+_assert(
+    isinstance(_pp_vis["messages"][0]["content"], list), "list content preserved (no flattening)"
+)
 _assert(_pp_vis["messages"][0]["content"][0]["type"] == "text", "text part preserved")
-_assert(_pp_vis["messages"][0]["content"][1]["type"] == "image_url", "image_url part preserved (vision input)")
+_assert(
+    _pp_vis["messages"][0]["content"][1]["type"] == "image_url",
+    "image_url part preserved (vision input)",
+)
 _assert(
     _pp_vis["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png"),
     "image data URL preserved verbatim",
@@ -6381,14 +8686,26 @@ _assert(
 _body_file = {
     "model": "openai/gpt-4o-mini",
     "messages": [
-        {"role": "user", "content": [
-            {"type": "text", "text": "Summarize this PDF."},
-            {"type": "file", "file": {"filename": "doc.pdf", "file_data": "data:application/pdf;base64,JVBERi0..."}},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Summarize this PDF."},
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "doc.pdf",
+                        "file_data": "data:application/pdf;base64,JVBERi0...",
+                    },
+                },
+            ],
+        },
     ],
 }
 _pp_file = _pmm._prepare_payload(_body_file, _pmm.valves)
-_assert(_pp_file["messages"][0]["content"][1]["type"] == "file", "file content part preserved (file-parser plugin)")
+_assert(
+    _pp_file["messages"][0]["content"][1]["type"] == "file",
+    "file content part preserved (file-parser plugin)",
+)
 _assert(
     _pp_file["messages"][0]["content"][1]["file"]["filename"] == "doc.pdf",
     "file metadata preserved",
@@ -6440,7 +8757,9 @@ _sor_fake = _FakeErrResp()
 with patch.object(_sor_pipe._session, "post", return_value=_sor_fake):
     _sor_state = {}
     _sor_out = list(
-        _sor_pipe._stream_one_round({}, {"model": "x", "messages": []}, _sor_pipe.valves, _sor_state)
+        _sor_pipe._stream_one_round(
+            {}, {"model": "x", "messages": []}, _sor_pipe.valves, _sor_state
+        )
     )
 _assert(_sor_state.get("error") is True, "stream round flags error on HTTP 400")
 _assert(any("HTTP 400" in p for p in _sor_out), "stream round yields the HTTP-error message")
@@ -6461,7 +8780,9 @@ _isync_pipe._icons_synced = {"a/1", "a/2", "orphan/x", "orphan/y"}
 _isync_calls = {"n": 0}
 _isync_pipe._sync_model_icons = lambda models: _isync_calls.__setitem__("n", _isync_calls["n"] + 1)
 _isync_pipe.pipes()
-_assert(_isync_calls["n"] == 1, "re-syncs when a catalog model is unsynced despite orphan inflation")
+_assert(
+    _isync_calls["n"] == 1, "re-syncs when a catalog model is unsynced despite orphan inflation"
+)
 # When every catalog model is synced, no re-sync even if orphans linger.
 _isync_pipe._icons_synced = {"a/1", "a/2", "a/3", "orphan/x"}
 _isync_calls["n"] = 0
