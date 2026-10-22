@@ -4,3 +4,7 @@ requests==2.34.2
 pydantic==2.14.0
 # Optional runtime dependency, bundled by OWUI; exercise encryption in CI.
 cryptography==50.0.2
+# Static gates use the same hashed snapshot as the unit matrix.
+ruff==0.17.0
+mypy==2.4.0
+types-requests==2.33.0.20261006
