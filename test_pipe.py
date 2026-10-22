@@ -2236,6 +2236,10 @@ _existing_default.name = "GPT-4o"
 _existing_default.meta.profile_image_url = "data:image/svg+xml;base64,ABC123=="
 _existing_default.params = None
 _mock_Models_u.get_model_by_id.return_value = _existing_default
+# OWUI returns the persisted row; the sync only counts a write that kept the icon.
+_mock_Models_u.update_model_by_id.side_effect = lambda _id, form: MagicMock(
+    meta=MagicMock(profile_image_url=_pipe_update._get_provider_icon("openai"))
+)
 _fake_owui_u = ModuleType("open_webui.models.models")
 _fake_owui_u.Models = _mock_Models_u
 _fake_owui_u.ModelForm = MagicMock()
@@ -2382,12 +2386,12 @@ with patch.object(_pipe_lookup._session, "get", side_effect=_counting_reg_get):
         "_get_provider_icon: hyphen-strip normalization (x-ai → xai)",
     )
 
-    # Truly unknown provider returns a generated letter-SVG data: URL so the
+    # Truly unknown provider returns a generated letter tile data: URL so the
     # model still surfaces an icon (no more blank tiles in the selector).
     _icon_missing = _pipe_lookup._get_provider_icon("totally-unknown-provider")
     _assert(
-        _icon_missing and _icon_missing.startswith("data:image/svg+xml;base64,"),
-        "_get_provider_icon: unknown provider falls back to generated letter-SVG",
+        _icon_missing and _icon_missing.startswith("data:image/png;base64,"),
+        "_get_provider_icon: unknown provider falls back to generated letter tile",
     )
 
     # Empty/None provider key
@@ -2422,7 +2426,7 @@ with patch.object(_pipe_nogstatic._session, "get", side_effect=_counting_reg_get
         "_get_provider_icon: hardcoded icon still returned with gstatic off",
     )
 
-# 25k3. USE_PROVIDER_DOMAIN_FAVICON OFF → falls back to letter-SVG
+# 25k3. USE_PROVIDER_DOMAIN_FAVICON OFF → falls back to letter tile
 _pipe_no_domain = Pipe()
 _pipe_no_domain.valves = Pipe.Valves(
     OPENROUTER_API_KEY="test-key",
@@ -2437,8 +2441,8 @@ with patch.object(_pipe_no_domain._session, "get", side_effect=_counting_reg_get
     try:
         _icon_arcee_off = _pipe_no_domain._get_provider_icon("arcee-ai")
         _assert(
-            _icon_arcee_off and _icon_arcee_off.startswith("data:image/svg+xml;base64,"),
-            "_get_provider_icon: domain fallback off + gstatic off → letter-SVG",
+            _icon_arcee_off and _icon_arcee_off.startswith("data:image/png;base64,"),
+            "_get_provider_icon: domain fallback off + gstatic off → letter tile",
         )
     finally:
         if _saved_arc_hard2 is not None:
@@ -2470,8 +2474,8 @@ _assert(
 )
 _xai_after_fail = _pipe_fail._get_provider_icon("x-ai")
 _assert(
-    _xai_after_fail and _xai_after_fail.startswith("data:image/svg+xml;base64,"),
-    "_get_provider_icon: x-ai falls back to generated letter-SVG when registry failed",
+    _xai_after_fail and _xai_after_fail.startswith("data:image/png;base64,"),
+    "_get_provider_icon: x-ai falls back to generated letter tile when registry failed",
 )
 
 # 25m. Registry HTTP non-200 → log message; empty dict on first-ever fetch;
@@ -3196,7 +3200,7 @@ for _prov_key in _ALL_PROVIDER_KEYS:
 
 # Providers not in the hardcoded _PROVIDER_ICONS fast-path dict should
 # return None via the static helper (the layered fallback chain that
-# delivers domain favicons / letter-SVG runs only inside
+# delivers domain favicons / letter tile runs only inside
 # _get_provider_icon — see the dedicated tests above).
 _NO_ICON_PROVIDERS = [
     "x-ai",
@@ -7094,14 +7098,14 @@ with patch.object(_p_dom2._session, "get", side_effect=_dom_get):
         "openai still uses hardcoded URL",
     )
 
-# Provider not in registry + USE_PROVIDER_DOMAIN_FAVICON on → letter-SVG (no domain known)
+# Provider not in registry + USE_PROVIDER_DOMAIN_FAVICON on → letter tile (no domain known)
 _p_dom3 = Pipe()
 _p_dom3.valves = Pipe.Valves(OPENROUTER_API_KEY="test-key")
 with patch.object(_p_dom3._session, "get", side_effect=_dom_get):
     _icon_unk = _p_dom3._get_provider_icon("totally-unknown")
     _assert(
-        _icon_unk and _icon_unk.startswith("data:image/svg+xml;base64,"),
-        "unknown provider without domain → letter-SVG",
+        _icon_unk and _icon_unk.startswith("data:image/png;base64,"),
+        "unknown provider without domain → letter tile",
     )
 
 # _is_owui_managed_icon recognises provider-domain favicons as managed
@@ -7122,34 +7126,53 @@ _assert(
     "_is_owui_managed_icon: favicon.ico nested inside a path → NOT managed (probably user-set)",
 )
 
-# ── icon coverage: letter-SVG fallback + slug aliases + new hosted icons ─────
+# ── icon coverage: letter tile fallback + slug aliases + new hosted icons ─────
 
-_section("icon coverage: letter-SVG + slug aliases + new hosted icons")
+_section("icon coverage: letter tile + slug aliases + new hosted icons")
 
-# Generated letter-SVG is deterministic and decodable
+# Generated letter tile is a deterministic PNG (OWUI rejects SVG data URIs)
 import base64 as _b64_ic
+import struct as _struct_ic
+import zlib as _zlib_ic
+
+
+def _png_pixels(url):
+    raw = _b64_ic.b64decode(url.split(",", 1)[1])
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, idat, w, h = 8, b"", 0, 0
+    while pos < len(raw):
+        ln = _struct_ic.unpack(">I", raw[pos : pos + 4])[0]
+        kind = raw[pos + 4 : pos + 8]
+        data = raw[pos + 8 : pos + 8 + ln]
+        assert _zlib_ic.crc32(kind + data) == _struct_ic.unpack(">I", raw[pos + 8 + ln : pos + 12 + ln])[0]
+        if kind == b"IHDR":
+            w, h = _struct_ic.unpack(">II", data[:8])
+        elif kind == b"IDAT":
+            idat += data
+        pos += 12 + ln
+    body = _zlib_ic.decompress(idat)
+    stride = w * 4 + 1
+    return w, h, [body[y * stride + 1 : (y + 1) * stride] for y in range(h)]
+
 
 _ico1 = Pipe._generate_letter_icon("nvidia")
 _ico2 = Pipe._generate_letter_icon("nvidia")
-_assert(_ico1 == _ico2, "letter-SVG deterministic for same provider key")
-_assert(_ico1.startswith("data:image/svg+xml;base64,"), "letter-SVG is a data: SVG URL")
-_svg_payload = _b64_ic.b64decode(_ico1.split(",", 1)[1]).decode()
-_assert("<svg" in _svg_payload and "</svg>" in _svg_payload, "decoded payload is valid SVG markup")
-_assert(">N</text>" in _svg_payload, "letter-SVG uses provider initial (N for nvidia)")
-_assert("hsl(" in _svg_payload, "letter-SVG uses HSL color from hash")
-# Different providers → different colors (hash-derived)
+_assert(_ico1 == _ico2, "letter tile deterministic for same provider key")
+_assert(_ico1.startswith("data:image/png;base64,"), "letter tile is a data: PNG URL")
+_assert("svg" not in _ico1.split(",", 1)[0], "letter tile never uses an SVG data URI")
+_lw, _lh, _lrows = _png_pixels(_ico1)
+_assert((_lw, _lh) == (64, 64), "letter tile PNG decodes as 64x64 with valid CRCs")
+_assert(any(b"\xff\xff\xff\xff" in r for r in _lrows), "letter tile draws white glyph pixels")
+_assert(_lrows[0][:4] == b"\x00\x00\x00\x00", "letter tile corners are transparent")
 _ico3 = Pipe._generate_letter_icon("zulu")
-_assert(_ico1 != _ico3, "different provider keys → different letter-SVGs")
-# Empty key → empty string (defensive)
+_assert(_ico1 != _ico3, "different provider keys → different letter tiles")
 _assert(Pipe._generate_letter_icon("") == "", "empty key → empty fallback")
-# Numeric prefix → first letter is digit, valid as initial
 _ico_num = Pipe._generate_letter_icon("01-something")
-_payload_num = _b64_ic.b64decode(_ico_num.split(",", 1)[1]).decode()
-_assert(">0</text>" in _payload_num, "numeric-prefix key uses '0' as initial")
-# Non-alnum first char → '?'
+_assert(_png_pixels(_ico_num)[0] == 64, "numeric-prefix key renders a valid tile")
 _ico_sym = Pipe._generate_letter_icon("@symbol")
-_pl_sym = _b64_ic.b64decode(_ico_sym.split(",", 1)[1]).decode()
-_assert(">?</text>" in _pl_sym, "non-alnum first char falls back to '?'")
+_assert(_png_pixels(_ico_sym)[0] == 64, "non-alnum first char renders the '?' tile")
+for _ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789":
+    _assert(_png_pixels(Pipe._generate_letter_icon(_ch.lower() + "x"))[0] == 64, f"glyph {_ch} renders")
 
 # Newly hardcoded provider icons exist and resolve via _get_provider_icon
 import openrouter_pipe as _mp_ic
@@ -7216,7 +7239,7 @@ _assert(
 # string is short enough to fit in a model meta record (sanity bound).
 _long_key = "this-is-a-fairly-long-provider-key-for-padding"
 _ico_long = Pipe._generate_letter_icon(_long_key)
-_assert(len(_ico_long) < 2048, "letter-SVG data: URL stays under 2KB")
+_assert(len(_ico_long) < 2048, "letter tile data: URL stays under 2KB")
 
 # ── sprint E MED/LOW finishing: MIME map + key cache + tool cap branch ────────
 

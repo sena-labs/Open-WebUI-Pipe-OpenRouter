@@ -88,7 +88,7 @@ Catalog models advertising video output route through `/videos` with polling, th
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons** — registry, hardcoded brand icons, aliases, optional domain favicons and deterministic letter-SVG fallback. Sync preserves workspace metadata, model state, routing and access grants; CDN icons require exact provenance before being replaced.
+- **Provider icons** — registry, hardcoded brand icons, aliases, optional domain favicons and deterministic letter-tile (PNG) fallback. Sync preserves workspace metadata, model state, routing and access grants; CDN icons require exact provenance before being replaced.
 - **ZDR (Zero Data Retention)** — filter the catalog to ZDR-capable models (`ZDR_MODELS_ONLY`) and/or enforce ZDR per request (`ZDR_ENFORCE`).
 - **Tool-calling filter** — show all / only / exclude tool-capable models (`TOOL_CALLING_FILTER`).
 - **Provider preferences** — `PROVIDER_ONLY` allowlist, `PROVIDER_QUANTIZATIONS`, `PROVIDER_ALLOW_FALLBACKS`, and `PROVIDER_MAX_PRICE_PROMPT/COMPLETION` price caps.
@@ -358,7 +358,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 | OWUI file upload | `_owui_upload_bytes()` | Single shared helper backing every image / video / audio re-host through OWUI |
 | Security guards | `_is_openrouter_url()`, MIME / size / scheme whitelists | SSRF + auth-leak protection on media downloads, citation URL filter |
 | Enrichment | `_inject_cache_control()`, `_insert_citations()`, `_format_credit_info()` | Anthropic prompt-cache breakpoints, `[n]` → markdown links, opt-in credit footer (pre-warmed off the event loop) |
-| Provider icons | `_get_provider_icon()`, `_generate_letter_icon()`, `_sync_orphan_db_icons()`, `_resolve_maybe_awaitable()` | Five-layer fallback chain (registry → hyphen-strip → `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` → provider-domain favicon → deterministic letter-SVG), OWUI-managed-icon recognition, OWUI ≥ 0.4 async `Models.{get,update,insert}_model_by_id` resolver |
+| Provider icons | `_get_provider_icon()`, `_generate_letter_icon()`, `_sync_orphan_db_icons()`, `_resolve_maybe_awaitable()` | Five-layer fallback chain (registry → hyphen-strip → `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` → provider-domain favicon → deterministic letter-tile (PNG)), OWUI-managed-icon recognition, OWUI ≥ 0.4 async `Models.{get,update,insert}_model_by_id` resolver |
 
 ```text
 Open-WebUI-Pipe-OpenRouter/

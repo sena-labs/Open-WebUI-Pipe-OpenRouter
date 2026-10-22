@@ -241,6 +241,49 @@ class AuditRegressions(unittest.IsolatedAsyncioTestCase):
             self.pipe._sync_model_icons([{"id": "test/chat"}])
         self.assertNotIn("test/chat", self.pipe._icons_synced)
 
+    def test_icon_rejected_by_owui_write_is_not_marked_synced(self):
+        row = ModelRow(
+            id="audit.test/chat",
+            name="x",
+            user_id="owner",
+            meta=ModelMeta(profile_image_url=None),
+            params=ModelParams(),
+        )
+        # OWUI nulls profile images it refuses, but still returns the row.
+        dropped = ModelRow(
+            id="audit.test/chat",
+            name="x",
+            user_id="owner",
+            meta=ModelMeta(profile_image_url=None),
+            params=ModelParams(),
+        )
+        models = types.SimpleNamespace(
+            get_model_by_id=Mock(return_value=row), update_model_by_id=Mock(return_value=dropped)
+        )
+        self.pipe._function_id = "audit"
+        self.pipe._get_provider_icon = Mock(return_value="javascript:alert(1)")
+        with patch.dict(
+            sys.modules,
+            owui_modules(
+                Models=models, ModelForm=ModelForm, ModelMeta=ModelMeta, ModelParams=ModelParams
+            ),
+        ):
+            self.pipe._sync_model_icons([{"id": "test/chat"}])
+        self.assertNotIn("test/chat", self.pipe._icons_synced)
+
+    def test_letter_fallback_passes_owui_profile_image_validation(self):
+        tile = type(self.pipe)._generate_letter_icon("x-ai")
+        self.assertTrue(tile.startswith("data:image/png;base64,"))
+        self.assertNotIn("svg", tile.split(",", 1)[0])
+        # Mirrors OWUI utils/validate.py: only raster data URIs are accepted.
+        self.assertRegex(tile, r"^data:image/(png|jpeg|gif|webp);base64,")
+
+    def test_known_gaps_resolve_to_real_icons_not_dead_favicons(self):
+        for author in ("runway", "thinkingmachines", "typesafe", "meituan", "kwaivgi", "meta"):
+            icon = self.pipe._get_provider_icon(author)
+            self.assertTrue(icon.startswith("https://"), author)
+            self.assertNotIn("/favicon.ico", icon, author)
+
     def test_video_url_uses_transport_host_https_and_default_port(self):
         for url in (
             "https://evil.test\\@openrouter.ai/video",

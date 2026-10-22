@@ -13,6 +13,7 @@ description: Full OpenRouter catalog in Open WebUI with streaming chat, reasonin
 
 import asyncio
 import base64
+import colorsys
 import copy
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -28,6 +29,7 @@ import secrets
 import struct
 import threading
 import time
+import zlib
 from typing import Any, AsyncGenerator, Callable, Generator, List, Optional, Union
 from urllib import parse as urlparse
 from urllib.parse import urlsplit
@@ -368,6 +370,15 @@ _PROVIDER_ICONS = {
     # May 2026 against the HuggingFace avatar URL instead.
     "ai21": "https://cdn-avatars.huggingface.co/v1/production/uploads/67baf6e5489cb4dc98a4bff4/9Rkvk1VGhK1woxWvhqDyb.png",
     "mancer": "https://huggingface.co/avatars/6ac61107e7607ba38d7a51dffb0b4702.svg",
+    # Verified October 2026 — author favicons that 404 or do not exist, so the
+    # provider-domain fallback would render a broken image. HF org avatars.
+    "runway": "https://cdn-avatars.huggingface.co/v1/production/uploads/1665970599545-634cb15a4abe8405758d2e7e.jpeg",
+    "thinkingmachines": "https://cdn-avatars.huggingface.co/v1/production/uploads/680a76de1b8d08640089fab0/r60-JyW_pv4llgjEyDYj9.png",
+    "typesafe": "https://cdn-avatars.huggingface.co/v1/production/uploads/6ad3bdca028a3063d86159f3/LLK964sqhRoRBTEyrNJtS.webp",
+    "meituan": "https://cdn-avatars.huggingface.co/v1/production/uploads/68a2a29ab9d4c5698e02c747/CDCAx7X7rXDt7xjI-DoxG.png",
+    "dots-studio": "https://cdn-avatars.huggingface.co/v1/production/uploads/683f0a13218449ec8f707047/K8V6vNs42cvpaTq_s6snK.png",
+    "kwaivgi": "https://cdn-avatars.huggingface.co/v1/production/uploads/62f0babaef9cc6810cec02ff/sVnELkcfVo5kxg5308rkr.png",
+    "prism-ml": "https://cdn-avatars.huggingface.co/v1/production/uploads/6920b71747acb07530915d41/mEaEo0tgAYZn-NB6S-nuP.png",
 }
 
 # Alias map: maps a model-author slug to a registry / hardcoded slug when
@@ -381,6 +392,49 @@ _PROVIDER_SLUG_ALIASES = {
     "gemini": "google",
     "claude": "anthropic",
     "grok": "x-ai",
+    "meta": "meta-llama",
+}
+
+
+# 5x7 glyphs for the generated letter tile (Open WebUI rejects SVG data URIs).
+_LETTER_GLYPHS = {
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "C": ("01110", "10001", "10000", "10000", "10000", "10001", "01110"),
+    "D": ("11110", "10001", "10001", "10001", "10001", "10001", "11110"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "F": ("11111", "10000", "10000", "11110", "10000", "10000", "10000"),
+    "G": ("01110", "10001", "10000", "10111", "10001", "10001", "01111"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("01110", "00100", "00100", "00100", "00100", "00100", "01110"),
+    "J": ("00111", "00010", "00010", "00010", "00010", "10010", "01100"),
+    "K": ("10001", "10010", "10100", "11000", "10100", "10010", "10001"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "P": ("11110", "10001", "10001", "11110", "10000", "10000", "10000"),
+    "Q": ("01110", "10001", "10001", "10001", "10101", "10010", "01101"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "U": ("10001", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "11011", "10001"),
+    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "Z": ("11111", "00001", "00010", "00100", "01000", "10000", "11111"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+    "6": ("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+    "?": ("01110", "10001", "00001", "00010", "00100", "00000", "00100"),
 }
 
 
@@ -1170,7 +1224,7 @@ class Pipe:
                 "https://<provider-domain>/favicon.ico (extracted from the "
                 "gstatic URL's `url=` query parameter). Privacy-preferable to "
                 "gstatic — the favicon request still hits the provider's CDN "
-                "but never traverses Google. The deterministic letter-SVG is "
+                "but never traverses Google. The deterministic letter tile (PNG) is "
                 "used only if this is also disabled or no domain is known."
             ),
         )
@@ -2535,7 +2589,7 @@ class Pipe:
         iterates the current pipes() output.
 
         Reuses ``_get_provider_icon`` so the same fallback chain (registry
-        → hardcoded → alias → domain favicon → letter-SVG) applies, and
+        → hardcoded → alias → domain favicon → letter tile) applies, and
         ``_is_owui_managed_icon`` so user-set custom icons are preserved.
         """
         try:
@@ -2593,8 +2647,10 @@ class Pipe:
                         self._icon_update_form(row, icon_url, ModelForm, ModelMeta, ModelParams),
                     )
                 )
-                if result is not None:
+                if self._icon_persisted(result, icon_url):
                     self._icons_synced.add(clean_id)
+                elif result is not None:
+                    _log_error("Orphan-icon not persisted", ValueError(clean_id))
             except Exception as exc:
                 _log_error("Orphan-icon update failed", exc)
 
@@ -2621,6 +2677,21 @@ class Pipe:
         data["meta"] = ModelMeta(**old_meta)
         data["params"] = getattr(existing, "params", None) or ModelParams()
         return ModelForm(**data)
+
+    @staticmethod
+    def _icon_persisted(result, icon_url: str) -> bool:
+        """True only if the DB write returned a row that actually kept the icon.
+
+        OWUI validates profile images on write and silently drops URLs it does
+        not accept, so a non-None result alone does not prove persistence.
+        """
+        if result is None:
+            return False
+        meta = getattr(result, "meta", None)
+        saved = meta.get("profile_image_url") if isinstance(meta, dict) else getattr(
+            meta, "profile_image_url", None
+        )
+        return saved == icon_url
 
     @staticmethod
     def _resolve_maybe_awaitable(value):
@@ -2762,7 +2833,9 @@ class Pipe:
                             ),
                         )
                     )
-                    if result is None:
+                    if not self._icon_persisted(result, icon_url):
+                        if result is not None:
+                            _log_error("Icon not persisted", ValueError(model_id))
                         continue
                 else:
                     # Model not yet in DB — best-effort early insert.
@@ -2898,39 +2971,51 @@ class Pipe:
 
     @staticmethod
     def _generate_letter_icon(provider_key: str) -> str:
-        """Build a deterministic letter-based SVG icon as a ``data:`` URL.
+        """Build a deterministic letter tile as a ``data:image/png`` URL.
 
-        Used as the FINAL fallback when no hosted icon is available and
-        the registry only exposes a gstatic favicon (which we refuse to
-        embed for privacy unless ``USE_GSTATIC_FAVICONS`` is on).
+        Final fallback when no hosted icon exists. Open WebUI rejects SVG data
+        URIs for profile images, so the tile is a tiny raster PNG.
 
-        - Privacy-safe: emitted inline as a ``data:`` URL, no external
-          request, no Google leak.
-        - Deterministic colour from a SHA256 hash of the provider key so
-          each provider gets a stable, distinct tile.
-        - First letter of the provider key, centred, white-on-colour.
+        - Privacy-safe: inline ``data:`` URL, no external request.
+        - Stable colour from SHA256 of the provider key.
+        - First letter of the key in white on the coloured rounded tile.
 
         Returns ``""`` only if the key is empty.
         """
         if not provider_key:
             return ""
         letter = provider_key[0].upper()
-        if not letter.isalnum():
-            letter = "?"
-        # Stable HSL colour from the first byte of SHA256(key). 65% saturation
-        # / 45% lightness keeps the tile readable behind white text and
-        # produces visually distinct hues across providers.
-        h = hashlib.sha256(provider_key.encode("utf-8")).digest()[0]
-        hue = (h * 360) // 256
-        svg = (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
-            f'<rect width="100" height="100" rx="20" fill="hsl({hue}, 65%, 45%)"/>'
-            '<text x="50" y="58" text-anchor="middle" dominant-baseline="middle" '
-            'font-family="system-ui, sans-serif" font-size="56" font-weight="600" '
-            f'fill="white">{letter}</text>'
-            "</svg>"
+        glyph = _LETTER_GLYPHS.get(letter) or _LETTER_GLYPHS["?"]
+        hue = hashlib.sha256(provider_key.encode("utf-8")).digest()[0] / 256.0
+        red, green, blue = (round(c * 255) for c in colorsys.hls_to_rgb(hue, 0.45, 0.65))
+        size, scale, radius = 64, 6, 12
+        left = (size - 5 * scale) // 2
+        top = (size - 7 * scale) // 2
+        rows = bytearray()
+        for y in range(size):
+            rows.append(0)
+            for x in range(size):
+                # Round the four corners.
+                dx = max(radius - x, x - (size - 1 - radius), 0)
+                dy = max(radius - y, y - (size - 1 - radius), 0)
+                if dx * dx + dy * dy > radius * radius:
+                    rows += b"\x00\x00\x00\x00"
+                    continue
+                gx, gy = (x - left) // scale, (y - top) // scale
+                lit = 0 <= gx < 5 and 0 <= gy < 7 and x >= left and y >= top and glyph[gy][gx] == "1"
+                rows += b"\xff\xff\xff\xff" if lit else bytes((red, green, blue, 255))
+
+        def chunk(kind: bytes, data: bytes) -> bytes:
+            body = kind + data
+            return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+            + chunk(b"IEND", b"")
         )
-        return "data:image/svg+xml;base64," + base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
     def _get_provider_icon(self, provider_key: str) -> Optional[str]:
         """Resolve a provider icon URL using the layered fallback chain.
@@ -2940,7 +3025,7 @@ class Pipe:
         The registry is authoritative because it always reflects
         OpenRouter's current CDN paths; the hardcoded dict and the alias
         map cover providers OpenRouter only exposes as gstatic favicons
-        (which we refuse to embed in privacy mode); the letter-SVG ensures
+        (which we refuse to embed in privacy mode); the letter tile ensures
         every model surfaces SOME icon instead of OWUI's default tile.
         """
         if not provider_key:
@@ -2987,7 +3072,7 @@ class Pipe:
             )
             if domain:
                 return f"https://{domain}/favicon.ico"
-        # Final fallback: deterministic letter-SVG so every model gets an icon.
+        # Final fallback: deterministic letter tile so every model gets an icon.
         return self._generate_letter_icon(key)
 
     def _parse_provider_filter(self) -> Optional[set]:
