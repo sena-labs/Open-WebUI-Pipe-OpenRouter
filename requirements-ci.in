@@ -1,6 +1,6 @@
 # Runtime lower bounds remain in requirements.txt; CI tests a fixed snapshot.
 -r requirements.txt
 requests==2.34.2
-pydantic==2.14.0
+pydantic==2.14.1
 # Optional runtime dependency, bundled by OWUI; exercise encryption in CI.
 cryptography==50.0.2
