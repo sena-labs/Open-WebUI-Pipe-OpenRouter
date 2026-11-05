@@ -56,10 +56,11 @@ By participating, you agree to uphold this code.
 | Command | Description |
 | --- | --- |
 | `python test_pipe.py` | Run the procedural assertion suite |
-| `python -m unittest -v test_maintenance test_alignment` | Run ownership/concurrency and API contract regressions |
+| `python -m unittest -v test_maintenance test_alignment test_regressions` | Run ownership/concurrency, security and API contract regressions |
+| `ruff check .` / `mypy` | Configured static gates using hashed CI tools |
 | `python smoke_owui.py --base-url http://127.0.0.1:3001` | Test save/update/schema/valves on a fresh disposable OWUI instance |
-| `OPENROUTER_API_KEY=… python -B e2e_live.py --budget 0.50` | Paid live checks (chat/tools, TTS, video) with spend cap — see TESTING.md |
-| `python integration_test.py` | Run live API tests (requires `OPENROUTER_API_KEY`) |
+| `python -B e2e_live.py --help` | Explicit-model preflight/live checks; usage tripwire plus upstream key limit — see TESTING.md |
+| `python integration_test.py --help` | Compatibility alias of the opt-in live runner |
 
 ## Deliverable-PR playbook
 
@@ -83,8 +84,9 @@ of value. The playbook:
 
    ```bash
    python test_pipe.py
-   python -m unittest -v test_maintenance test_alignment
-   python integration_test.py   # optional, requires a valid API key
+   python -m unittest -v test_maintenance test_alignment test_regressions
+   ruff check .
+   mypy
    ```
 
 5. **Update `CHANGELOG.md`.** Record user-visible changes under `## [Unreleased]`.
@@ -132,7 +134,7 @@ test: add retry exhaustion coverage
 
 ## Coding standards
 
-- **PEP 8** — enforced by convention; keep line length ≤ 100 chars.
+- **PEP 8** — use Ruff formatting with a 100-character target. Frontmatter, URLs and indivisible literals may exceed it; configured correctness checks run in CI.
 - **Type hints** on every function signature.
 - **One responsibility per method** — keep functions under ~50 lines; extract helpers when they grow.
 - **Docstrings** on every public method using the one-line summary style.
@@ -142,7 +144,7 @@ test: add retry exhaustion coverage
 ## Testing
 
 - **Framework:** `test_pipe.py` is a procedural assertion harness;
-  `test_maintenance.py` and `test_alignment.py` use Python `unittest` (stdlib)
+  `test_maintenance.py`, `test_alignment.py` and `test_regressions.py` use Python `unittest` (stdlib)
   for maintenance and API contract regressions.
 - **Mock strategy:** `unittest.mock.patch` for HTTP calls and Open WebUI internals.
 - **Conventions:**
@@ -151,8 +153,9 @@ test: add retry exhaustion coverage
     scheduling checks over assertions that mirror private implementation details.
 - **CI:** all suites run on Python 3.10–3.14 using a hashed dependency snapshot.
   Real OWUI compatibility checks cover pinned `v0.11.4-slim` and current stable
-  `main-slim`. Tests and CodeQL also run weekly. Live OpenRouter API tests are
-  optional and can spend credits; OWUI smoke needs no API key.
+  `main-slim`. Smoke also verifies DB preservation, real tool wrappers and synthetic
+  WAV storage. Tests and CodeQL run weekly; Ruff/mypy are configured gates. Live
+  OpenRouter checks require explicit `--live`; smoke performs no paid generation.
 
 To refresh the reproducible snapshot after changing `requirements-ci.in`:
 

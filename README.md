@@ -58,13 +58,13 @@ Image-output models (`gemini-image`, `flux`, …) return images that are uploade
 
 ### 🔊 Text-to-speech
 
-TTS / speech models (`kokoro`, `deepgram-aura`, `gemini-tts`, …) route through the dedicated `/audio/speech` endpoint — the text is cleaned (markdown / emoji / code / LaTeX stripped) and returned as a native `<audio>` player.
+TTS / speech models (for example `hexgrad/kokoro-82m` and `deepgram/aura-2`) route through `/audio/speech`. Text is cleaned and returned as a native `<audio>` player. Availability is checked against the current catalog.
 
 ![Text-to-speech rendered as a native audio player in Open WebUI](docs/img/feature-tts-audio.png)
 
 ### 🎬 Video generation
 
-Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine`, …) route through the asynchronous `/videos` endpoint with polling, then re-host the MP4 and embed it as a native `<video>` player.
+Catalog models advertising video output route through `/videos` with polling, then re-host the result and embed it as a native `<video>` player.
 
 ![Video generation rendered as a native video player in Open WebUI](docs/img/feature-video-generation.png)
 
@@ -72,7 +72,7 @@ Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine
 
 - **Manifold pipe** — exposes the full OpenRouter catalog (chat, TTS, audio, image, video, embeddings) as native Open WebUI models in the model selector. Configurable via `OUTPUT_MODALITIES` and `MODEL_CATEGORY`.
 - **Image generation** — chat-capable image-output models return `data:` URLs that are uploaded to OWUI storage and embedded inline as `![Generated image](/api/v1/files/.../content)`.
-- **Video generation** — `google/veo-3.1*`, `kwaivgi/kling*`, `openai/sora*`, `bytedance/seedance*`, `minimax/hailuo*`, `alibaba/wan*`, `x-ai/grok-imagine-video` are routed to OpenRouter's asynchronous `/api/v1/videos` endpoint (auto-polling, configurable `VIDEO_POLL_INTERVAL` / `VIDEO_GENERATION_TIMEOUT`), then re-hosted as OWUI files and embedded inline.
+- **Video generation** — available video-output models route to asynchronous `/videos`, with configurable polling and timeout. Same-request retries briefly recover a known job rather than resubmit it.
 - **Audio generation** — `google/lyria-3-*-preview` (music) and `openai/gpt-audio*` (speech, auto pcm16 → WAV wrap for streaming) inject the required `modalities=["text","audio"]` + `audio={format,voice}` payload automatically, capture the base64 chunks, decode, upload, and embed as inline `<audio controls>`.
 - **SSRF-guarded media downloads** — polling URLs and signed download URLs are restricted to `openrouter.ai`; downloads are byte-capped (100 MiB video / 50 MiB audio) and MIME-whitelisted post-fetch.
 - **Web search plugin** — attach OpenRouter's `web` plugin to any model with domain allow/deny lists, custom search prompt, and result-count limits.
@@ -88,12 +88,12 @@ Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine
 - **Middle-out compression** — fits long prompts within context windows (`transforms: ["middle-out"]`).
 - **Cache control** — Anthropic-style `cache_control` injection on the longest message chunk.
 - **Citations** — `[n]` references from web-search-enabled models are converted to markdown links.
-- **Provider icons (99.3% real brand coverage)** — 55+ hardcoded fast-path logos (corporate favicons + HuggingFace community avatars) and a five-layer fallback chain (`_PROVIDER_ICONS` → hyphen-strip → `_PROVIDER_SLUG_ALIASES` → OpenRouter registry → provider-domain favicon → deterministic letter-SVG) so every visible model gets a stable icon. Synced directly into Open WebUI's model database via `_sync_orphan_db_icons` (also patches OWUI rows for deprecated/withdrawn models that the regular sync skips).
+- **Provider icons** — registry, hardcoded brand icons, aliases, optional domain favicons and deterministic letter-tile (PNG) fallback. Sync preserves workspace metadata, model state, routing and access grants; CDN icons require exact provenance before being replaced.
 - **ZDR (Zero Data Retention)** — filter the catalog to ZDR-capable models (`ZDR_MODELS_ONLY`) and/or enforce ZDR per request (`ZDR_ENFORCE`).
 - **Tool-calling filter** — show all / only / exclude tool-capable models (`TOOL_CALLING_FILTER`).
 - **Provider preferences** — `PROVIDER_ONLY` allowlist, `PROVIDER_QUANTIZATIONS`, `PROVIDER_ALLOW_FALLBACKS`, and `PROVIDER_MAX_PRICE_PROMPT/COMPLETION` price caps.
 - **Free-tier filter** — `FREE_MODEL_FILTER` shows all / only / excludes free-tier models (`:free` suffix or `0/0` pricing).
-- **Retry logic** — exponential backoff with proportional jitter on timeout/connection errors and on HTTP 429/502/503/504 (honours `Retry-After`).
+- **Retry logic** — bounded backoff on connect timeouts and HTTP 429/5xx, honouring `Retry-After`. Ambiguous read timeouts/connection loss and permanent preparation errors are never automatically resubmitted.
 - **Cost transparency** — `SHOW_COST_INFO` appends token usage + cost in USD, including every native-tool round. TTS chunks use actual generation billing when available; incomplete accounting is identified explicitly.
 - **Pre-flight validation** — admin keys are checked on authenticated `/key`, separately from public model discovery. Catalog access also works for installations using only personal keys.
 - **Scoped TTS cache** — identical speech requests reuse a file only within the same user, chat, endpoint and API-key context. Entries expire after five minutes; deleted files are regenerated.
@@ -104,13 +104,13 @@ Video models (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine
 
 ## Requirements
 
-- **[Open WebUI](https://docs.openwebui.com/)** ≥ 0.4.0 running locally or in Docker.
+- **[Open WebUI](https://docs.openwebui.com/)** ≥ **0.11.4** running locally or in Docker.
 - **[OpenRouter API key](https://openrouter.ai/keys)** — free account, key starts with `sk-or-`.
 - **Python** ≥ 3.10 (managed by Open WebUI; no separate install needed for the pipe).
 
-CI tests Python 3.10–3.14, plus real function creation, update and valve schemas on
-Open WebUI `0.11.4-slim` and the current stable `main-slim` image. The historical
-minimum is 0.4.0; older Open WebUI releases are not part of the current live-test matrix.
+CI tests Python 3.10–3.14, plus real function creation/update, valve schemas,
+DB metadata preservation, the actual tool wrapper and media file persistence on
+Open WebUI `v0.11.4-slim` and `main-slim`. Releases below 0.11.4 are unsupported.
 Chat-only image generation is supported; models requiring a dedicated `/images`
 endpoint may return an upstream endpoint error.
 
@@ -142,13 +142,13 @@ git clone https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter.git
 cd Open-WebUI-Pipe-OpenRouter
 pip install -r requirements.txt
 python test_pipe.py
-python -m unittest -v test_maintenance test_alignment
+python -m unittest -v test_maintenance test_alignment test_regressions
 ```
 
 ## Usage
 
-All behavior is controlled through **Valves** in the Open WebUI admin panel. Every valve accepts
-an environment variable fallback (see [Configuration](#configuration)).
+Behavior is controlled through **Valves**. Most admin valves have environment
+fallbacks; the configuration table marks exceptions with `—`.
 
 ### Common valve combinations
 
@@ -158,12 +158,12 @@ an environment variable fallback (see [Configuration](#configuration)).
 | Show only free models | `FREE_MODEL_FILTER = only` |
 | Use DeepSeek for reasoning | select `deepseek/deepseek-r1`, `INCLUDE_REASONING = true` |
 | Route cheapest provider first | `PROVIDER_SORT = price` |
-| Add a fallback model | `FALLBACK_MODELS = anthropic/claude-3.5-sonnet` |
+| Add a fallback model | `FALLBACK_MODELS = anthropic/claude-haiku-4.5` (verify catalog availability) |
 | Generate an image (flux) | select `black-forest-labs/flux.2-klein-4b`, send any prompt — output renders inline |
 | Generate a video (cheap) | select `x-ai/grok-imagine-video` (~$0.05 / second, 480p) — output renders inline after polling |
 | Generate music (Lyria) | select `google/lyria-3-clip-preview` (~$0.04 / 30 s clip) — output renders inline as `<audio>` |
 | Generate speech (gpt-audio) | select `openai/gpt-audio-mini`, optionally set `AUDIO_OUTPUT_VOICE = nova` |
-| Surface remaining OpenRouter credit | `SHOW_REMAINING_CREDIT = true` |
+| Surface remaining API-key spending limit | `SHOW_REMAINING_CREDIT = true`; unlimited keys omit this footer |
 | Show actual USD cost + cached-token savings | `SHOW_COST_INFO = true` |
 | Enforce Zero Data Retention routing | `ZDR_ENFORCE = true`, optional `ZDR_MODELS_ONLY = true` to hide non-ZDR models |
 
@@ -187,7 +187,7 @@ section at the end of the response.
 
 ## Configuration
 
-Every valve accepts an environment variable fallback. The table below lists both.
+The table lists each valve and its environment fallback, where one exists.
 
 ### Core
 
@@ -280,14 +280,14 @@ characters before synthesis rather than splitting a scene into multiple jobs.
 | `SHOW_GENERATION_ID` | `OPENROUTER_SHOW_GENERATION_ID` | `false` | Append the OpenRouter generation ID to each response (for `GET /generation?id=` lookups) |
 | `SYNC_PROVIDER_ICONS` | `OPENROUTER_SYNC_ICONS` | `true` | Sync provider icons into Open WebUI's model database (also runs `_sync_orphan_db_icons` to patch rows for deprecated/withdrawn models the regular sync skips) |
 | `USE_GSTATIC_FAVICONS` | `OPENROUTER_USE_GSTATIC_FAVICONS` | `false` | Allow registry-discovered Google gstatic favicons for providers without an OpenRouter-hosted icon. Off by default (avoids per-render requests to `t0.gstatic.com`) |
-| `USE_PROVIDER_DOMAIN_FAVICON` | `OPENROUTER_USE_PROVIDER_DOMAIN_FAVICON` | `true` | Fallback to the provider's own corporate-domain favicon when no hardcoded / registry / alias icon exists (and gstatic is blocked). HEAD-checked once per provider (cached) and only kept if the response is a real image MIME — SPA shell pages returning `text/html` are discarded so the deterministic letter-SVG fallback runs instead. Disable to skip per-render cross-origin requests to provider domains |
+| `USE_PROVIDER_DOMAIN_FAVICON` | `OPENROUTER_USE_PROVIDER_DOMAIN_FAVICON` | `true` | Derive provider-domain favicon from registry metadata when other icons are unavailable. This is a browser URL, not a runtime HEAD/MIME check; disable to avoid cross-origin requests |
 
 ### Network
 
 | Valve | Env Var | Default | Description |
 | --- | --- | --- | --- |
 | `REQUEST_TIMEOUT` | `OPENROUTER_REQUEST_TIMEOUT` | `90` | HTTP timeout in seconds |
-| `MAX_RETRIES` | — | `2` | Auto-retry count on transient errors (network timeouts/connection failures **and** HTTP 429/5xx, honoring `Retry-After` ≤60s; non-transient 4xx fail fast) |
+| `MAX_RETRIES` | — | `2` | Retries connect timeouts and HTTP 429/5xx; read timeouts/connection loss are ambiguous and never resubmitted |
 | `MAX_TOOL_ITERATIONS` | `OPENROUTER_MAX_TOOL_ITERATIONS` | `5` | Max native tool-call rounds per request before stopping (caps runaway tool loops) |
 | `HTTP_REFERER_OVERRIDE` | `OPENROUTER_HTTP_REFERER` | `""` | Override the `HTTP-Referer` header sent to OpenRouter (must include scheme). Empty falls back to `WEBUI_URL` |
 
@@ -297,7 +297,7 @@ characters before synthesis rather than splitting a scene into multiple jobs.
 | --- | --- | --- | --- |
 | `SHOW_COST_INFO` | — | `false` | Append token usage and cost to each response (also requests `usage` so streaming responses include cost) |
 | `COST_CURRENCY` | `OPENROUTER_COST_CURRENCY` | `USD` | Legacy preference retained for stored configurations; actual cost and credit amounts are always USD, with no FX conversion |
-| `SHOW_REMAINING_CREDIT` | `OPENROUTER_SHOW_REMAINING_CREDIT` | `false` | Append remaining OpenRouter credit after the cost line (cached ~60s `GET /credits` call; independent of Show Cost Info) |
+| `SHOW_REMAINING_CREDIT` | `OPENROUTER_SHOW_REMAINING_CREDIT` | `false` | Legacy valve name: show API-key `limit_remaining` from cached `GET /key`, not account balance; unlimited/unavailable values omitted |
 
 > **Migration (v1.5.0):** the old boolean `FREE_ONLY` valve was replaced by `FREE_MODEL_FILTER` (`all` / `only` / `exclude`). Set `FREE_MODEL_FILTER = only` to preserve the old `FREE_ONLY = true` behaviour. For backward compatibility, the legacy `OPENROUTER_FREE_ONLY=true` environment variable is still honoured when `FREE_MODEL_FILTER` is unset.
 
@@ -328,7 +328,7 @@ upstream `session_id`; the internal OWUI identifier is never passed through.
 
 The `OPENROUTER_API_KEY` (admin and per-user) is stored **encrypted** in Open WebUI's database when `WEBUI_SECRET_KEY` is set (Fernet, derived from that secret) and decrypted only at the moment a request is sent. If `WEBUI_SECRET_KEY` or the `cryptography` package is unavailable, the key falls back to plaintext storage with a one-time warning. Existing plaintext keys keep working and are re-encrypted on the next save.
 
-> **Key rotation:** the encryption is keyed on `WEBUI_SECRET_KEY`. If that secret is rotated or removed after keys are stored, previously encrypted keys can no longer be decrypted and requests will fail with HTTP 401 — re-enter the API key(s) in Valves to re-encrypt under the new secret.
+> **Key rotation:** after changing/removing `WEBUI_SECRET_KEY`, re-enter API keys. Undecipherable or malformed credentials are rejected locally before transport. Environment defaults are also encrypted when serialized with encryption available.
 
 ### Tool calling (native function calling)
 
@@ -358,7 +358,7 @@ The pipe implements the **Manifold** pattern: one pipe entry point that surfaces
 | OWUI file upload | `_owui_upload_bytes()` | Single shared helper backing every image / video / audio re-host through OWUI |
 | Security guards | `_is_openrouter_url()`, MIME / size / scheme whitelists | SSRF + auth-leak protection on media downloads, citation URL filter |
 | Enrichment | `_inject_cache_control()`, `_insert_citations()`, `_format_credit_info()` | Anthropic prompt-cache breakpoints, `[n]` → markdown links, opt-in credit footer (pre-warmed off the event loop) |
-| Provider icons | `_get_provider_icon()`, `_generate_letter_icon()`, `_sync_orphan_db_icons()`, `_resolve_maybe_awaitable()` | Five-layer fallback chain (registry → hyphen-strip → `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` → provider-domain favicon → deterministic letter-SVG), OWUI-managed-icon recognition, OWUI ≥ 0.4 async `Models.{get,update,insert}_model_by_id` resolver |
+| Provider icons | `_get_provider_icon()`, `_generate_letter_icon()`, `_sync_orphan_db_icons()`, `_resolve_maybe_awaitable()` | Five-layer fallback chain (registry → hyphen-strip → `_PROVIDER_ICONS` → `_PROVIDER_SLUG_ALIASES` → provider-domain favicon → deterministic letter-tile (PNG)), OWUI-managed-icon recognition, OWUI ≥ 0.4 async `Models.{get,update,insert}_model_by_id` resolver |
 
 ```text
 Open-WebUI-Pipe-OpenRouter/
@@ -368,7 +368,12 @@ Open-WebUI-Pipe-OpenRouter/
 ├── test_maintenance.py     # Ownership, invalidation and concurrency regressions
 ├── test_alignment.py       # API contracts, policy, replay, variants and accounting
 ├── smoke_owui.py           # Real OWUI save/update/schema/valve checks
-├── integration_test.py     # Live API integration tests (44 assertions)
+├── integration_test.py     # Side-effect-free alias of the opt-in live runner
+├── e2e_live.py             # Explicit models, read-only preflight, paid transport checks
+├── test_regressions.py     # Audit/security/contract regressions
+├── test_support.py         # Hermetic test environment
+├── pyproject.toml          # Ruff and mypy configuration
+├── docs/                   # Audit, roadmap, evidence and showcase images
 ├── TESTING.md              # Manual pre-release checklist
 ├── SECURITY.md             # Security policy
 ├── CONTRIBUTING.md         # Contribution guidelines
@@ -403,16 +408,18 @@ is removed. OWUI's internal session identifier is handled separately as above.
 
 ```bash
 python test_pipe.py                       # Procedural assertion suite
-python -m unittest -v test_maintenance test_alignment  # Maintenance + API contracts
-python integration_test.py               # Live API tests (requires OPENROUTER_API_KEY)
+python -m unittest -v test_maintenance test_alignment test_regressions
+ruff check .
+mypy
+python integration_test.py --help         # Paid runner requires --live and explicit models
 ```
 
 The unit test suite covers: valve defaults, payload preparation, streaming and non-streaming
 responses, retry logic, citation injection, model listing, and `pipe()` routing.
 
-CI uses `requirements-ci.txt` with hashes; the live OWUI smoke creates a disposable
-admin account and tests the actual save/update endpoints without an OpenRouter key
-or billed generation. See [TESTING.md](TESTING.md) for local container commands.
+CI uses hashed dependencies. The OWUI smoke uses a disposable account and tests
+save/update, real DB preservation, tool wrappers and WAV persistence. It blocks
+inference transport. See [TESTING.md](TESTING.md) and [remediation evidence](docs/FINDINGS-REMEDIATION.md).
 
 ## Contributing
 
@@ -514,7 +521,9 @@ needs no pipe support — it works the same as before.
 
 A: Some models are listed as free on OpenRouter without carrying a `:free` suffix in their
 ID. The pipe checks the real `:free` catalog suffix, then zero prompt/completion
-pricing. Positive image, audio, request or reasoning charges prevent a model
+pricing. Dedicated video entries without an explicit free catalog variant are
+excluded because their per-second SKUs are not represented by text-token rates.
+Positive image, audio, request or reasoning charges prevent a model
 being labelled free even when its text-token rates are zero. Optional tools and
 web search can still add charges to an otherwise free inference model.
 
@@ -538,7 +547,7 @@ catalog) and routes accordingly:
   `/chat/completions` endpoint. The returned base64 `data:` URLs in `choices[0].message.images`
   are uploaded through Open WebUI's file-upload helper and the message content is rewritten to
   `![Generated image](/api/v1/files/<id>/content)` so the OWUI chat renders them inline.
-- **Video-output models** (`veo`, `kling`, `sora`, `seedance`, `hailuo`, `wan`, `grok-imagine`)
+- **Video-output models** (only currently advertised entries)
   — NOT served by `/chat/completions` (that endpoint 500s for them). The pipe submits to
   `POST /api/v1/videos`, polls the returned `polling_url` every `VIDEO_POLL_INTERVAL`
   (default 5 s) up to `VIDEO_GENERATION_TIMEOUT` (default 600 s), downloads the MP4 once the
@@ -554,8 +563,14 @@ catalog) and routes accordingly:
 
 Bytes are downloaded with hard caps (100 MiB video / 50 MiB audio), the post-fetch MIME is
 checked against a per-modality whitelist, and the `polling_url` + `unsigned_urls[0]` are
-restricted to `openrouter.ai` (or `*.openrouter.ai`) so a compromised upstream cannot redirect
-the Authorization bearer to an attacker-controlled host.
+restricted to HTTPS `openrouter.ai` (or `*.openrouter.ai`) on port 443, with no
+userinfo, backslashes or control characters. Validation agrees with the HTTP transport parser.
+
+TTS input is capped at 100,000 characters before cleaning; image materialization
+has encoded/decoded byte and count limits. Storage context is checked before TTS/video
+submission. Recovery buffers are ownership-scoped, bounded and in-memory for at most
+five minutes; a restart loses them. Unknown submission outcomes require checking
+OpenRouter history rather than another automatic submit.
 
 To hide non-chat models from the selector entirely, set `OUTPUT_MODALITIES = text`.
 
