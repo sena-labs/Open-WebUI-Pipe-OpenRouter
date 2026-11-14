@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Keep icon synchronization in the correct model namespace when Open WebUI appends a per-load UUID to function module names.
 - Model icons missing in Open WebUI 0.12: the generated letter fallback was an SVG data URI, which OWUI silently drops on write, and the sync still marked the model as done. The fallback is now a PNG tile and a model is marked synced only if the saved row kept the icon.
 - Provider icons for runway, thinkingmachines, typesafe, meituan, dots-studio, kwaivgi and prism-ml now use real avatars instead of dead `/favicon.ico` URLs; `meta` resolves to the Meta hosted icon.
 - Keep a trailing reasoning signature with the block it signs (#26).

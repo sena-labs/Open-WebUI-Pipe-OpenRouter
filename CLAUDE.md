@@ -7,3 +7,4 @@
 - Audit OWUI: usare schemi e wrapper runtime reali; `ModelForm` riscrive campi default e un wrapper async può eseguire un tool sync sull'event loop.
 - Video `0/0` su `/models` non significa gratis: tariffe per secondo sono SKU separati di `/videos/models`.
 - OWUI scarta in silenzio i profile image non accettati (SVG data URI) ma `update_model_by_id` restituisce comunque la riga: verificare la persistenza dall'esito, non dal non-None; provare sync su copia del DB reale della versione OWUI in produzione.
+- Loader OWUI recenti aggiungono un UUID a `function_{id}`: verificare l'ID risolto col loader reale; il suffisso non appartiene al namespace dei modelli. Gli aggiornamenti delle icone cambiano normalmente `version_id`.

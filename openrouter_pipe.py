@@ -1563,10 +1563,13 @@ class Pipe:
         # domain when the gstatic-Google leak is disabled but we still
         # want a real brand mark.
         self._provider_domain_cache: dict = {}
-        # Cache function_id once: OWUI sets __module__ to "function_{id}" at load time
+        # Recent OWUI loaders append a per-load UUID to "function_{id}".
+        # That suffix identifies the module instance, not the model DB namespace.
         _fm = type(self).__module__ or ""
         self._function_id: Optional[str] = (
-            _fm[len("function_") :] if _fm.startswith("function_") else None
+            re.sub(r"_[0-9a-f]{32}$", "", _fm[len("function_") :])
+            if _fm.startswith("function_")
+            else None
         )
         if not self.valves.OPENROUTER_API_KEY:
             print("[OpenRouter Pipe] Warning: OPENROUTER_API_KEY not set")

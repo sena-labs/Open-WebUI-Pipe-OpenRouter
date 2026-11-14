@@ -180,6 +180,33 @@ class AuditRegressions(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
 
+    def test_icon_sync_uses_stable_id_with_versioned_owui_loader(self):
+        for module_name, expected in (
+            ("function_openrouter_pipe", "openrouter_pipe"),
+            ("function_openrouter_pipe_707ae4734f5449879ac0b6abd8311a89", "openrouter_pipe"),
+            ("function_custom_pipe_name_707ae4734f5449879ac0b6abd8311a89", "custom_pipe_name"),
+            ("function_custom_pipe_name", "custom_pipe_name"),
+            ("function_custom_deadbeef", "custom_deadbeef"),
+        ):
+            with (
+                self.subTest(module=module_name),
+                patch.object(mod.Pipe, "__module__", module_name),
+            ):
+                pipe = mod.Pipe()
+                models = types.SimpleNamespace(get_model_by_id=Mock(return_value=None))
+                pipe._get_provider_icon = Mock(return_value=None)
+                with patch.dict(
+                    sys.modules,
+                    owui_modules(
+                        Models=models,
+                        ModelForm=ModelForm,
+                        ModelMeta=ModelMeta,
+                        ModelParams=ModelParams,
+                    ),
+                ):
+                    pipe._sync_model_icons([{"id": "x-ai/grok"}])
+                models.get_model_by_id.assert_called_once_with(expected + ".x-ai/grok")
+
     def test_icon_update_preserves_workspace_model_and_custom_cdns(self):
         row = ModelRow(
             id="audit.test/chat",
