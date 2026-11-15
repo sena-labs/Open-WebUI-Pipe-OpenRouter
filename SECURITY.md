@@ -58,14 +58,17 @@ The following are in scope for security reports:
 
 The pipe implements the following security practices:
 
-- **No key logging** — `OPENROUTER_API_KEY` is never written to logs or included in error messages.
-- **Pre-flight validation** — invalid keys are caught at model-fetch time via the `/models` response, before any user message is sent.
+- **Credential-safe diagnostics** — transport exceptions are logged by type, not their bearer-bearing messages; common credential patterns are redacted from upstream diagnostics. Keys are normalized and control characters rejected before transport.
+- **Pre-flight validation** — admin keys are checked via `/key`; public `/models` discovery does not prove credential validity. Invalid/undecipherable key representations are rejected locally.
+- **Tool trust boundary** — model arguments are restricted to public schema properties and cannot replace injected user/request context. Sync callables inside OWUI's async wrapper execute off the event loop.
+- **Model integrity** — icon updates preserve metadata, routing, disabled state and access grants. CDN/domain ownership is never inferred solely from an icon host.
 - **HTTPS by default** — `OPENROUTER_BASE_URL` defaults to `https://openrouter.ai/api/v1`; custom HTTP endpoints are allowed, and non-HTTP(S) schemes are rejected.
 - **Internal key stripping** — Open WebUI internal fields (`chat_id`, `title`, `task`, `metadata`, `files`, `tool_ids`, `session_id`, `message_id`) are removed from the payload before forwarding.
 - **Bounded in-memory caches** — the pipe retains model metadata, authorization headers,
-  credit balances and hashed TTS fingerprints. Speech-file URLs are scoped to user,
+  key-limit values and opaque credential identities. Speech-file URLs are scoped to user,
   chat, endpoint and resolved API key, expire after five minutes and are checked
   against OWUI file metadata before reuse. Generated media is stored by OWUI.
+- **Recovery storage** — bounded, ownership-scoped speech chunks and known video jobs are retained in server memory for up to five minutes to recover storage/polling failures. These transient buffers can contain user-generated media and disappear on restart; no cross-user reuse is permitted.
 - **Key storage** — OWUI persists valves; pipe API keys are Fernet-encrypted when
   `WEBUI_SECRET_KEY` and `cryptography` are available, otherwise stored in plaintext
   with a warning. Authorization headers necessarily contain decrypted credentials
@@ -80,8 +83,8 @@ Every push to `main`, pull request and weekly scheduled run executes:
 
 - **Unit and regression suites** (`.github/workflows/tests.yml`) across Python 3.10–3.14,
   with pinned and hashed CI dependencies.
-- **Real OWUI compatibility smoke** — create/update a function, generate valve
-  schemas and persist valves on pinned and current stable disposable containers.
+- **Real OWUI compatibility smoke** — create/update, valve schemas, workspace DB preservation, actual tool-wrapper behavior and WAV file persistence on pinned/current disposable containers. Minimum supported OWUI is 0.11.4.
+- **Static checks** — configured Ruff and mypy gates, with pinned/hashed tools.
 - **CodeQL** (`.github/workflows/codeql.yml`) — Python `security-extended` analysis.
 
 Dependabot checks Python dependencies and GitHub Actions weekly. GitHub secret

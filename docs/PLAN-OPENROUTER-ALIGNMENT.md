@@ -8,10 +8,6 @@ Rendere il catalogo OpenRouter realmente utilizzabile in Open WebUI, con
 contratti per endpoint, policy preservate, reasoning/tools corretti, media
 nativi e costo completo del turno.
 
-Sessione operativa: quella del subentro e consolidamento. La sessione
-`ses_efd12e13afferN4HckQDxtIbVg` ha concluso il turno ed è sorgente storica di
-audit/pianificazione, non un secondo flusso di implementazione.
-
 Questo documento è il riferimento della roadmap e sostituisce la proposta
 locale `.opencode/plans/openrouter-alignment.md`, ignorata da Git.
 Evidenze e fonti: [audit](OPENROUTER-AUDIT-2026-10-04.md).
@@ -30,6 +26,10 @@ Il design della prima fase viene presentato prima delle modifiche al prodotto.
   il rispettivo design prima dell'implementazione.
 
 ### Evidenze Fase 1
+
+Tabella seguente: snapshot storico della prima implementazione. PR #25 poi
+mergiata squash come `364bb91`; fix locali e verifiche dell'audit successivo sono
+tracciati in [FINDINGS-REMEDIATION.md](FINDINGS-REMEDIATION.md).
 
 | Verifica | Esito |
 | --- | --- |

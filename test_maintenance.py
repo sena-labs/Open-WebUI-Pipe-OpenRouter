@@ -9,6 +9,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import requests
 
+from test_support import isolate_environment
+
+isolate_environment()
+
 import openrouter_pipe as mod
 
 
@@ -42,7 +46,8 @@ class MediaResponse:
 class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.network_guard = patch.object(
-            requests.sessions.Session, "request",
+            requests.sessions.Session,
+            "request",
             side_effect=AssertionError("Unexpected live HTTP request"),
         )
         self.network_guard.start()
@@ -51,10 +56,17 @@ class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.pipe._session.close)
         self.pipe.valves.OPENROUTER_API_KEY = "test-key-a"
         self.pipe._lazy_populated = True
+        self.pipe._lookup_model = Mock()
+        self.pipe._media_preflight = AsyncMock(return_value=None)
         self.pipe._speech_model_ids = frozenset({"test/speech"})
-        self.pipe._tts_fetch_chunk = Mock(return_value=(
-            None, b"mock-audio", "audio/mpeg", "test-generation",
-        ))
+        self.pipe._tts_fetch_chunk = Mock(
+            return_value=(
+                None,
+                b"mock-audio",
+                "audio/mpeg",
+                "test-generation",
+            )
+        )
         self.pipe._speech_file_exists = AsyncMock(return_value=True)
         self.uploaded_users = []
 
@@ -75,7 +87,9 @@ class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
         if key and user:
             user["valves"] = {"OPENROUTER_API_KEY": key}
         return await self.pipe.pipe(
-            self.body, __user__=user, __request__=object(),
+            self.body,
+            __user__=user,
+            __request__=object(),
             __metadata__={"chat_id": chat_id} if chat_id else {},
         )
 
@@ -121,7 +135,9 @@ class SpeechCacheTests(unittest.IsolatedAsyncioTestCase):
         await self.speak()
         key, (file_id, url, _) = next(iter(self.pipe._speech_cache.items()))
         self.pipe._speech_cache[key] = (
-            file_id, url, time.monotonic() - mod._SPEECH_CACHE_TTL - 1,
+            file_id,
+            url,
+            time.monotonic() - mod._SPEECH_CACHE_TTL - 1,
         )
         await self.speak()
         self.assertEqual(self.pipe._tts_fetch_chunk.call_count, 2)
@@ -169,17 +185,23 @@ class MediaTransportTests(unittest.IsolatedAsyncioTestCase):
         self.pipe = mod.Pipe()
         self.addCleanup(self.pipe._session.close)
         self.pipe.valves.OPENROUTER_API_KEY = "test-key"
+        self.pipe._media_preflight = AsyncMock(return_value=None)
 
     async def test_video_submit_poll_download_parse_and_close_are_off_loop(self):
         threads = []
         responses = [
             MediaResponse({"id": "job", "status": "pending"}, threads=threads),
-            MediaResponse({
-                "id": "job", "status": "completed",
-                "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job/content"],
-            }, threads=threads),
+            MediaResponse(
+                {
+                    "id": "job",
+                    "status": "completed",
+                    "unsigned_urls": ["https://openrouter.ai/api/v1/videos/job/content"],
+                },
+                threads=threads,
+            ),
             MediaResponse(content=b"video-bytes", threads=threads),
         ]
+        responses[-1].headers["Content-Type"] = "video/mp4"
         pending = list(responses)
 
         def request(*args, **kwargs):
@@ -189,15 +211,22 @@ class MediaTransportTests(unittest.IsolatedAsyncioTestCase):
 
         self.pipe._session.post = Mock(side_effect=request)
         self.pipe._session.get = Mock(side_effect=request)
-        self.pipe._upload_video_to_owui = AsyncMock(return_value=(
-            "video", "/api/v1/files/video/content",
-        ))
+        self.pipe._upload_video_to_owui = AsyncMock(
+            return_value=(
+                "video",
+                "/api/v1/files/video/content",
+            )
+        )
         main_thread = threading.get_ident()
         with patch.object(mod.asyncio, "sleep", new=AsyncMock()):
             result = await self.pipe._run_video_generation(
                 {"messages": [{"role": "user", "content": "Public video probe"}]},
-                "test/video", self.pipe.valves, None, object(),
-                {"id": "alice"}, {"chat_id": "chat"},
+                "test/video",
+                self.pipe.valves,
+                None,
+                object(),
+                {"id": "alice"},
+                {"chat_id": "chat"},
             )
         self.assertIn("<video>", result)
         self.assertNotIn(main_thread, threads)
@@ -207,7 +236,10 @@ class MediaTransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_network_failure_returns_error_without_response(self):
         self.pipe._session.get = Mock(side_effect=requests.exceptions.ConnectionError("offline"))
         error, data, content_type = await asyncio.to_thread(
-            self.pipe._video_download, "https://openrouter.ai/video", {}, self.pipe.valves,
+            self.pipe._video_download,
+            "https://openrouter.ai/video",
+            {},
+            self.pipe.valves,
         )
         self.assertIn("Video download failed", error)
         self.assertEqual(data, b"")
@@ -221,17 +253,31 @@ class MediaTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.pipe._session.get = Mock(return_value=response)
                 if method == "speech":
                     result = await asyncio.to_thread(
-                        self.pipe._tts_fetch_chunk, "text", "test/speech", "alloy",
-                        None, {}, self.pipe.valves, mod._AUDIO_MAX_BYTES,
+                        self.pipe._tts_fetch_chunk,
+                        "text",
+                        "test/speech",
+                        "alloy",
+                        None,
+                        {},
+                        self.pipe.valves,
+                        mod._AUDIO_MAX_BYTES,
                     )
                 elif method == "submit":
                     result = await asyncio.to_thread(
-                        self.pipe._video_submit_job, {}, {}, self.pipe.valves,
+                        self.pipe._video_submit_job,
+                        {},
+                        {},
+                        self.pipe.valves,
                     )
                 else:
-                    helper = self.pipe._video_poll_job if method == "poll" else self.pipe._video_download
+                    helper = (
+                        self.pipe._video_poll_job if method == "poll" else self.pipe._video_download
+                    )
                     result = await asyncio.to_thread(
-                        helper, "https://openrouter.ai/video", {}, self.pipe.valves,
+                        helper,
+                        "https://openrouter.ai/video",
+                        {},
+                        self.pipe.valves,
                     )
                 self.assertIn("redirect rejected", result[0])
                 self.assertTrue(response.closed)
@@ -266,7 +312,9 @@ class CachedFileLookupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_database_error_does_not_reuse_unverifiable_file(self):
         fake = types.ModuleType("open_webui.models.files")
-        fake.Files = types.SimpleNamespace(get_file_by_id=AsyncMock(side_effect=RuntimeError("DB unavailable")))
+        fake.Files = types.SimpleNamespace(
+            get_file_by_id=AsyncMock(side_effect=RuntimeError("DB unavailable"))
+        )
         with patch.dict("sys.modules", {"open_webui.models.files": fake}):
             self.assertFalse(await self.pipe._speech_file_exists("file"))
 

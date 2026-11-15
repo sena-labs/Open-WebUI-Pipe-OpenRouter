@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -41,7 +41,13 @@ jobs:
       - name: Run tests
         run: |
           python test_pipe.py
-          python -m unittest -v test_maintenance test_alignment
+          python -m unittest -v test_maintenance test_alignment test_regressions
+
+      - name: Static checks
+        if: matrix.python-version == '3.14'
+        run: |
+          ruff check .
+          mypy
 
   compatibility:
     name: OWUI smoke (${{ matrix.owui-tag }})
@@ -66,7 +72,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Verify real function save, schemas and valves
+      - name: Verify save, schemas, DB preservation, tools and media storage
         run: python smoke_owui.py --base-url http://127.0.0.1:${{ job.services.openwebui.ports['8080'] }}
       - name: Open WebUI logs on failure
         if: failure()
