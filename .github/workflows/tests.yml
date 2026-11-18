@@ -42,6 +42,7 @@ jobs:
         run: |
           python test_pipe.py
           python -m unittest -v test_maintenance test_alignment test_regressions
+          python -m unittest discover -v -s .github/maintainer
 
       - name: Static checks
         if: matrix.python-version == '3.14'

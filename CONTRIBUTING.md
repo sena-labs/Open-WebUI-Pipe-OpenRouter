@@ -166,6 +166,10 @@ python -m pip install --require-hashes -r requirements-ci.txt
 
 ## Reporting bugs
 
+The repository maintainer automatically triages every newly opened issue, including reports from
+first-time contributors. Opening the issue is enough. When a code or documentation change is
+justified, the maintainer opens a draft pull request for human review.
+
 When reporting a bug, open a [GitHub issue](https://github.com/sena-labs/Open-WebUI-Pipe-OpenRouter/issues)
 using the **Bug report** template and include:
 
