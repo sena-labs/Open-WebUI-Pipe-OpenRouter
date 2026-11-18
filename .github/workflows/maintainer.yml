@@ -1,0 +1,47 @@
+name: Repository maintainer
+
+on:
+  issues:
+    types: [labeled]
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: maintainer-${{ github.event.workflow_run.head_branch || format('maintainer/issue-{0}', github.event.issue.number) }}
+  cancel-in-progress: false
+
+jobs:
+  maintain:
+    if: >-
+      github.repository == 'sena-labs/Open-WebUI-Pipe-OpenRouter' &&
+      ((github.event_name == 'issues' &&
+        github.event.label.name == 'maintainer:fix' &&
+        github.event.sender.login == github.repository_owner) ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request' &&
+        github.event.workflow_run.conclusion == 'failure' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        startsWith(github.event.workflow_run.head_branch, 'maintainer/issue-')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Run the maintainer for the assigned issue
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_MAINTAINER_KEY }}
+          AGENT_ID: ${{ vars.OPENAI_MAINTAINER_AGENT_ID }}
+          PILOT_BUDGET_USD: ${{ vars.MAINTAINER_BUDGET_USD }}
+          GH_TOKEN: ${{ github.token }}
+          PYTHONSAFEPATH: '1'
+        run: python -I .github/maintainer/run.py
