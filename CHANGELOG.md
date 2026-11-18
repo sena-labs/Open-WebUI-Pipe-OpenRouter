@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Start automated maintainer triage when anyone opens an issue. Reporters can submit issues without a label.
+
 ## [1.13.0] - 2026-11-15
 
 ### Security

@@ -2,7 +2,7 @@ name: Repository maintainer
 
 on:
   issues:
-    types: [labeled]
+    types: [opened]
   workflow_run:
     workflows: [Tests]
     types: [completed]
@@ -17,9 +17,7 @@ jobs:
   maintain:
     if: >-
       github.repository == 'sena-labs/Open-WebUI-Pipe-OpenRouter' &&
-      ((github.event_name == 'issues' &&
-        github.event.label.name == 'maintainer:fix' &&
-        github.event.sender.login == github.repository_owner) ||
+      ((github.event_name == 'issues' && github.event.action == 'opened') ||
        (github.event_name == 'workflow_run' &&
         github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.conclusion == 'failure' &&
@@ -37,7 +35,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Run the maintainer for the assigned issue
+      - name: Run the repository maintainer
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_MAINTAINER_KEY }}
           AGENT_ID: ${{ vars.OPENAI_MAINTAINER_AGENT_ID }}
