@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Provide a reusable issue maintainer for other public Sena Labs repositories, with repository-specific checks and short-lived workflow authentication.
+
 ### Changed
 
 - Start automated maintainer triage when anyone opens an issue. Reporters can submit issues without a label.
